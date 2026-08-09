@@ -42,6 +42,7 @@ import {
 import type { TAddDomainBody } from "./domain.schema";
 import { edgeProxy, readEdgeFile, validateCertFor } from "@repo/adapters";
 import type { AdoptedCert, CloudRuntime, CommandExecutor, ManualCert } from "@repo/adapters";
+import { findDnsManagerForHostname, type DnsRecordType } from "../dns";
 
 // ─── List ────────────────────────────────────────────────────────────────────
 
@@ -266,9 +267,40 @@ export async function addDomain(
     ctx.organizationId,
     !!data.includeWww,
   );
+
+  // ── Auto-provision DNS records if a connected DNS provider manages the zone ──
+  let autoDnsProvisioned = false;
+  try {
+    const dnsManager = await findDnsManagerForHostname(ctx.organizationId, domain.hostname);
+    if (dnsManager) {
+      for (const rec of records.records) {
+        await dnsManager.provider.upsertRecord(
+          dnsManager.credentials,
+          dnsManager.zone.id,
+          {
+            type: rec.type as DnsRecordType,
+            name: rec.name,
+            content: rec.value,
+            proxied: false,
+            comment: "Managed by Openship",
+          },
+        );
+      }
+      autoDnsProvisioned = true;
+      // Trigger background verification
+      const bgCtx = buildBackgroundContext(ctx.organizationId, ctx.userId);
+      void verifyDomain(bgCtx, domain.id).catch((err) => {
+        console.warn(`[DNS] Auto-verify after record provisioning failed for ${domain.hostname}:`, err);
+      });
+    }
+  } catch (err) {
+    console.warn(`[DNS] Failed to auto-provision DNS records for ${domain.hostname}:`, err);
+  }
+
   return {
     domain,
     records,
+    autoDnsProvisioned,
     ...www,
     // Only present when there IS something to say, so callers can spread it and
     // clients can treat its absence as "nothing was already serving this".
@@ -953,6 +985,32 @@ export async function removeDomain(ctx: RequestContext, domainId: string) {
       routing: serviceRouting,
     });
     return;
+  }
+
+  // ── Best-effort DNS record cleanup on connected DNS provider ──
+  try {
+    const dnsManager = await findDnsManagerForHostname(ctx.organizationId, domain.hostname);
+    if (dnsManager) {
+      const recordsToDelete = await dnsManager.provider.listRecords(
+        dnsManager.credentials,
+        dnsManager.zone.id,
+        { name: domain.hostname },
+      );
+      const challengeRecords = await dnsManager.provider.listRecords(
+        dnsManager.credentials,
+        dnsManager.zone.id,
+        { name: `_openship-challenge.${domain.hostname}` },
+      );
+      for (const r of [...recordsToDelete, ...challengeRecords]) {
+        await dnsManager.provider.deleteRecord(
+          dnsManager.credentials,
+          dnsManager.zone.id,
+          r.id,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(`[DNS] Failed to clean up DNS records for ${domain.hostname}:`, err);
   }
 
   await repos.domain.remove(domainId);

@@ -36,6 +36,11 @@ export {
   type NewBuildSession,
 } from "./deployment.repo";
 export { createDomainRepo, type Domain, type NewDomain } from "./domain.repo";
+export {
+  createDnsCredentialRepo,
+  type DnsCredential,
+  type NewDnsCredential,
+} from "./dns-credential.repo";
 export { createRouteRuleRepo, type RouteRule, type NewRouteRule } from "./route-rule.repo";
 export { createWebhookSourceRepo, type WebhookSource, type NewWebhookSource } from "./webhook-source.repo";
 export { createIncomingWebhookRepo, type IncomingWebhook, type NewIncomingWebhook } from "./incoming-webhook.repo";
@@ -314,6 +319,7 @@ export const repos = {
   project: createProjectRepo(db),
   deployment: createDeploymentRepo(db),
   domain: createDomainRepo(db),
+  dnsCredential: createDnsCredentialRepo(db),
   routeRule: createRouteRuleRepo(db),
   webhookSource: createWebhookSourceRepo(db),
   incomingWebhook: createIncomingWebhookRepo(db),

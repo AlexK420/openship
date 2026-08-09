@@ -77,7 +77,13 @@ export interface SslProvider {
    *  reissued instead of returned as-is. */
   provisionCert(
     domain: string,
-    opts?: { onLog?: (line: string) => void; force?: boolean },
+    opts?: {
+      onLog?: (line: string) => void;
+      force?: boolean;
+      challenge?: "http-01" | "dns-01";
+      dnsAuthHook?: string;
+      dnsCleanupHook?: string;
+    },
   ): Promise<SslResult>;
 
   /** Renew an existing TLS certificate */
