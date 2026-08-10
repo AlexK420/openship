@@ -1,4 +1,12 @@
-import type { DnsProvider, DnsProviderName } from "./types";
+/**
+ * DNS provider registry.
+ *
+ * One map is the single source of truth. Descriptors are read OFF the providers
+ * rather than kept in a parallel literal — a hand-maintained second list is how
+ * a registered provider ends up invisible in the dashboard picker.
+ */
+
+import type { DnsProvider, DnsProviderDescriptor, DnsProviderName } from "./types";
 import { UnknownDnsProviderError } from "./types";
 import { cloudflareDnsProvider } from "./providers/cloudflare.provider";
 
@@ -16,21 +24,6 @@ export function listDnsProviders(): DnsProviderName[] {
   return Object.keys(PROVIDERS) as DnsProviderName[];
 }
 
-export interface DnsProviderDescriptor {
-  name: DnsProviderName;
-  displayName: string;
-  description: string;
-  requiredScopes: string[];
-}
-
 export function describeDnsProviders(): DnsProviderDescriptor[] {
-  return [
-    {
-      name: "cloudflare",
-      displayName: "Cloudflare",
-      description:
-        "Automatic DNS records, zone discovery, and wildcard SSL verification via scoped Cloudflare API token.",
-      requiredScopes: ["Zone:Read", "DNS:Edit"],
-    },
-  ];
+  return listDnsProviders().map((name) => PROVIDERS[name].descriptor);
 }

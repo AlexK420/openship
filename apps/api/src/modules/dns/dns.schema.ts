@@ -1,17 +1,36 @@
-import { z } from "zod";
+/**
+ * DNS validation schemas — TypeBox for Hono route validation.
+ *
+ * `secureRouter` auto-wires `tbValidator("json", body)` from the route's `body`
+ * field, so these must be TypeBox schemas: a Zod object reaches `Value.Check`
+ * without a `[Kind]` symbol and throws on every request, valid or not.
+ */
 
-export const addDnsCredentialSchema = z.object({
-  provider: z.enum(["cloudflare"], {
-    errorMap: () => ({ message: "Only 'cloudflare' is currently supported as a DNS provider." }),
-  }),
-  name: z.string().trim().min(1, "Name is required").max(100, "Name too long"),
-  apiToken: z.string().trim().min(1, "API token is required"),
+import { Type, type Static } from "@sinclair/typebox";
+
+/** Same shape the domains module accepts, so "a hostname" means one thing. */
+const Hostname = Type.String({
+  minLength: 1,
+  maxLength: 253,
+  pattern: "^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,}$",
 });
 
-export type TAddDnsCredentialBody = z.infer<typeof addDnsCredentialSchema>;
-
-export const verifyZoneSchema = z.object({
-  hostname: z.string().trim().min(1, "Hostname is required"),
+export const AddDnsCredentialBody = Type.Object({
+  /** Literal union, not a free string: the registry is the source of truth and
+   *  an unknown value should be rejected at the edge, not deep in a resolver. */
+  provider: Type.Union([Type.Literal("cloudflare")]),
+  name: Type.String({ minLength: 1, maxLength: 100 }),
+  /** Bounded because it is stored encrypted — an unbounded body would be a
+   *  cheap way to write megabytes of ciphertext per row. */
+  apiToken: Type.String({ minLength: 1, maxLength: 500 }),
 });
 
-export type TVerifyZoneBody = z.infer<typeof verifyZoneSchema>;
+export type TAddDnsCredentialBody = Static<typeof AddDnsCredentialBody>;
+
+export const VerifyZoneBody = Type.Object({
+  /** Bounded on purpose: zone discovery walks this name's suffixes and spends an
+   *  outbound provider call per candidate. */
+  hostname: Hostname,
+});
+
+export type TVerifyZoneBody = Static<typeof VerifyZoneBody>;

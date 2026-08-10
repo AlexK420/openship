@@ -239,6 +239,7 @@ import { createProjectGroupRepo } from "./project-group.repo";
 import { createProjectRepo } from "./project.repo";
 import { createDeploymentRepo } from "./deployment.repo";
 import { createDomainRepo } from "./domain.repo";
+import { createDnsCredentialRepo } from "./dns-credential.repo";
 import { createRouteRuleRepo } from "./route-rule.repo";
 import { createWebhookSourceRepo } from "./webhook-source.repo";
 import { createIncomingWebhookRepo } from "./incoming-webhook.repo";

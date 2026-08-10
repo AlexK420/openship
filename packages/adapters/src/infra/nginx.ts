@@ -1404,13 +1404,7 @@ ${serveLocation}
    */
   async provisionCert(
     domain: string,
-    opts?: {
-      onLog?: (line: string) => void;
-      force?: boolean;
-      challenge?: "http-01" | "dns-01";
-      dnsAuthHook?: string;
-      dnsCleanupHook?: string;
-    },
+    opts?: { onLog?: (line: string) => void; force?: boolean },
   ): Promise<SslResult> {
     assertValidDomain(domain);
 
@@ -1433,21 +1427,23 @@ ${serveLocation}
     let certonlyOut = "";
     const eabConfig = await this.createEphemeralEabConfig();
     try {
-      const isDnsChallenge = opts?.challenge === "dns-01" || domain.startsWith("*.");
-      const challengeArgs = isDnsChallenge
-        ? [
-            "certonly",
-            "--manual",
-            "--preferred-challenges",
-            "dns",
-            ...(opts?.dnsAuthHook ? ["--manual-auth-hook", opts.dnsAuthHook] : []),
-            ...(opts?.dnsCleanupHook ? ["--manual-cleanup-hook", opts.dnsCleanupHook] : []),
-          ]
-        : ["certonly", "--standalone", "--http-01-port", String(ACME_HTTP01_PORT)];
-
+      // ACME via certbot's STANDALONE authenticator on a loopback alt-port; the
+      // edge proxies /.well-known/acme-challenge/ → 127.0.0.1:<port> (see
+      // ACME_CHALLENGE_LOCATION). Zero downtime — no port-80 fight with the edge,
+      // no webroot dependency, no DNS-01. Works bare (host netns) and docker-edge
+      // (container netns) alike, since certbot runs on the same executor as the
+      // edge it's proxied through.
+      //
+      // `--cert-name <domain>` PINS the lineage to the bare domain name. Without
+      // it, certbot appends `-0001`/`-0002` when a stale renewal config for the
+      // domain lingers (a prior teardown/migration removed the live symlink but
+      // left /etc/letsencrypt/renewal), so the cert lands at `<domain>-0001` while
+      // certsExist/readCertInfo only ever look at `<domain>` → an eternal
+      // "missing", and a re-run just prints "not due for renewal" (exit 0). Pinning
+      // the name makes the on-disk path deterministic and self-heals that state.
       certonlyOut = await this._execCertbot([
         ...(eabConfig ? ["--config", eabConfig] : []),
-        ...challengeArgs,
+        "certonly", "--standalone", "--http-01-port", String(ACME_HTTP01_PORT),
         "--cert-name", domain, "-d", domain,
         ...(this.acmeDirectoryUrl ? ["--server", this.acmeDirectoryUrl] : []),
         ...acmeKeyArgs(this.acmeKeyType),

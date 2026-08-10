@@ -32,6 +32,21 @@ export function createDnsCredentialRepo(db: Database) {
       });
     },
 
+    /** Find one credential by its operator-facing label (the unique key). */
+    async findByName(
+      organizationId: string,
+      provider: string,
+      name: string,
+    ): Promise<DnsCredential | undefined> {
+      return db.query.dnsCredential.findFirst({
+        where: and(
+          eq(dnsCredential.organizationId, organizationId),
+          eq(dnsCredential.provider, provider),
+          eq(dnsCredential.name, name),
+        ),
+      });
+    },
+
     /** Find active DNS credentials for an org, optionally filtered by provider. */
     async findActiveByOrg(
       organizationId: string,

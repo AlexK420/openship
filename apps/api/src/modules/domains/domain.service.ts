@@ -31,6 +31,7 @@ import { resolveProjectServerHost, resolveLocalServerHost, resolveInstancePublic
 import { reconcileProjectRoutes } from "../../lib/route-apply.service";
 import { generateToken } from "../../lib/domain-token";
 import { untrackedSiteFor } from "../../lib/edge-orphans.service";
+import type { UntrackedEdgeSite } from "@repo/core";
 import { publicEndpointHostname, resolveServicePublicEndpoints } from "../../lib/public-endpoints";
 import { sshManager } from "../../lib/ssh-manager";
 import { resolveServerIdForProject, withServerHostExecutor } from "../../lib/edge-host-executor";
@@ -42,7 +43,10 @@ import {
 import type { TAddDomainBody } from "./domain.schema";
 import { edgeProxy, readEdgeFile, validateCertFor } from "@repo/adapters";
 import type { AdoptedCert, CloudRuntime, CommandExecutor, ManualCert } from "@repo/adapters";
-import { findDnsManagerForHostname, type DnsRecordType } from "../dns";
+// Concrete modules, not the `../dns` barrel: importing a barrel that reaches a
+// routes file mounts the HTTP route table as a side effect of importing a service.
+import { provisionRecords, releaseRecords, type DnsProvisionResult } from "../dns/dns-credential.service";
+import type { DnsRecordType } from "../dns/types";
 
 // ─── List ────────────────────────────────────────────────────────────────────
 
@@ -86,6 +90,30 @@ export async function setPrimaryDomain(ctx: RequestContext, domainId: string) {
 
 // ─── Add ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Stated rather than inferred, because `addDomain` returns from two places (the
+ * interrupted-connect resave path and the normal path) and the optional keys
+ * differ between them. Left to inference, adding a key to one branch silently
+ * changes what callers can read off the other — which is how `preexistingEdgeSite`
+ * stopped resolving in the controller the moment an unrelated field was added.
+ */
+export interface AddDomainResult {
+  domain: Domain;
+  records: { mode: "cloud" | "selfhosted" | "external"; records: DnsRecord[] };
+  /** The `www.` sibling, when `includeWww` asked for one and it was created. */
+  www?: { id: string; hostname: string };
+  /** Why the `www.` sibling could not be created. */
+  wwwError?: string;
+  /** Present only when the edge was ALREADY serving this hostname untracked. */
+  preexistingEdgeSite?: UntrackedEdgeSite;
+  /**
+   * Present only when a connected DNS provider manages the zone: what we wrote,
+   * per record. Absent means "nobody is automating this domain's DNS", which is
+   * the normal case and reads as "show the operator the records to paste".
+   */
+  autoDns?: DnsProvisionResult;
+}
+
 export async function addDomain(
   ctx: RequestContext,
   data: TAddDomainBody,
@@ -103,7 +131,7 @@ export async function addDomain(
      */
     extraOwnedHostnames?: string[];
   } = {},
-) {
+): Promise<AddDomainResult> {
   const project = await repos.project.findById(data.projectId);
   assertResourceInOrg(project, "Project", ctx.organizationId, data.projectId);
 
@@ -268,39 +296,39 @@ export async function addDomain(
     !!data.includeWww,
   );
 
-  // ── Auto-provision DNS records if a connected DNS provider manages the zone ──
-  let autoDnsProvisioned = false;
-  try {
-    const dnsManager = await findDnsManagerForHostname(ctx.organizationId, domain.hostname);
-    if (dnsManager) {
-      for (const rec of records.records) {
-        await dnsManager.provider.upsertRecord(
-          dnsManager.credentials,
-          dnsManager.zone.id,
-          {
-            type: rec.type as DnsRecordType,
-            name: rec.name,
-            content: rec.value,
-            proxied: false,
-            comment: "Managed by Openship",
-          },
-        );
-      }
-      autoDnsProvisioned = true;
-      // Trigger background verification
-      const bgCtx = buildBackgroundContext(ctx.organizationId, ctx.userId);
-      void verifyDomain(bgCtx, domain.id).catch((err) => {
-        console.warn(`[DNS] Auto-verify after record provisioning failed for ${domain.hostname}:`, err);
-      });
-    }
-  } catch (err) {
-    console.warn(`[DNS] Failed to auto-provision DNS records for ${domain.hostname}:`, err);
-  }
+  // ── Automatic DNS: write the records instead of printing them ────────────────
+  // Best-effort by the same rule routing/edge/SSL follow: a domain add does not
+  // fail because the automation did. The per-record outcome rides back on the
+  // response so "we wrote them" and "we tried and 2 were rejected" are different
+  // answers — a bare boolean made a half-written zone look like nothing happened.
+  //
+  // No verify is kicked off here on purpose. The records are seconds old, the
+  // resolver a verify would ask may still hold a negative answer for the name,
+  // and a failed check burns one of Let's Encrypt's per-hostname validation
+  // failures. The row stays pending and the `domains:verify-pending` cron picks
+  // it up after its 10-minute grace window, which is what that window is for.
+  const autoDns = await provisionRecords(
+    ctx.organizationId,
+    domain.hostname,
+    records.records.map((rec) => ({
+      type: rec.type as DnsRecordType,
+      name: rec.name,
+      content: rec.value,
+    })),
+  ).catch((err: unknown) => {
+    console.warn(
+      `[dns] auto-provision failed for ${domain.hostname}:`,
+      safeErrorMessage(err),
+    );
+    return null;
+  });
 
   return {
     domain,
     records,
-    autoDnsProvisioned,
+    // Only when a provider actually manages the zone — absence is the signal to
+    // show the operator the records to paste.
+    ...(autoDns && (autoDns.records.length > 0 || autoDns.reason) ? { autoDns } : {}),
     ...www,
     // Only present when there IS something to say, so callers can spread it and
     // clients can treat its absence as "nothing was already serving this".
@@ -964,6 +992,28 @@ export async function removeDomain(ctx: RequestContext, domainId: string) {
     console.error(`[DOMAIN] Failed to remove route for ${domain.hostname}:`, err);
   }
 
+  // ── Take back the DNS records we wrote, and only those ───────────────────────
+  // Above the service-scoped branch below on purpose: that branch returns early,
+  // so cleanup placed after it never runs for a per-service domain and leaves the
+  // records pointing at this box forever.
+  //
+  // `releaseRecords` deletes only records carrying our ownership marker. Matching
+  // on the name alone is what makes this dangerous: for an apex custom domain
+  // these names ARE the zone apex, where the operator's MX, SPF TXT and CAA live,
+  // and "remove this domain from Openship" must never take their mail with it.
+  const released = await releaseRecords(ctx.organizationId, domain.hostname, [
+    domain.hostname,
+    `_openship-challenge.${domain.hostname}`,
+  ]).catch((err: unknown) => ({ deleted: 0, reason: safeErrorMessage(err) }));
+  if (released.reason) {
+    // Not fatal: a domain must stay removable from Openship when the provider is
+    // unreachable. An orphan record is visible in the zone; a blocked delete isn't.
+    console.warn(
+      `[dns] could not fully clean up records for ${domain.hostname}:`,
+      released.reason,
+    );
+  }
+
   // A service-scoped row is only HALF the routing config — the owning SERVICE row
   // also carries `exposed`/`domain`/`customDomain`/`publicEndpoints`. Deleting
   // just the domain row left the service still configured for that hostname,
@@ -985,32 +1035,6 @@ export async function removeDomain(ctx: RequestContext, domainId: string) {
       routing: serviceRouting,
     });
     return;
-  }
-
-  // ── Best-effort DNS record cleanup on connected DNS provider ──
-  try {
-    const dnsManager = await findDnsManagerForHostname(ctx.organizationId, domain.hostname);
-    if (dnsManager) {
-      const recordsToDelete = await dnsManager.provider.listRecords(
-        dnsManager.credentials,
-        dnsManager.zone.id,
-        { name: domain.hostname },
-      );
-      const challengeRecords = await dnsManager.provider.listRecords(
-        dnsManager.credentials,
-        dnsManager.zone.id,
-        { name: `_openship-challenge.${domain.hostname}` },
-      );
-      for (const r of [...recordsToDelete, ...challengeRecords]) {
-        await dnsManager.provider.deleteRecord(
-          dnsManager.credentials,
-          dnsManager.zone.id,
-          r.id,
-        );
-      }
-    }
-  } catch (err) {
-    console.warn(`[DNS] Failed to clean up DNS records for ${domain.hostname}:`, err);
   }
 
   await repos.domain.remove(domainId);

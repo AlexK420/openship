@@ -1,3 +1,11 @@
+/**
+ * Cloudflare DNS provider.
+ *
+ * Talks to the v4 REST API with a scoped API token (Zone:Read + DNS:Edit). No
+ * account ID needed: zone discovery is a name lookup, and every record call is
+ * zone-scoped.
+ */
+
 import type {
   DnsProvider,
   DnsProviderCredentials,
@@ -6,15 +14,41 @@ import type {
   DnsRecordType,
   DnsZone,
 } from "../types";
-import { DnsApiError } from "../types";
+import {
+  DnsApiError,
+  DnsRecordConflictError,
+  OPENSHIP_RECORD_COMMENT,
+  isOpenshipManaged,
+} from "../types";
 
 const CF_API_BASE = "https://api.cloudflare.com/client/v4";
+
+/** Cloudflare's max page size for DNS record lists. */
+const PER_PAGE = 100;
+
+/**
+ * Hard stop on the pagination loop. A zone with more than 5 000 records at one
+ * name does not exist; this exists so a provider that keeps reporting
+ * `total_pages` can't spin us forever.
+ */
+const MAX_PAGES = 50;
+
+/**
+ * How many domain suffixes we'll probe when looking for the zone.
+ *
+ * The walk is most-specific-first so a Cloudflare subdomain zone wins over its
+ * parent. The cap bounds outbound calls per lookup — real hostnames are 2-5
+ * labels, so it never truncates a genuine candidate, and it stops a long
+ * caller-supplied name from turning one request into hundreds.
+ */
+const MAX_ZONE_CANDIDATES = 8;
 
 interface CfResponse<T> {
   success: boolean;
   errors: Array<{ code: number; message: string }>;
   messages: string[];
   result: T;
+  result_info?: { page: number; per_page: number; count: number; total_count: number; total_pages: number };
 }
 
 interface CfTokenVerifyResult {
@@ -36,49 +70,110 @@ interface CfDnsRecordItem {
   content: string;
   ttl: number;
   proxied: boolean;
+  comment?: string | null;
 }
 
-/** Helper to call Cloudflare REST API with token auth. */
+/** Call the Cloudflare REST API, returning the whole envelope. */
+async function cfRequest<T>(
+  apiToken: string,
+  path: string,
+  options: RequestInit = {},
+): Promise<CfResponse<T>> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiToken}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    ...(options.headers as Record<string, string> | undefined),
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(`${CF_API_BASE}${path}`, { ...options, headers });
+  } catch (err) {
+    // DNS failure, TLS error, connection reset — indistinguishable from a 5xx
+    // to the caller, and just as transient. 503 keeps `isTransient` true so the
+    // caller reports "couldn't check" rather than "not managed here".
+    throw new DnsApiError("cloudflare", 503, err instanceof Error ? err.message : String(err));
+  }
+
+  const text = await res.text();
+  let body: CfResponse<T>;
+  try {
+    body = JSON.parse(text) as CfResponse<T>;
+  } catch {
+    throw new DnsApiError(
+      "cloudflare",
+      res.status,
+      `non-JSON response: ${text.slice(0, 150)}`,
+    );
+  }
+
+  if (!res.ok || !body.success) {
+    const detail = body.errors?.map((e) => e.message).filter(Boolean).join(", ");
+    throw new DnsApiError("cloudflare", res.status, detail || `HTTP ${res.status}`);
+  }
+
+  return body;
+}
+
+/** Call the API and return just the result payload. */
 async function cfFetch<T>(
   apiToken: string,
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const url = `${CF_API_BASE}${path}`;
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiToken}`,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    "User-Agent": "Openship-DNS-Provider",
-    ...(options.headers as Record<string, string> | undefined),
+  return (await cfRequest<T>(apiToken, path, options)).result;
+}
+
+/** Trailing dots and case are not part of a name's identity. */
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase().replace(/\.+$/, "");
+}
+
+function toRecord(r: CfDnsRecordItem): DnsRecord {
+  return {
+    id: r.id,
+    zoneId: r.zone_id,
+    type: r.type as DnsRecordType,
+    name: r.name,
+    content: r.content,
+    ttl: r.ttl,
+    proxied: r.proxied ?? false,
+    ...(r.comment ? { comment: r.comment } : {}),
   };
+}
 
-  const res = await fetch(url, {
-    ...options,
-    headers,
-  });
-
-  const text = await res.text();
-  let body: CfResponse<T>;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw new DnsApiError("cloudflare", res.status, `Non-JSON response from Cloudflare: ${text.slice(0, 150)}`);
+/**
+ * Suffixes to probe for `hostname`, most specific first, bounded.
+ *
+ * "a.b.example.com" → ["a.b.example.com", "b.example.com", "example.com"].
+ * Single-label inputs yield nothing: there is no zone to find for "localhost".
+ */
+function zoneCandidates(hostname: string): string[] {
+  const parts = normalizeName(hostname).split(".").filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i <= parts.length - 2; i++) {
+    out.push(parts.slice(i).join("."));
   }
-
-  if (!res.ok || !body.success) {
-    const errorMsg = body.errors?.map((e) => e.message).join(", ") || `HTTP ${res.status}`;
-    throw new DnsApiError("cloudflare", res.status, errorMsg);
-  }
-
-  return body.result;
+  // Keep the LAST N — the apex end. A deep name's zone is near the apex, so
+  // truncating from the specific end is what preserves the real candidate.
+  return out.slice(-MAX_ZONE_CANDIDATES);
 }
 
 export const cloudflareDnsProvider: DnsProvider = {
   name: "cloudflare",
 
+  descriptor: {
+    name: "cloudflare",
+    displayName: "Cloudflare",
+    description:
+      "Openship writes your domain's DNS records for you, so a new custom domain verifies and gets its certificate without you leaving the page.",
+    requiredScopes: ["Zone:Zone:Read", "Zone:DNS:Edit"],
+    tokenUrl: "https://dash.cloudflare.com/profile/api-tokens",
+  },
+
   async preflight(credentials: DnsProviderCredentials) {
-    if (!credentials.apiToken) {
+    if (!credentials.apiToken.trim()) {
       return { ok: false, reason: "Cloudflare API token is missing." };
     }
 
@@ -88,44 +183,35 @@ export const cloudflareDnsProvider: DnsProvider = {
         "/user/tokens/verify",
         { method: "GET" },
       );
-
       if (result.status === "active") {
-        return { ok: true, detail: "Cloudflare API token is active and valid." };
+        return { ok: true, detail: "Cloudflare API token is active." };
       }
-      return { ok: false, reason: `Cloudflare API token status is: ${result.status}` };
+      return { ok: false, reason: `Cloudflare reports this token as "${result.status}".` };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, reason: `Cloudflare token validation failed: ${msg}` };
+      const reason =
+        err instanceof DnsApiError && err.isAuthFailure
+          ? "Cloudflare rejected this token. Check it was copied in full and has Zone:Read + DNS:Edit."
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      return { ok: false, reason };
     }
   },
 
   async findZone(credentials: DnsProviderCredentials, hostname: string): Promise<DnsZone | null> {
-    const cleanHost = hostname.toLowerCase().replace(/\.+$/, "");
-    const parts = cleanHost.split(".");
+    for (const candidate of zoneCandidates(hostname)) {
+      // Not caught: an auth failure or a rate limit must reach the caller. A
+      // swallowed 429 here becomes "no provider manages this domain", which
+      // reads as a configuration mistake the operator did not make.
+      const zones = await cfFetch<CfZoneItem[]>(
+        credentials.apiToken,
+        `/zones?name=${encodeURIComponent(candidate)}&status=active`,
+        { method: "GET" },
+      );
 
-    // Walk domain labels from most specific to least specific:
-    // e.g. for "a.b.example.com", test "a.b.example.com", "b.example.com", "example.com"
-    for (let i = 0; i <= parts.length - 2; i++) {
-      const candidate = parts.slice(i).join(".");
-      try {
-        const zones = await cfFetch<CfZoneItem[]>(
-          credentials.apiToken,
-          `/zones?name=${encodeURIComponent(candidate)}&status=active`,
-          { method: "GET" },
-        );
-
-        if (zones && zones.length > 0 && zones[0]) {
-          return {
-            id: zones[0].id,
-            name: zones[0].name,
-            status: zones[0].status,
-          };
-        }
-      } catch (err) {
-        if (err instanceof DnsApiError && (err.statusCode === 401 || err.statusCode === 403)) {
-          throw err;
-        }
-        // Continue searching broader domain labels on non-fatal query errors
+      const zone = zones?.[0];
+      if (zone) {
+        return { id: zone.id, name: zone.name, status: zone.status };
       }
     }
 
@@ -137,26 +223,27 @@ export const cloudflareDnsProvider: DnsProvider = {
     zoneId: string,
     filter?: { name?: string; type?: DnsRecordType },
   ): Promise<DnsRecord[]> {
-    const params = new URLSearchParams();
-    params.set("per_page", "100");
-    if (filter?.name) params.set("name", filter.name.toLowerCase().replace(/\.+$/, ""));
-    if (filter?.type) params.set("type", filter.type);
+    const records: DnsRecord[] = [];
 
-    const records = await cfFetch<CfDnsRecordItem[]>(
-      credentials.apiToken,
-      `/zones/${encodeURIComponent(zoneId)}/dns_records?${params.toString()}`,
-      { method: "GET" },
-    );
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const params = new URLSearchParams({ per_page: String(PER_PAGE), page: String(page) });
+      if (filter?.name) params.set("name", normalizeName(filter.name));
+      if (filter?.type) params.set("type", filter.type);
 
-    return (records || []).map((r) => ({
-      id: r.id,
-      zoneId: r.zone_id,
-      type: r.type as DnsRecordType,
-      name: r.name,
-      content: r.content,
-      ttl: r.ttl,
-      proxied: r.proxied ?? false,
-    }));
+      const body = await cfRequest<CfDnsRecordItem[]>(
+        credentials.apiToken,
+        `/zones/${encodeURIComponent(zoneId)}/dns_records?${params.toString()}`,
+        { method: "GET" },
+      );
+
+      records.push(...(body.result ?? []).map(toRecord));
+
+      // Absent result_info means the provider returned everything at once.
+      const totalPages = body.result_info?.total_pages ?? 1;
+      if (page >= totalPages) break;
+    }
+
+    return records;
   },
 
   async upsertRecord(
@@ -164,72 +251,70 @@ export const cloudflareDnsProvider: DnsProvider = {
     zoneId: string,
     input: DnsRecordInput,
   ): Promise<DnsRecord> {
-    const cleanName = input.name.toLowerCase().replace(/\.+$/, "");
-    const existingList = await this.listRecords(credentials, zoneId, {
-      name: cleanName,
-      type: input.type,
-    });
+    const name = normalizeName(input.name);
+    const desiredTtl = input.ttl ?? 1; // 1 = "automatic" in Cloudflare
+    const comment = input.comment ?? OPENSHIP_RECORD_COMMENT;
 
-    const payload = {
-      type: input.type,
-      name: cleanName,
-      content: input.content,
-      ttl: input.ttl ?? 1, // 1 = automatic in Cloudflare
-      proxied: input.proxied ?? false,
-      comment: input.comment ?? "Managed by Openship",
-    };
+    const existing = await this.listRecords(credentials, zoneId, { name, type: input.type });
 
-    // If an existing record of the same name and type is present, update in place
-    if (existingList.length > 0 && existingList[0]) {
-      const existing = existingList[0];
-      // Only make API call if content, ttl, or proxied changed
-      if (
-        existing.content === input.content &&
-        existing.proxied === (input.proxied ?? false) &&
-        (input.ttl === undefined || existing.ttl === input.ttl)
-      ) {
-        return existing;
-      }
+    // More than one record at this name+type is a SET the operator maintains
+    // (round-robin origins, multiple MX). Rewriting one member leaves the
+    // hostname answering with a mix of their origin and ours — worse than not
+    // acting. Ours-if-present, otherwise refuse and say so.
+    const target =
+      existing.length > 1 ? existing.find(isOpenshipManaged) : existing[0];
+
+    if (existing.length > 1 && !target) {
+      throw new DnsRecordConflictError(name, input.type, existing.length);
+    }
+
+    if (target) {
+      // Preserve what we don't manage. Cloudflare proxying in particular is the
+      // operator's choice: defaulting it to false silently takes a zone off the
+      // orange cloud the first time a domain is re-added.
+      const proxied = input.proxied ?? target.proxied;
+
+      const unchanged =
+        target.content === input.content &&
+        target.proxied === proxied &&
+        target.ttl === desiredTtl &&
+        target.comment === comment;
+      if (unchanged) return target;
 
       const updated = await cfFetch<CfDnsRecordItem>(
         credentials.apiToken,
-        `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(existing.id)}`,
+        `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(target.id)}`,
         {
           method: "PUT",
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            type: input.type,
+            name,
+            content: input.content,
+            ttl: desiredTtl,
+            proxied,
+            comment,
+          }),
         },
       );
-
-      return {
-        id: updated.id,
-        zoneId: updated.zone_id,
-        type: updated.type as DnsRecordType,
-        name: updated.name,
-        content: updated.content,
-        ttl: updated.ttl,
-        proxied: updated.proxied ?? false,
-      };
+      return toRecord(updated);
     }
 
-    // Otherwise create a new record
     const created = await cfFetch<CfDnsRecordItem>(
       credentials.apiToken,
       `/zones/${encodeURIComponent(zoneId)}/dns_records`,
       {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          type: input.type,
+          name,
+          content: input.content,
+          ttl: desiredTtl,
+          proxied: input.proxied ?? false,
+          comment,
+        }),
       },
     );
-
-    return {
-      id: created.id,
-      zoneId: created.zone_id,
-      type: created.type as DnsRecordType,
-      name: created.name,
-      content: created.content,
-      ttl: created.ttl,
-      proxied: created.proxied ?? false,
-    };
+    return toRecord(created);
   },
 
   async deleteRecord(
@@ -244,10 +329,9 @@ export const cloudflareDnsProvider: DnsProvider = {
         { method: "DELETE" },
       );
     } catch (err) {
-      // If the record was already deleted (404), treat as idempotent success
-      if (err instanceof DnsApiError && err.statusCode === 404) {
-        return;
-      }
+      // Already gone is the outcome we wanted. Idempotent so a retried cleanup
+      // (or two overlapping ones) doesn't fail the caller.
+      if (err instanceof DnsApiError && err.providerStatus === 404) return;
       throw err;
     }
   },
