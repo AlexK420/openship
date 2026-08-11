@@ -126,7 +126,11 @@ identified by the `Managed by Openship` comment it writes on every record.
 <Callout title="Why ownership is tracked, not inferred" type="info">
 For an apex domain the record name *is* the zone apex, where your `MX`, SPF `TXT` and `CAA` records also
 live. Deleting "every record at this name" would take your mail with it, so Openship deletes only what it
-can prove it wrote. Records you created by hand at the same name are always left in place.
+can prove it wrote.
+
+Connecting a domain does repoint an existing record at that name — that is what connecting it means — but
+repointing is not adoption: Openship leaves such a record's comment untouched, so it never carries the
+`Managed by Openship` marker and removing the domain later will not delete it.
 </Callout>
 
 ## Errors
@@ -135,6 +139,5 @@ can prove it wrote. Records you created by hand at the same name are always left
 |---|---|---|
 | `DNS_UNKNOWN_PROVIDER` | 400 | `provider` is not a name from `GET /api/dns/providers`. |
 | `DNS_PROVIDER_NOT_READY` | 400 | The provider rejected the token during the pre-store check. |
-| `DNS_ZONE_NOT_FOUND` | 404 | No connected provider hosts the requested zone. |
 | `DNS_RECORD_CONFLICT` | 409 | Several records already answer for that name and type and none are Openship's — a round-robin or multi-host set it will not rewrite. |
 | `DNS_API_ERROR` | 502 | The provider's API failed. The upstream status is in the message. |

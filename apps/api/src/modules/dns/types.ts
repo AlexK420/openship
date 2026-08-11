@@ -12,7 +12,10 @@
  *   1. We only ever DELETE records we created. Ownership is proven by the
  *      provider-side comment marker (`OPENSHIP_RECORD_COMMENT`), never by name
  *      matching: a custom domain's apex IS the zone apex, and "delete every
- *      record at the apex" takes the operator's MX and SPF with it.
+ *      record at the apex" takes the operator's MX and SPF with it. Repointing an
+ *      existing record is allowed — that is what connecting a domain means — but
+ *      it does not transfer ownership: an ADOPTED record keeps whatever comment it
+ *      already had, so it is not ours to delete and survives domain removal.
  *   2. "No zone matched" and "could not ask" are different answers. Collapsing a
  *      429 or a 5xx into "not managed here" tells the operator their token is
  *      wrong when it is fine, and silently skips provisioning.
@@ -161,13 +164,6 @@ export class DnsProviderNotReadyError extends AppError {
   ) {
     super(`DNS provider "${provider}" is not ready: ${reason}`, 400, "DNS_PROVIDER_NOT_READY");
     this.name = "DnsProviderNotReadyError";
-  }
-}
-
-export class ZoneNotFoundError extends AppError {
-  constructor(public readonly hostname: string) {
-    super(`No matching DNS zone found for "${hostname}"`, 404, "DNS_ZONE_NOT_FOUND");
-    this.name = "ZoneNotFoundError";
   }
 }
 

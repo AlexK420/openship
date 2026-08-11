@@ -311,14 +311,29 @@ export async function addDomain(
   // and a failed check burns one of Let's Encrypt's per-hostname validation
   // failures. The row stays pending and the `domains:verify-pending` cron picks
   // it up after its 10-minute grace window, which is what that window is for.
+
+  // Only hostnames this call CLAIMED get written: addWwwSibling swallows a
+  // cross-project conflict and returns `wwwError`, so provisioning off the
+  // display list would point `www.<apex>` at this box while another project owns
+  // it — and removeDomain releases only the apex, so nothing here takes it back.
+  // Names via dnsRecordHosts so they can't drift from buildRecords.
+  const provisionable = new Set(
+    [domain.hostname, ...(www?.www ? [www.www.hostname] : [])].flatMap((h) => {
+      const { routeName, txtName } = dnsRecordHosts(h);
+      return [routeName.toLowerCase(), txtName.toLowerCase()];
+    }),
+  );
+
   const autoDns = await provisionRecords(
     ctx.organizationId,
     domain.hostname,
-    records.records.map((rec) => ({
-      type: rec.type as DnsRecordType,
-      name: rec.name,
-      content: rec.value,
-    })),
+    records.records
+      .filter((rec) => provisionable.has(rec.name.toLowerCase()))
+      .map((rec) => ({
+        type: rec.type as DnsRecordType,
+        name: rec.name,
+        content: rec.value,
+      })),
   ).catch((err: unknown) => {
     console.warn(
       `[dns] auto-provision failed for ${domain.hostname}:`,

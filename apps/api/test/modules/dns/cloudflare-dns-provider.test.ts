@@ -4,6 +4,7 @@ import {
   DnsApiError,
   DnsRecordConflictError,
   OPENSHIP_RECORD_COMMENT,
+  isOpenshipManaged,
 } from "../../../src/modules/dns/types";
 
 /** Shape a Cloudflare v4 envelope the way the real API does. */
@@ -290,6 +291,51 @@ describe("cloudflareDnsProvider", () => {
       expect(sawPut).toBe(true);
     });
 
+    // A single pre-existing record is the normal state of an apex being connected,
+    // and it is the operator's. Repointing it is the feature; claiming it is not —
+    // the marker is what releaseRecords deletes on, so stamping it here would make
+    // "remove this domain" destroy a record Openship never created.
+    it("REPOINTS a single unmarked operator record without claiming ownership", async () => {
+      let put: Record<string, unknown> | null = null;
+      global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          put = JSON.parse(init.body as string) as Record<string, unknown>;
+          return cfOk(record({ comment: "prod origin", content: "203.0.113.5" }));
+        }
+        return cfOk([record({ comment: "prod origin" })]);
+      });
+
+      const result = await cloudflareDnsProvider.upsertRecord({ apiToken: "t" }, "zone_123", {
+        type: "A",
+        name: "app.example.com",
+        content: "203.0.113.5",
+      });
+
+      expect(put).toMatchObject({ content: "203.0.113.5", comment: "prod origin" });
+      expect(put?.comment).not.toBe(OPENSHIP_RECORD_COMMENT);
+      expect(isOpenshipManaged(result)).toBe(false);
+    });
+
+    it("leaves a comment-less operator record unmarked when repointing it", async () => {
+      let put: Record<string, unknown> = {};
+      global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          put = JSON.parse(init.body as string) as Record<string, unknown>;
+          return cfOk(record({ comment: null, content: "203.0.113.5" }));
+        }
+        return cfOk([record({ comment: null })]);
+      });
+
+      await cloudflareDnsProvider.upsertRecord({ apiToken: "t" }, "zone_123", {
+        type: "A",
+        name: "app.example.com",
+        content: "203.0.113.5",
+      });
+
+      expect(put.content).toBe("203.0.113.5");
+      expect("comment" in put).toBe(false);
+    });
+
     it("REFUSES to rewrite a record set it does not own", async () => {
       // Two operator-owned A records = a round-robin. Rewriting one member leaves
       // the hostname answering with a mix of their origin and ours.
@@ -395,6 +441,30 @@ describe("cloudflareDnsProvider", () => {
       const err = await cloudflareDnsProvider
         .listRecords({ apiToken: "t" }, "zone_123")
         .catch((e: unknown) => e);
+      expect((err as DnsApiError).isTransient).toBe(true);
+    });
+
+    // This runs inline on POST /domains, so an unbounded call outlives the
+    // operator's own client deadline while it keeps writing records.
+    it("bounds every call with an abort signal", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(cfOk([record()]));
+      global.fetch = fetchMock;
+      await cloudflareDnsProvider.listRecords({ apiToken: "t" }, "zone_123");
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(init?.signal?.aborted).toBe(false);
+    });
+
+    it("reports its own timeout as transient, not as 'no zone'", async () => {
+      global.fetch = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("This operation was aborted"), {
+          name: "AbortError",
+        }));
+      const err = await cloudflareDnsProvider
+        .findZone({ apiToken: "t" }, "app.example.com")
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(DnsApiError);
       expect((err as DnsApiError).isTransient).toBe(true);
     });
   });

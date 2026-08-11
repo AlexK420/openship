@@ -6,10 +6,19 @@
  * written from the Settings page. `domain:*` is the wrong root: those tags are
  * per-domain-resource (`domain:read` on `/domains/:id`), and one token is not
  * scoped to one domain.
+ *
+ * The tag is a TOKEN scope, not an org role — a session user carries whatever
+ * their membership allows, so the two writes also take `requireRole("admin")`,
+ * matching the sidebar's `requiresRole: "admin"` on this tab. Without it any
+ * member could delete the org-wide credential and silently revert every later
+ * domain add to manual records. Attached per-route rather than via `r.use("*")`,
+ * which would run before auth and read an empty context (see
+ * permissions.routes.ts for the same note).
  */
 
 import { Hono } from "hono";
 import { secureRouter } from "../../lib/secure-router";
+import { requireRole } from "../../middleware";
 import * as ctrl from "./dns.controller";
 import { AddDnsCredentialBody, VerifyZoneBody } from "./dns.schema";
 
@@ -40,11 +49,13 @@ r.post(
     body: AddDnsCredentialBody,
     mcp: { description: "Connect a DNS provider credential (Cloudflare API token)." },
   },
+  requireRole("admin"),
   ctrl.addCredential,
 );
 r.delete(
   "/credentials/:id",
   { tag: "settings:admin", mcp: { description: "Disconnect a DNS provider credential." } },
+  requireRole("admin"),
   ctrl.removeCredential,
 );
 r.post(

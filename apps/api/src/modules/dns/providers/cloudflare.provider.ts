@@ -73,6 +73,12 @@ interface CfDnsRecordItem {
   comment?: string | null;
 }
 
+/** api.cloudflare.com should never hang. This runs inline on `POST /domains`:
+ *  zone discovery walks up to MAX_ZONE_CANDIDATES suffixes per credential and
+ *  then lists+writes once per record, so an unbounded call holds the operator's
+ *  request open long past the point their client gave up on it. */
+const CF_FETCH_TIMEOUT_MS = 15_000;
+
 /** Call the Cloudflare REST API, returning the whole envelope. */
 async function cfRequest<T>(
   apiToken: string,
@@ -86,17 +92,30 @@ async function cfRequest<T>(
     ...(options.headers as Record<string, string> | undefined),
   };
 
+  // The deadline covers reading the body, not just the handshake: a response that
+  // never finishes streaming stalls the caller exactly like one that never arrives.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CF_FETCH_TIMEOUT_MS);
+
   let res: Response;
+  let text: string;
   try {
-    res = await fetch(`${CF_API_BASE}${path}`, { ...options, headers });
+    res = await fetch(`${CF_API_BASE}${path}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+    text = await res.text();
   } catch (err) {
-    // DNS failure, TLS error, connection reset — indistinguishable from a 5xx
-    // to the caller, and just as transient. 503 keeps `isTransient` true so the
-    // caller reports "couldn't check" rather than "not managed here".
+    // DNS failure, TLS error, connection reset, or our own timeout —
+    // indistinguishable from a 5xx to the caller, and just as transient. 503 keeps
+    // `isTransient` true so the caller reports "couldn't check" rather than "not
+    // managed here".
     throw new DnsApiError("cloudflare", 503, err instanceof Error ? err.message : String(err));
+  } finally {
+    clearTimeout(timer);
   }
 
-  const text = await res.text();
   let body: CfResponse<T>;
   try {
     body = JSON.parse(text) as CfResponse<T>;
@@ -253,7 +272,7 @@ export const cloudflareDnsProvider: DnsProvider = {
   ): Promise<DnsRecord> {
     const name = normalizeName(input.name);
     const desiredTtl = input.ttl ?? 1; // 1 = "automatic" in Cloudflare
-    const comment = input.comment ?? OPENSHIP_RECORD_COMMENT;
+    const ownMarker = input.comment ?? OPENSHIP_RECORD_COMMENT;
 
     const existing = await this.listRecords(credentials, zoneId, { name, type: input.type });
 
@@ -273,6 +292,12 @@ export const cloudflareDnsProvider: DnsProvider = {
       // operator's choice: defaulting it to false silently takes a zone off the
       // orange cloud the first time a domain is re-added.
       const proxied = input.proxied ?? target.proxied;
+
+      // Repointing a record the operator wrote is the point of connecting a domain;
+      // CLAIMING it is not. `releaseRecords` deletes on our marker, so stamping it
+      // here would make "remove this domain" destroy a record we never created and
+      // whose original value we don't keep. Adopt the value, leave the ownership.
+      const comment = isOpenshipManaged(target) ? ownMarker : target.comment;
 
       const unchanged =
         target.content === input.content &&
@@ -299,6 +324,8 @@ export const cloudflareDnsProvider: DnsProvider = {
       return toRecord(updated);
     }
 
+    // Nothing was there, so this record IS ours — mark it, and only this branch
+    // does, which is what makes the marker mean "Openship created this".
     const created = await cfFetch<CfDnsRecordItem>(
       credentials.apiToken,
       `/zones/${encodeURIComponent(zoneId)}/dns_records`,
@@ -310,7 +337,7 @@ export const cloudflareDnsProvider: DnsProvider = {
           content: input.content,
           ttl: desiredTtl,
           proxied: input.proxied ?? false,
-          comment,
+          comment: ownMarker,
         }),
       },
     );
