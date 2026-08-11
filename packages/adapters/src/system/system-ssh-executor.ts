@@ -27,7 +27,7 @@ import {
   sshTarget,
 } from "./system-ssh";
 import { openSystemSshReverseTunnel } from "./reverse-tunnel";
-import { SshDisconnectedError } from "./errors";
+import { commandForError, SshDisconnectedError } from "./errors";
 
 const execFileAsync = promisify(execFile);
 
@@ -224,7 +224,7 @@ export class SystemSshExecutor implements CommandExecutor {
     const timeout = opts?.timeout ?? 30_000;
     const res = await this.runSsh(SystemSshExecutor.ENV_PREFIX + command, { timeout });
     if (res.timedOut) {
-      throw new Error(`Command timed out after ${timeout}ms: ${command}`);
+      throw new Error(`Command timed out after ${timeout}ms: ${commandForError(command)}`);
     }
     if (res.code !== 0) {
       // 255 is an SSH-level failure (auth/connection); map auth specially so

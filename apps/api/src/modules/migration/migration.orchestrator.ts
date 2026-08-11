@@ -537,6 +537,26 @@ class MigrationOrchestratorImpl {
       // proceed to `succeeded`. (Same-server has no killable transfer process.)
       this.throwIfCancelled(id);
 
+      // Unify with a native deploy: join the reused (attach-live) containers to
+      // the project network (row name + custom alias) so east-west resolution
+      // works exactly as it does for a deployed service. Runs for EVERY attach
+      // run, not just ones that also deploy — a pure-reuse project used to end up
+      // with no `openship-<slug>` network at all, so a service added later
+      // couldn't resolve the reused ones by name. Must precede the build below, so
+      // a freshly-built service resolves them from its first start (web →
+      // postgres:5432); the deploy's ensureServiceGroup reuses this network.
+      // Best-effort — a join failure must never block the migration.
+      if (attachRows.length > 0) {
+        await joinReusedContainersToGroup({
+          serverId: targetServerId,
+          organizationId,
+          slug: adopt.slug,
+          attach: attachChosen,
+          serviceRows: attachRows,
+          renames: adopt.renames,
+        }).catch((err) => log(`network join skipped: ${safeErrorMessage(err)}`));
+      }
+
       // Run the native deploy when there are containers to move (cross-server /
       // copy) OR new repo services to build/pull. Attach-live services are
       // disabled during the build (below) so they stay zero-downtime; the deploy
@@ -655,21 +675,6 @@ class MigrationOrchestratorImpl {
         await this.transition(id, "deploying");
         for (const r of attachRows) {
           await repos.service.update(r.id, { enabled: false });
-        }
-        // Unify with a native deploy: join the reused (attach-live) containers to
-        // the project network (alias = row name) BEFORE the build, so a freshly-
-        // built service resolves them by name from its first start (web →
-        // postgres:5432). The deploy's ensureServiceGroup reuses this network.
-        // Best-effort — a join failure must never block the migration.
-        if (attachRows.length > 0) {
-          await joinReusedContainersToGroup({
-            serverId: targetServerId,
-            organizationId,
-            slug: adopt.slug,
-            attach: attachChosen,
-            serviceRows: attachRows,
-            renames: adopt.renames,
-          }).catch((err) => log(`network join skipped: ${safeErrorMessage(err)}`));
         }
         log(`deploying to target server…`);
         try {

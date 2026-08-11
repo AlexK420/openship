@@ -8,6 +8,7 @@ import { getRequestContext } from "../../lib/request-context";
 import { param } from "../../lib/controller-helpers";
 import {
   getAppCatalog,
+  getAppHostFit,
   installApp,
   findOpenAppDraft,
   type InstallAppRoute,
@@ -43,6 +44,23 @@ export async function catalogEntry(c: Context) {
   const template = await getTemplateForOrg(ctx.organizationId, param(c, "id"));
   if (!template) return c.json({ error: "Unknown app" }, 404);
   return c.json({ data: template, draft: await findOpenAppDraft(ctx, template.id) });
+}
+
+/**
+ * GET /api/apps/catalog/:id/host-fit — does the chosen destination meet what this
+ * app declares it needs? Advisory: the wizard shows the shortfall next to the
+ * destination picker, and deploy preflight is what actually refuses. Query:
+ * `deployTarget` (server|cloud) and `serverId`. There is no "local": whether the
+ * destination is this box is derived from the server row, not claimed by the caller.
+ */
+export async function hostFit(c: Context) {
+  const ctx = getRequestContext(c);
+  return c.json({
+    data: await getAppHostFit(ctx, param(c, "id"), {
+      deployTarget: c.req.query("deployTarget") || undefined,
+      serverId: c.req.query("serverId") || undefined,
+    }),
+  });
 }
 
 /** POST /api/apps/custom — validate + store an uploaded app JSON as a per-org

@@ -115,10 +115,6 @@
     "noServers": "Nenhum servidor configurado ainda - adicione um pelo seletor de implantação.",
     "clearDefault": "Limpar padrão (perguntar sempre)",
     "targets": {
-      "local": {
-        "label": "Esta Máquina",
-        "desc": "Docker / runtime local"
-      },
       "server": {
         "label": "Meu Servidor",
         "desc": "Um servidor SSH configurado"
@@ -130,8 +126,7 @@
     },
     "labelFor": {
       "yourServer": "seu servidor",
-      "cloud": "Openship Cloud",
-      "local": "Esta Máquina"
+      "cloud": "Openship Cloud"
     },
     "toast": {
       "pickServer": "Escolha um servidor primeiro",

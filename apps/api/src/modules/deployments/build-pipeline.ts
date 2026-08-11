@@ -9,6 +9,7 @@ import {
   normalizeServiceLabel,
 } from "@repo/core";
 import { ensureEdgeChallengeReady } from "../../lib/edge-challenge";
+import { repairEdgeVhosts } from "../../lib/edge-vhost-repair";
 import type {
   BuildResult,
   CommandExecutor,
@@ -19,6 +20,7 @@ import type {
   LogEntry,
   PromptUserFn,
   ResourceConfig,
+  RuntimeAdapter,
 } from "@repo/adapters";
 import {
   BareRuntime,
@@ -26,9 +28,12 @@ import {
   CloudRuntime,
   DockerRuntime,
   STATIC_RELEASE_BASE,
+  sharedMountExecutor,
   resolveStaticOutputPath,
   ensurePortAvailable,
   allocateHostPort,
+  pickHostPort,
+  isHostChannelUnavailableError,
   runDeployPipeline,
   isMultiServiceRuntime,
   waitForReady,
@@ -36,11 +41,14 @@ import {
 } from "@repo/adapters";
 import { platform } from "../../lib/controller-helpers";
 import { resolveUpstreamUrl, resolveRouteStrategy } from "../../lib/upstream-url";
+import { compileProjectRoutingFields } from "../../lib/project-routing-fields";
 import { webhookProxyTarget } from "../../config";
 import {
+  disposeRuntime,
   resolveDeploymentRuntime,
   resolveDeploymentPlatform,
   resolveEffectiveTarget,
+  hostChannelDeployNotice,
 } from "../../lib/deployment-runtime";
 import { ensureRoutingReady } from "../../lib/edge-reconcile";
 import { sshManager } from "../../lib/ssh-manager";
@@ -310,6 +318,8 @@ async function reuseRetainedArtifact(opts: {
   runtime: { name: string };
   buildSessionId: string;
   targetExecutor?: CommandExecutor | null;
+  /** Reaches the static release tree; see `sharedMountExecutor`. */
+  staticExecutor?: CommandExecutor | null;
   logger: BuildLogger;
 }): Promise<BuildResult | null> {
   const { snapshot, runtime, buildSessionId, targetExecutor, logger } = opts;
@@ -334,7 +344,11 @@ async function reuseRetainedArtifact(opts: {
 
   const staticDir = pinnedStaticDir(snapshot);
   if (staticDir) {
-    const exists = await (targetExecutor?.exists(staticDir) ?? Promise.resolve(false));
+    // A pin we cannot VERIFY is a pin we don't trust: rebuild rather than fail the
+    // deploy, which is what an executor that can't reach the tree at all would do.
+    const exists = await (opts.staticExecutor ?? targetExecutor)
+      ?.exists(staticDir)
+      .catch(() => false);
     return exists ? reuse(staticDir) : gone(staticDir);
   }
 
@@ -442,6 +456,10 @@ export async function finalizeComposeDeploy(opts: {
 async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSessionId: string) {
   const plat = platform();
   let { runtime, routing, ssl, system } = plat;
+  // Every transport THIS deploy opens, released in the `finally` at the bottom.
+  // `plat`'s own runtime is the process-wide singleton and is deliberately never
+  // added: disposing it would close the control plane's own Docker transport.
+  const transports = new Set<RuntimeAdapter>();
 
   const snapshot = dep.meta as DeploymentConfigSnapshot | null;
   if (!snapshot) {
@@ -518,6 +536,7 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
     ssl = resolved.platform.ssl;
     system = resolved.platform.system;
     ctx.runtime = runtime;
+    if (runtime !== plat.runtime) transports.add(runtime);
     // Persist the serve/lifecycle identity ONCE (no undo): bare for static
     // file-serve, docker for services, unchanged otherwise.
     if (runtimeModes.serveRuntimeMode !== undefined) {
@@ -534,6 +553,9 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
 
     const usesManagedRouting = resolved.usesManagedRouting;
     const targetExecutor: CommandExecutor | null = resolved.platform.executor;
+    // Static releases live on a mount the api container shares 1:1 with its host,
+    // so on the local box they need no host channel — see `sharedMountExecutor`.
+    const staticExecutor = await sharedMountExecutor(resolved.platform);
 
     // Surface the resolved deploy path so the operator can SEE where it lands —
     // in particular the self-hosted sandbox-vs-direct runtime, the choice that
@@ -549,6 +571,13 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
               : "direct (host process)"
         }\n`,
     );
+
+    // Say ONCE, next to the target it describes, that this box can't drive its host
+    // (#509). Deliberately outside any `routeStrategy` branch: the port-scan hint it
+    // replaces only appeared under loopback-port, which is half of why a demoted
+    // channel reached the first crashed container unannounced. Never gates the deploy.
+    const hostNotice = hostChannelDeployNotice(targetExecutor);
+    if (hostNotice) logger.log(`${hostNotice}\n`, "warn");
 
     await repos.deployment.updateBuildSession(buildSessionId, {
       status: "building",
@@ -620,6 +649,12 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
       snapshot.buildStrategy,
       { deployTarget: snapshot.deployTarget },
     );
+    // Written BACK, not just held locally. Without this the resolved value reached
+    // only the readers in this function (clone planning), while `createBuildConfig`
+    // further down copies `snapshot.buildStrategy` verbatim into the adapter's
+    // BuildConfig — so the clone plan saw "server" and the runtime saw the frozen
+    // "local". One snapshot, one answer.
+    snapshot.buildStrategy = buildStrategy;
     const buildEnv = buildScopedEnvVars(envMap);
 
     // Resolve a fresh GitHub token for cloning private repos.
@@ -879,6 +914,7 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
           ssl,
           system,
           executor: targetExecutor,
+          localHost: resolved.platform.localHost,
           usesManagedRouting,
           logger,
           ctx,
@@ -952,7 +988,14 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
     // clone or relay a credential for (see reuseRetainedArtifact). A pin is a
     // hint, never a guarantee — if the artifact is gone we build from source.
     const buildResult =
-      (await reuseRetainedArtifact({ snapshot, runtime, buildSessionId, targetExecutor, logger })) ??
+      (await reuseRetainedArtifact({
+        snapshot,
+        runtime,
+        buildSessionId,
+        targetExecutor,
+        staticExecutor,
+        logger,
+      })) ??
       (await buildFromSource());
     provisioned.imageRef = buildResult.imageRef;
 
@@ -989,6 +1032,7 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
       ssl,
       system,
       targetExecutor,
+      staticExecutor,
       baseTarget: plat.target,
       effectiveTarget: resolved.effectiveTarget,
       serverId: resolved.serverId,
@@ -999,6 +1043,7 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
       prodResources,
       logger,
       deployRouting,
+      transports,
     };
 
     // deployMode is derived from runtime.name === "cloud", so the cast is sound.
@@ -1014,6 +1059,12 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
     // outcome was recorded is bookkeeping: reporting it as a failure would
     // invert a working deploy and tear its containers down.
     await reportPipelineError(ctx, message, logger);
+  } finally {
+    // The deploy is over either way — release the loopback bridges it opened.
+    // Safe here and not earlier: the readiness/stabilization gate runs INLINE as
+    // the pipeline's healthCheck hook, so nothing still needs a transport once
+    // this function settles.
+    for (const rt of transports) disposeRuntime(rt);
   }
 }
 
@@ -1028,6 +1079,8 @@ interface DeployPhaseInputs {
   ssl: Awaited<ReturnType<typeof platform>>["ssl"];
   system: Awaited<ReturnType<typeof platform>>["system"];
   targetExecutor: CommandExecutor | null;
+  /** Reaches the static release tree; see `sharedMountExecutor`. */
+  staticExecutor: CommandExecutor | null;
   /** Base platform target ("desktop" | "selfhosted" | "cloud") + the resolved
    *  per-deployment target/server — used to gate the `.openship` manifest write
    *  to desktop-mode server deploys only. */
@@ -1043,6 +1096,17 @@ interface DeployPhaseInputs {
   /** Build/deploy routing decided once from the resolved runtime (static-sandbox /
    *  static-file-serve / server / static-edge) — replaces scattered `instanceof`. */
   deployRouting: DeployRouting;
+  /**
+   * Transports this deploy opened, released together when it ends.
+   *
+   * A deploy resolves MORE than one runtime — its own target platform, plus the
+   * PREVIOUS deployment's runtime to deactivate the old containers — and each one
+   * for a remote server binds its own Docker-over-SSH loopback bridge that only
+   * `dispose()` closes. A phase can't release its own (a throw would skip it, and
+   * `executeBuildAndDeploy`'s catch can't see phase locals), so they're collected
+   * here and released in that function's `finally`.
+   */
+  transports: Set<RuntimeAdapter>;
 }
 
 /** Static edge deploy via CloudRuntime (Oblien Pages). */
@@ -1281,6 +1345,13 @@ function buildDeployEnvironment(
                 serverId: phase.serverId ?? undefined,
                 onLog: (m) => logger.log(m, "warn"),
               });
+              // Bring the box's OTHER vhosts up to this build's shape while we're here.
+              // This project's own routes are rewritten by the deploy anyway; the ones
+              // that need it are the projects nobody is redeploying, which is where a
+              // generated-config fix otherwise never lands. No-op once converged.
+              await repairEdgeVhosts(phase.routing, {
+                onLog: (m, level) => logger.log(m, level ?? "info"),
+              });
             } catch (err) {
               logger.log(
                 `Edge/routing setup failed — deploy continues; the app runs on its port and routing is retried later: ${safeErrorMessage(err)}\n`,
@@ -1359,15 +1430,15 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
   // of how they were BUILT — a Docker sandbox (server/self-hosted, the common
   // case) or bare (Docker-less desktop "This Machine"). A dedicated bare
   // file-serve runtime rooted at the edge-shared STATIC_RELEASE_BASE promotes
-  // the built dir into a release and hands the edge a `root`. Its executor is
-  // the platform executor, which is exactly the FS the build wrote to (SSH for a
-  // remote server; local for a local / docker-edge host where the extract landed
-  // on the shared /opt/openship/static mount).
+  // the built dir into a release and hands the edge a `root`. Its executor is the
+  // one that reaches that tree — SSH for a remote server, LOCAL for the local box,
+  // where /opt/openship/static is the one bind mount the api container, the edge and
+  // the host all see, so no host channel is in the path (`sharedMountExecutor`).
   const isStaticFileServe = phase.deployRouting.deployMode === "static-file-serve";
   const staticServeRuntime = isStaticFileServe
     ? new BareRuntime({
         workDir: STATIC_RELEASE_BASE,
-        executor: phase.targetExecutor ?? undefined,
+        executor: phase.staticExecutor ?? undefined,
       })
     : null;
   // Where the static doc-root lives: "" when a Docker sandbox build already
@@ -1575,9 +1646,32 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
       // The deploy's own executor when it has one; otherwise the POOLED host
       // channel — never a bare `createHostExecutor()`, which builds a fresh
       // SSH connection per call and leaked one sshd session each time (#291).
-      pinnedHostPort = phase.targetExecutor
+      const allocation = phase.targetExecutor
         ? await allocateHostPort(phase.targetExecutor, { avoid })
-        : await sshManager.withHostExecutor((exec) => allocateHostPort(exec, { avoid }));
+        : // No executor for this target, so the pooled host channel is the only way to
+          // read the box's live ports. When that channel is unusable, degrade to the
+          // SAME answer scanPorts gives an executor it can't reach — "couldn't scan",
+          // pick from `avoid` alone — instead of failing the deploy. Docker publishes
+          // the port either way; refusing to deploy over an unreadable scan would make
+          // a blocked channel take down container deploys it never touches (#490).
+          await sshManager
+            .withHostExecutor((exec) => allocateHostPort(exec, { avoid }))
+            .catch((e) => {
+              if (!isHostChannelUnavailableError(e)) throw e;
+              return { port: pickHostPort(new Set(), { avoid }), scanned: false };
+            });
+      pinnedHostPort = allocation.port;
+      // A scan that couldn't RUN is not "nothing is listening". Say so here or the
+      // bind failure that follows blames Docker for a host we simply couldn't read
+      // — the #490 pattern, where the cause never appears in the log.
+      if (!allocation.scanned) {
+        logger.log(
+          `Couldn't read live port occupancy on the target, so ${pinnedHostPort} avoids only ` +
+            `the ports pinned to other projects. If publishing it fails as "already allocated", ` +
+            `this is why — check that Openship can reach this host (Servers → this box).\n`,
+          "warn",
+        );
+      }
       await repos.project
         .update(project.id, { hostPort: pinnedHostPort })
         .catch((err) => logger.log(`Couldn't persist host port ${pinnedHostPort}: ${safeErrorMessage(err)}\n`, "warn"));
@@ -1633,11 +1727,17 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
   const prevDep = project.activeDeploymentId
     ? await repos.deployment.findById(project.activeDeploymentId)
     : null;
+  // A DISTINCT platform from this deploy's, so on a remote server it binds its own
+  // bridge. Registered rather than released here: `deployEnv` closes over it to
+  // deactivate/destroy the old containers, so it has to outlive this line — and the
+  // `=== runtime` fallback must never be disposed, since that IS the live deploy's
+  // transport (the Set dedupes it away).
   const previousRuntime = prevDep?.containerId
     ? await resolveDeploymentRuntime(prevDep)
         .then((r) => r.runtime)
         .catch(() => runtime)
     : runtime;
+  if (previousRuntime !== runtime) phase.transports.add(previousRuntime);
 
   // buildProjectRouteDomains turns the project's public endpoints (and
   // existing domain rows) into concrete routes. We persist a domain
@@ -1795,6 +1895,19 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
           ? { webhookDomain: project.webhookDomain, webhookProxy: webhookProxyTarget }
           : {}),
         ...(proxySettings ? { proxy: proxySettings } : {}),
+        // The project's vercel.json rules. Required, not optional: registerRoute REPLACES
+        // the vhost, so without them this deploy DELETES any redirects/headers/cleanUrls a
+        // domain edit or "Retry routing" had installed — a rule that worked would stop
+        // working on the next push, silently.
+        //
+        // Skips are logged here (and nowhere else on this path): this is the single-app /
+        // static shape, so no composite planner runs afterwards to resolve a path rewrite
+        // against a real backend — what the compiler refused is genuinely not live, and the
+        // deploy log is where someone looks after editing vercel.json. Same wording the
+        // compose composite path uses, so there is one phrase to recognise.
+        ...compileProjectRoutingFields(project.routingConfig, (note) =>
+          logger.log(`vercel.json rule not applied — ${note}\n`, "warn"),
+        ),
       },
       promptUser: (prompt) => sessionManager.promptUser(dep.id, prompt),
     },

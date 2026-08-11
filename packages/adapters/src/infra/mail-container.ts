@@ -96,5 +96,10 @@ export const MAIL_DB_PORT = 5432;
 export const MAIL_HOST_PATHS = {
   saslPasswd: `${MAIL_HOST_STATE_DIR}/config/postfix/sasl_passwd`,
   senderRelayhost: `${MAIL_HOST_STATE_DIR}/config/postfix/sender_relayhost`,
+  // Per-nexthop TLS policy. Only split ("selected"-scope) relaying writes it: the
+  // relay hop must be `encrypt` so SASL credentials never cross a plaintext
+  // connection, while direct-to-MX delivery for the un-relayed domains stays
+  // opportunistic. A GLOBAL smtp_tls_security_level can't express both.
+  relayTlsPolicy: `${MAIL_HOST_STATE_DIR}/config/postfix/openship_tls_policy`,
   amavisUserConf: `${MAIL_HOST_STATE_DIR}/config/amavis/50-user`,
 } as const;

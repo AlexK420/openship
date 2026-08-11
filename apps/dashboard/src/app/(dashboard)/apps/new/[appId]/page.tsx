@@ -11,6 +11,7 @@ import {
   Globe,
   Lock,
   AlertTriangle,
+  Cpu,
 } from "lucide-react";
 import {
   getAppTemplate,
@@ -29,13 +30,16 @@ import {
   normalizeCustomHostname,
   normalizeServiceLabel,
   slugify,
+  formatCpuCores,
+  formatMemoryMb,
+  hasMinResources,
   type AppSettingField,
   type AppEndpoint,
   type InstallPhaseId,
   type InstallPhaseStatus,
 } from "@repo/core";
 import { appsApi, deployApi, servicesApi, projectsApi } from "@/lib/api";
-import type { InstallAppRoute } from "@/lib/api/apps";
+import type { AppHostFitView, InstallAppRoute } from "@/lib/api/apps";
 import { type Service } from "@/lib/api/services";
 import { connectionsApi } from "@/lib/api/connections";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -62,10 +66,15 @@ import { useToast } from "@/context/ToastContext";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { usePlatform } from "@/context/PlatformContext";
 import { useCloud } from "@/context/CloudContext";
+import { useModal } from "@/context/ModalContext";
+import { LocalDeployComingSoonModal } from "@/components/LocalDeployComingSoonModal";
+import { useLocalDeployGate } from "@/hooks/useLocalDeployGate";
 import { defaultDomainType } from "@/lib/default-domain-type";
 import { OptionCard } from "@/app/(dashboard)/(deployment)/deploy/[slug]/components/DeployTargetStep";
 import { AppLogo } from "@/components/AppLogo";
 import { VerifiedBadge } from "@/components/apps/VerifiedBadge";
+import { HostingBadge } from "@/components/apps/HostingBadge";
+import { UnverifiedBadge } from "@/components/apps/UnverifiedBadge";
 import { PageContainer } from "@/components/ui/PageContainer";
 import { encodeProjectSlug } from "@/utils/repoSlug";
 import { parseContainerPort } from "@/utils/compose-ports";
@@ -248,6 +257,9 @@ export default function AppInstallPage() {
   // default the install to a port-only (no-domain) deploy instead of letting
   // preflight hard-fail. Forced true on SaaS/native (CloudContext).
   const { connected: cloudConnected, requireCloud } = useCloud();
+  const { showModal, hideModal } = useModal();
+  // Desktop mode: apps can't run on this machine yet — see useLocalDeployGate.
+  const localDeployGate = useLocalDeployGate();
 
   const appId = String(params?.appId ?? "");
   const searchParams = useSearchParams();
@@ -375,6 +387,60 @@ export default function AppInstallPage() {
       return cur?.kind === "http" ? { ...p, [key]: { ...cur, ep } } : p;
     });
   const [destination, setDestination] = useState<AppDestination | null>(null);
+
+  // Header description: clamped to two lines with a More/Less toggle, because a
+  // heavy app's blurb runs long enough to push the form below the fold.
+  //
+  // Whether the toggle appears is MEASURED (scrollHeight vs clientHeight), not
+  // guessed from a character count — a count that's right at this width offers
+  // "More" on a description that isn't clamped, or worse, hides truncated text on
+  // a narrow viewport. Re-measured on resize for the same reason. The measurement
+  // is skipped while expanded (where the two heights are equal by definition, so
+  // measuring would clear the flag and remove the way back).
+  const descRef = useRef<HTMLParagraphElement | null>(null);
+  const [descExpanded, setDescExpanded] = useState(false);
+  const [descClamped, setDescClamped] = useState(false);
+  useEffect(() => {
+    const el = descRef.current;
+    if (!el || descExpanded) return;
+    const measure = () => setDescClamped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [descExpanded, template?.description]);
+
+  // Does the chosen destination meet what the app declares it needs? Only asked
+  // for an app that declares something (almost none do) — the answer is the
+  // machine's measured capacity, and the fit verdict is computed server-side by
+  // the same function deploy preflight uses, so the notice below and the refusal
+  // can't disagree. Advisory: Install stays enabled and preflight is the gate.
+  const declaresResources = hasMinResources(template?.minResources);
+  const [hostFit, setHostFit] = useState<AppHostFitView | null>(null);
+  useEffect(() => {
+    const appId = template?.id;
+    if (!declaresResources || !appId || !destination) {
+      setHostFit(null);
+      return;
+    }
+    let live = true;
+    void appsApi
+      .hostFit(appId, {
+        deployTarget: destination.deployTarget,
+        serverId: destination.deployTarget === "server" ? destination.serverId : undefined,
+      })
+      .then((res) => {
+        if (live) setHostFit(res.data);
+      })
+      .catch(() => {
+        // An advisory read — a failure means no notice, never a blocked install.
+        if (live) setHostFit(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [declaresResources, template?.id, destination]);
+
   // Project name shown in Openship. Editable for a fresh install (a second
   // install of the same app auto-suffixes server-side, e.g. "Convex 2"); hidden
   // when reopening an existing draft, which already has its name.
@@ -485,19 +551,18 @@ export default function AppInstallPage() {
   };
 
   /** Headline URL for the done screen = the primary web endpoint. Port-only →
-   *  host:port (server host / localhost; cloud has no host binding → no link);
-   *  domain → the persisted public host. Reads the SAME derivation the poll used. */
+   *  `serverHost:port` (cloud has no host binding → no link); domain → the
+   *  persisted public host. Reads the SAME derivation the poll used.
+   *
+   *  A server row is the only destination that yields a host, and that's why the
+   *  picker no longer offers a "this machine" card: it carried no `sshHost`, so a
+   *  port-only install on a VPS advertised `http://localhost:<port>`. */
   const deriveLiveUrl = async (config?: {
     publicEndpoints?: Array<{ domain?: string; customDomain?: string; domainType?: string }>;
   }) => {
     const primaryState = primaryHttp ? expo[endpointKey(primaryHttp)] : undefined;
     if (primaryState?.kind === "http" && primaryState.mode === "port") {
-      const host =
-        destination?.deployTarget === "server"
-          ? destination.serverHost
-          : destination?.deployTarget === "local"
-            ? "localhost"
-            : null;
+      const host = destination?.deployTarget === "server" ? destination.serverHost : null;
       // Port-only reachability is the PUBLISHED host port, not the container port
       // (they differ when the template remaps, e.g. 8203:80).
       const reachablePort = primaryHttp ? hostPortForEndpoint(template?.services, primaryHttp) : 0;
@@ -817,6 +882,34 @@ export default function AppInstallPage() {
     if (destination?.deployTarget === "cloud" && !cloudConnected) {
       if (!(await requireCloud("cloud-deploy-target"))) return;
     }
+    // TODO: temporary desktop gate (useLocalDeployGate). Desktop mode controls
+    // remote servers; an app can't run on this machine yet. Every install here is
+    // a new one (a draft isn't deployed), so there's nothing to strand.
+    if (
+      localDeployGate.blocks({
+        deployTarget: destination?.deployTarget,
+        serverId: destination?.deployTarget === "server" ? destination.serverId : undefined,
+      })
+    ) {
+      let modalId = "";
+      modalId = showModal({
+        customContent: (
+          <LocalDeployComingSoonModal
+            action="install"
+            onClose={() => hideModal(modalId)}
+            onServerAdded={(server) =>
+              setDestination({
+                deployTarget: "server",
+                serverId: server.id,
+                serverHost: server.sshHost,
+              })
+            }
+          />
+        ),
+        maxWidth: "460px",
+      });
+      return;
+    }
     const routes = await validatedRouteChoices();
     if (!routes) return;
     setBusy(true);
@@ -1038,30 +1131,42 @@ export default function AppInstallPage() {
           {w.back}
         </button>
 
-        {/* Header */}
+        {/* Header. The caveats that used to sit under this as two full-width
+            yellow banners now hang off the chips beside the name — see
+            HostingBadge / UnverifiedBadge. `shrink-0` on the logo tile is
+            load-bearing: it's a flex child next to a multi-line description, so
+            without it the 48px tile gets squeezed narrower than it is tall, and the
+            image inside — itself a row flex item, so also shrinkable — narrows with
+            it and the mark reads as stretched. (`AppLogo` already applies
+            `object-contain`; the fix is the box, not the fit.) */}
         <div className="flex items-center gap-4">
-          <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">
-            <AppLogo appId={appId} className="size-7 object-contain" />
+          <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-muted/60">
+            <AppLogo appId={appId} className="size-7" />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-semibold text-foreground">{template.name}</h1>
               {template.verified && <VerifiedBadge iconClassName="size-[18px]" />}
+              <HostingBadge hosting={template.hosting} />
+              {template.custom && <UnverifiedBadge />}
             </div>
-            <p className="text-sm text-muted-foreground">{template.description}</p>
+            <p
+              ref={descRef}
+              className={`text-sm text-muted-foreground ${descExpanded ? "" : "line-clamp-2"}`}
+            >
+              {template.description}
+            </p>
+            {(descClamped || descExpanded) && (
+              <button
+                type="button"
+                onClick={() => setDescExpanded((v) => !v)}
+                className="mt-0.5 text-xs font-medium text-muted-foreground/80 transition-colors hover:text-foreground"
+              >
+                {descExpanded ? w.descLess : w.descMore}
+              </button>
+            )}
           </div>
         </div>
-
-        {/* Unverified (custom) apps: a plain-language trust warning before the form. */}
-        {!template.verified && (
-          <div className="mt-6 flex items-start gap-2.5 rounded-xl border border-warning/40 bg-warning/[0.05] px-4 py-3 text-sm text-warning">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-            <span>
-              <span className="font-semibold">Custom app — not verified.</span> It deploys images you
-              provided, not an official reviewed app. Review the definition and only install apps you trust.
-            </span>
-          </div>
-        )}
 
         {/* Two columns: what the app needs (left) + where it goes & the deploy
             action (right, sticky). Mirrors the deploy wizard's config/sidebar
@@ -1288,9 +1393,64 @@ export default function AppInstallPage() {
             <div className="rounded-2xl border border-border/50 bg-card p-5">
               <h3 className="text-sm font-semibold text-foreground">{w.destinationTitle}</h3>
               <p className="mt-0.5 text-xs text-muted-foreground">{w.destinationHint}</p>
+
+              {/* State the app's own floor before the picker, so the choice is
+                  informed rather than corrected afterwards. */}
+              {declaresResources && (
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Cpu className="size-3.5 shrink-0" />
+                  <span className="font-medium text-foreground">{w.needsTitle}:</span>
+                  {[
+                    template.minResources?.memoryMb
+                      ? interpolate(w.needsMemory, {
+                          value: formatMemoryMb(template.minResources.memoryMb),
+                        })
+                      : null,
+                    template.minResources?.cpuCores
+                      ? interpolate(w.needsCpu, {
+                          value: formatCpuCores(template.minResources.cpuCores),
+                        })
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              )}
+
               <div className="mt-4">
                 <AppDestinationPicker value={destination} onChange={setDestination} />
               </div>
+
+              {/* Declared minimum vs. the destination's measured capacity. Shown
+                  only on a real shortfall — an unmeasurable box reports "unknown",
+                  which is never one. */}
+              {hostFit && !hostFit.fit.ok && (
+                <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-warning/40 bg-warning/[0.05] px-3.5 py-3 text-xs text-warning">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                  <div className="space-y-1">
+                    <p className="font-semibold">
+                      {interpolate(w.hostFitTitle, { app: template.name })}
+                    </p>
+                    {hostFit.fit.memory && (
+                      <p>
+                        {interpolate(w.hostFitMemory, {
+                          needed: formatMemoryMb(hostFit.fit.memory.needed),
+                          available: formatMemoryMb(hostFit.fit.memory.available),
+                        })}
+                      </p>
+                    )}
+                    {hostFit.fit.cpu && (
+                      <p>
+                        {interpolate(w.hostFitCpu, {
+                          needed: formatCpuCores(hostFit.fit.cpu.needed),
+                          available: formatCpuCores(hostFit.fit.cpu.available),
+                        })}
+                      </p>
+                    )}
+                    <p className="text-warning/80">{w.hostFitHint}</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Actions */}

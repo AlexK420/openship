@@ -119,11 +119,23 @@ export function ServerContainerUpdates({ serverId }: { serverId: string }) {
           <ContainerStatusRow key={r.id} serverId={serverId} row={r} onApplied={() => void load()} />
         ))}
         {!hasEdge && (
-          <EdgeInstallRow
-            serverId={serverId}
-            emphasize={projectCount > 0}
-            onInstalled={() => void load()}
-          />
+          <>
+            <EdgeInstallRow
+              serverId={serverId}
+              emphasize={projectCount > 0}
+              onInstalled={() => void load()}
+            />
+            {/* Says WHY the row is emphasized — the colour alone doesn't tell an
+                operator that live projects are the reason. */}
+            {projectCount > 0 && (
+              <p className="px-3.5 text-xs text-warning">
+                {interpolate(
+                  projectCount === 1 ? c.edgeAbsentImpactOne : c.edgeAbsentImpactMany,
+                  { n: String(projectCount) },
+                )}
+              </p>
+            )}
+          </>
         )}
       </div>
     </div>

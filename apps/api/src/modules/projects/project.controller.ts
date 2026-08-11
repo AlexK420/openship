@@ -13,13 +13,18 @@ import { assertResourceInOrg, param } from "../../lib/controller-helpers";
 import { maskDeploymentEnv } from "../../lib/secret-env";
 import { serviceKind } from "../../lib/deployable-service";
 import { reconcileProjectRoutes } from "../../lib/route-apply.service";
+import { compileProjectRoutingFields } from "../../lib/project-routing-fields";
 import {
   isLoopbackHost,
   isReservedLoopbackPort,
   pickCanonicalDomainRow,
   resolveProjectAccess,
 } from "../../lib/public-endpoints";
-import { buildUpstreamUrl, resolveRouteStrategy } from "../../lib/upstream-url";
+import {
+  buildUpstreamUrl,
+  resolveLiveUpstreamUrl,
+  resolveRouteStrategy,
+} from "../../lib/upstream-url";
 import { getRequestContext } from "../../lib/request-context";
 import type { RequestContext } from "../../lib/request-context";
 import { permission } from "../../lib/permission";
@@ -42,7 +47,8 @@ import type {
 import { stat } from "node:fs/promises";
 import { repos, type Domain, type Project } from "@repo/db";
 import { encrypt } from "../../lib/encryption";
-import { deployLuaScripts } from "@repo/adapters";
+import { deployLuaScripts, type RuntimeAdapter } from "@repo/adapters";
+import { resolveDeploymentRuntimeForRead } from "../../lib/deployment-runtime";
 import { getOpenRestyPaths } from "@/lib/openresty-paths";
 import * as domainService from "../domains/domain.service";
 import * as prepareService from "../deployments/prepare.service";
@@ -1613,6 +1619,14 @@ export async function setAutoDeploy(c: Context) {
     const msg = safeErrorMessage(err);
     console.error(`[setAutoDeploy] strategy=${strategy} enabled=${enabled}:`, msg);
 
+    // Structured denial from the GitHub access gate. The branches below sniff
+    // `msg` for GitHub's own "GitHub API error (403): …" shape, which this error
+    // does not have — its status lives on the object, so without this it would
+    // fall through to a generic 500 and hide an actionable "ask an owner for
+    // access" message behind "something went wrong".
+    if ((err as { code?: unknown } | null)?.code === "GITHUB_ACCESS_DENIED") {
+      return c.json({ success: false, error: msg }, 403);
+    }
     if (msg.includes("No GitHub access token")) {
       return c.json(
         { success: false, error: "GitHub is not connected. Link your GitHub account first." },
@@ -1761,6 +1775,11 @@ async function reRegisterDomainRoute(
     organizationId: string;
     webhookDomain: string | null;
     routeStrategy: string | null;
+    // Read for the project's compiled vercel.json rules below (and, inside
+    // reconcileProjectRoutes, its proxy tunables): toggling the webhook location
+    // rewrites the whole vhost, so anything this type omits is a field the toggle
+    // deletes.
+    routingConfig: Project["routingConfig"];
   },
   hostname: string,
   enableWebhook: boolean,
@@ -1771,23 +1790,56 @@ async function reRegisterDomainRoute(
     const dep = await repos.deployment.findById(project.activeDeploymentId);
     if (!dep) return;
 
-    // Find the service deployment to get the container target.
+    // Find the service deployment to get the container target. Prefer a row with
+    // a container to inspect — a stored ip alone is just the last-known value.
     const svcDeps = await repos.service.listByDeployment(project.activeDeploymentId);
-    const primarySvc = svcDeps.find((s) => s.ip);
+    const primarySvc = svcDeps.find((s) => s.containerId) ?? svcDeps.find((s) => s.ip);
+    if (!primarySvc) return;
 
-    if (!primarySvc?.ip) return;
+    // The port the app LISTENS on. `hostPort` is a publish, not a container port,
+    // so it must not stand in for one — resolveLiveUpstreamUrl derives the host
+    // side itself.
+    const containerPort = project.port ?? 3000;
+    const strategy = resolveRouteStrategy(project.routeStrategy);
+    const stored = { ip: primarySvc.ip, hostPort: primarySvc.hostPort };
 
-    const port = primarySvc.hostPort?.toString() || project.port?.toString() || "3000";
-    const portNum = Number(port) || undefined;
+    let runtime: RuntimeAdapter | undefined;
+    if (primarySvc.containerId) {
+      try {
+        ({ runtime } = await resolveDeploymentRuntimeForRead(dep));
+      } catch (err) {
+        console.warn(
+          `[Webhook Domain] could not resolve runtime for ${hostname}, using stored row: ${safeErrorMessage(err)}`,
+        );
+      }
+    }
+    let targetUrl: string | null;
+    try {
+      targetUrl =
+        runtime && primarySvc.containerId
+          ? await resolveLiveUpstreamUrl({
+              strategy,
+              runtime,
+              containerId: primarySvc.containerId,
+              containerPort,
+              stored,
+            })
+          : buildUpstreamUrl({ strategy, ...stored, containerPort });
+    } finally {
+      await runtime?.dispose?.().catch(() => {});
+    }
+    if (!targetUrl) return;
 
     // Never point a public webhook route at a reserved control-plane/mgmt port on
     // the host loopback (admin API / dashboard / unauthenticated OpenResty mgmt
     // 9145) — a member with a verified domain could otherwise proxy their vhost
     // straight at an internal service. Mirrors resolveTargetUrl in
     // project-route.service.ts.
-    if (isLoopbackHost(primarySvc.ip) && portNum !== undefined && isReservedLoopbackPort(portNum)) {
+    const upstream = targetUrl.match(/^https?:\/\/([^:/]+):(\d+)$/);
+    const upstreamPort = upstream ? Number(upstream[2]) : undefined;
+    if (upstream && isLoopbackHost(upstream[1]) && isReservedLoopbackPort(Number(upstream[2]))) {
       console.warn(
-        `[Webhook Domain] refusing reserved loopback upstream port ${portNum} for ${hostname}`,
+        `[Webhook Domain] refusing reserved loopback upstream port ${upstream[2]} for ${hostname}`,
       );
       return;
     }
@@ -1799,15 +1851,10 @@ async function reRegisterDomainRoute(
       deployment: dep,
       registers: [
         {
+          ...compileProjectRoutingFields(project.routingConfig),
           hostname,
-          targetUrl:
-            buildUpstreamUrl({
-              strategy: resolveRouteStrategy(project.routeStrategy),
-              ip: primarySvc.ip,
-              hostPort: primarySvc.hostPort ?? undefined,
-              containerPort: project.port ?? portNum ?? 3000,
-            }) ?? `http://${primarySvc.ip}:${port}`,
-          port: portNum,
+          targetUrl,
+          port: upstreamPort ?? containerPort,
           isCustomDomain: false,
           webhook: enableWebhook,
         },
@@ -1923,19 +1970,18 @@ export async function enable(c: Context) {
   // Read org AFTER assert — it rebinds ctx to the resource's org for
   // cross-org access; the pre-assert value would be the stale active org.
   const { userId, organizationId } = getRequestContext(c);
-  try {
-    const result = await projectService.enableProject(id, organizationId);
-    audit.recordAsync(auditContextFrom(c, organizationId, userId), {
-      eventType: "project.updated",
-      resourceType: "project",
-      resourceId: id,
-      after: { action: "enabled" },
-    });
-    return c.json(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to enable project";
-    return c.json({ success: false, error: message }, 400);
-  }
+  // No local catch: `handleApiError` maps the thrown error to the status IT
+  // carries — 400 for a ValidationError ("deploy first"), 503 for a host we
+  // couldn't reach. Catching here flattened both to 400, telling an operator
+  // whose SSH key had been refused that their request was malformed.
+  const result = await projectService.enableProject(id, organizationId);
+  audit.recordAsync(auditContextFrom(c, organizationId, userId), {
+    eventType: "project.updated",
+    resourceType: "project",
+    resourceId: id,
+    after: { action: "enabled" },
+  });
+  return c.json(result);
 }
 
 export async function disable(c: Context) {
@@ -1944,19 +1990,15 @@ export async function disable(c: Context) {
   // Read org AFTER assert — it rebinds ctx to the resource's org for
   // cross-org access; the pre-assert value would be the stale active org.
   const { userId, organizationId } = getRequestContext(c);
-  try {
-    const result = await projectService.disableProject(id, organizationId);
-    audit.recordAsync(auditContextFrom(c, organizationId, userId), {
-      eventType: "project.updated",
-      resourceType: "project",
-      resourceId: id,
-      after: { action: "disabled" },
-    });
-    return c.json(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to disable project";
-    return c.json({ success: false, error: message }, 400);
-  }
+  // See `enable` above — the error's own status wins.
+  const result = await projectService.disableProject(id, organizationId);
+  audit.recordAsync(auditContextFrom(c, organizationId, userId), {
+    eventType: "project.updated",
+    resourceType: "project",
+    resourceId: id,
+    after: { action: "disabled" },
+  });
+  return c.json(result);
 }
 
 /** Re-run the managed free-domain edge-proxy sync (no rebuild). Clears the
@@ -2096,9 +2138,13 @@ export async function getInfo(c: Context) {
   // domain rows (service-scoped included, which the project-level publicEndpoints
   // resolver drops) + the effective deploy target, so a multi-service project
   // with only service-scoped domains no longer falls back to localhost.
+  // One rule for where this project runs, shared with the cards. `null` means nothing
+  // is bound and nothing has deployed — no target yet; the access URL still resolves
+  // against "local" as it always has, since that's the box answering this request.
+  const { deployTarget, serverId } = await projectService.resolveProjectDeployTarget(project);
   const access = resolveProjectAccess({
     rows: rawDomains,
-    target: project.cloudWorkspaceId ? "cloud" : project.serverId ? "server" : "local",
+    target: deployTarget ?? "local",
     port: project.port ?? null,
   });
 
@@ -2114,6 +2160,13 @@ export async function getInfo(c: Context) {
         serviceCount,
         hasMultipleServices: serviceCount > 1,
         projectType,
+        // The saved deploy target, same shape the LIST emits. The deploy wizard hydrates
+        // from this payload: without it, opening a saved project kept
+        // DEFAULT_CONFIG.deployTarget ("cloud") and submitted that as the destination for
+        // a project the operator had never sent to the cloud. `null` = no target yet, and
+        // the wizard then seeds a validated one instead of inheriting a guess.
+        deployTarget,
+        serverId,
         // Same two fields the project LIST provides, so `getProjectStatus` reads
         // identically on the detail page and the cards.
         latestDeploymentId: latestDeployment?.id ?? null,

@@ -24,10 +24,26 @@ export function pinnedMailImage(): string {
 }
 
 /**
- * apps/email/ holds the engine's Dockerfile; the image it produces is published as
- * `openship-mail`. That rename is the one place the image↔directory mapping isn't
- * 1:1, and .github/workflows/docker-images.yml encodes the same exception in its
- * build matrix — keep the two in step if either side ever moves.
+ * apps/email/ holds TWO Dockerfiles, published under two names: this one — the
+ * engine, `openship-mail` — and `Dockerfile.webmail`, the Zero client published as
+ * `openship-webmail`. So the directory neither names its image nor owns just one;
+ * .github/workflows/docker-images.yml carries the image→Dockerfile map explicitly
+ * for the same reason. Keep the two in step if either side moves.
+ *
+ * Only the engine is a MANAGED image (pinned to APP_VERSION, built from source in a
+ * checkout, reconciled by this API). Webmail is a catalog app: it is installed and
+ * deployed like any other template, so it has no pin and no build spec here — see
+ * packages/core/src/apps/catalog/webmail.json.
+ *
+ * That catalog entry names `openship-webmail:latest`, deliberately unpinned, unlike
+ * every third-party app in the catalog. Two reasons. Skew is harmless: the engine is
+ * pinned because this API execs into it and assumes its layout, whereas webmail is a
+ * standalone IMAP/SMTP client nothing here reaches into. And a pinned tag would have
+ * to be rewritten in generated, drift-tested JSON on every release (scripts/release.ts
+ * syncs package.json versions only), so the pin would rot into a tag that was never
+ * published. Floating matches how openship ships its own other images (the compose
+ * install defaults to :latest, overridable by --image-version); an app update is a
+ * redeploy with trigger "update", which is the one trigger that force-pulls.
  */
 const MAIL_DOCKERFILE = join("apps", "email", "Dockerfile");
 

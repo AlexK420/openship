@@ -113,7 +113,20 @@
     "running": "Em execução",
     "upToDate": "Atualizado",
     "notInstalled": "Não instalado",
-    "installEdge": "Instalar edge"
+    "installEdge": "Instalar edge",
+    "edgeAbsentImpactOne": "{n} projeto está implantado aqui e nada encaminha tráfego para ele.",
+    "edgeAbsentImpactMany": "{n} projetos estão implantados aqui e nada encaminha tráfego para eles."
+  },
+  "modules": {
+    "title": "Atualizações de módulos disponíveis",
+    "checkFailedTitle": "Falha ao verificar atualizações de módulos",
+    "needsConfirmation": "precisa de confirmação",
+    "update": "Atualizar",
+    "updating": "Atualizando…",
+    "confirmTitle": "Atualizar {module}?",
+    "confirmIntro": "Esta atualização inclui alterações que precisam da sua aprovação:",
+    "cancel": "Cancelar",
+    "updateFailed": "A atualização de {module} falhou"
   },
   "form": {
     "sshConnection": "Conexão SSH",
@@ -146,6 +159,10 @@
     "testConnection": "Testar Conexão",
     "saveChanges": "Salvar Alterações",
     "saveAndContinue": "Salvar e Continuar para a Configuração",
+    "modalTitle": "Adicione o seu servidor",
+    "modalSubtitle": "Conecte via SSH. Você pode concluir a configuração depois.",
+    "saveServer": "Salvar servidor",
+    "savingServer": "Salvando…",
     "toastIpRequired": "O endereço IP do servidor é obrigatório",
     "toastPasswordSwitchRequired": "A senha é obrigatória ao alternar para autenticação por senha",
     "toastKeyPathSwitchRequired": "O caminho da chave é obrigatório ao alternar para autenticação por chave SSH",

@@ -1,6 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   NginxProvider,
+  VHOST_GENERATION,
+  readVhostGeneration,
   renderProxyOptions,
   renderProxyTlsOptions,
   type NginxProviderOptions,
@@ -13,9 +15,12 @@ import {
   type ProxySettings,
 } from "@repo/core";
 import { scanOpenshipEdge } from "../system/proxy/import/nginx";
+import { makeTestCert } from "../system/proxy/test-certs";
+import { compileVercelRouting } from "./vercel-routing";
 import { OPENRESTY_DEFAULT_PATHS, luaSourceAvailable, RULES_GUARD_PATH, ACME_HTTP01_PORT, EDGE_CHALLENGE_DIR, EDGE_CHALLENGE_ROOT, EDGE_CHALLENGE_URL_PREFIX, ensureOpenRestyConfig, edgeDefaultCertPaths } from "./openresty-lua";
 import { EDGE_NOT_FOUND_HTML } from "./edge-not-found";
 import type { CommandExecutor, RouteConfig } from "../types";
+import type { RootChecked } from "../system/privilege";
 
 // L1 — config GENERATION. Proves NginxProvider emits the right nginx directives
 // for each branch, that the injection guard holds, and that a failed
@@ -32,6 +37,10 @@ interface FakeOpts {
   certDomains?: string[];
   /** Simulate an edge with no `openssl` CLI (bootstrap cert can't be produced). */
   noOpenssl?: boolean;
+  /** Simulate a `chmod` the edge refuses — a read-only mount, or (on a container
+   *  edge, where commands run inside and file ops land on the host) a path the
+   *  container's shell cannot see. */
+  failChmod?: boolean;
   provider?: Partial<NginxProviderOptions>;
   certbotFailure?: string;
 }
@@ -44,7 +53,7 @@ function makeExecutor(
   calls: string[],
   removed: string[] = [],
   writes: Array<{ path: string; content: string }> = [],
-): CommandExecutor {
+): RootChecked {
   const exec = async (command: string): Promise<string> => {
     calls.push(command);
     // openresty path detection (reload re-detects) → fail so cached paths stick.
@@ -59,6 +68,9 @@ function makeExecutor(
     if ((command.startsWith("certbot ") || command.startsWith("env ")) && opts.certbotFailure) {
       throw new Error(opts.certbotFailure);
     }
+    if (command.startsWith("chmod ") && opts.failChmod) {
+      throw new Error("chmod: cannot access operand: No such file or directory");
+    }
     if (command.startsWith("mv -f ")) {
       // Pair swap: `mv -f 'staging/fullchain.pem' 'staging/privkey.pem' 'dir'/`
       const paths = [...command.matchAll(/'([^']+)'/g)].map((m) => m[1]);
@@ -68,6 +80,25 @@ function makeExecutor(
         if (c !== undefined) { files.set(`${dir}/${src.split("/").pop()}`, c); files.delete(src); }
       }
       return "";
+    }
+    // `grep -L <pattern> <dir>/*.conf` — files that do NOT contain the pattern, which is
+    // how reapplyStoredRoutes asks "which vhosts are behind?" in one round trip.
+    const grepL = command.match(/^grep -L '([^']*)' '([^']+)'\/\*\.conf/);
+    if (grepL) {
+      const pattern = new RegExp(grepL[1]!, "m");
+      return [...files.keys()]
+        .filter((k) => k.startsWith(`${grepL[2]}/`) && k.endsWith(".conf"))
+        .filter((k) => !pattern.test(files.get(k)!))
+        .join("\n");
+    }
+    // Directory listing for reapplyStoredRoutes: basenames of everything under the dir.
+    const ls = command.match(/^ls -1 '([^']+)'/);
+    if (ls) {
+      const prefix = `${ls[1]}/`;
+      return [...files.keys()]
+        .filter((k) => k.startsWith(prefix))
+        .map((k) => k.slice(prefix.length))
+        .join("\n");
     }
     const mv = command.match(/^mv '([^']+)' '([^']+)'$/);
     if (mv) {
@@ -94,7 +125,7 @@ function makeExecutor(
       files.has(p) || (opts.certDomains ?? []).some((d) => p.startsWith(`/etc/letsencrypt/live/${d}/`)),
     mkdir: async () => {},
     rm: async (p: string) => { removed.push(p); files.delete(p); },
-  } as unknown as CommandExecutor;
+  } as unknown as RootChecked;
 }
 
 function setup(opts: FakeOpts = {}) {
@@ -128,7 +159,7 @@ const BOOTSTRAP_DIR = "/etc/letsencrypt/openship-bootstrap/app.example.com";
  * echo back any token and prove control of this box as its own routing target.
  */
 describe("NginxProvider edge-target challenge location", () => {
-  const hasChallenge = (c: string) => c.includes(`location ${EDGE_CHALLENGE_URL_PREFIX} {`);
+  const hasChallenge = (c: string) => c.includes(`location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {`);
 
   test("is emitted in the HTTP-only shape (no cert yet)", async () => {
     const { nginx, conf } = setup();
@@ -169,6 +200,171 @@ describe("NginxProvider edge-target challenge location", () => {
   });
 });
 
+/**
+ * A free `<slug>.opsh.io` host is served by Openship Cloud's edge, which proxies here on
+ * plain :80 — so the peer is the edge and the visitor is named in `X-Real-IP`. The
+ * http-scope realip block reads CF-Connecting-IP (for Cloudflare-fronted custom
+ * domains), a header this front does not send, so inheriting it left `remote_addr` as
+ * the edge for every free-domain visitor: one rate-limit bucket for the planet, IP bans
+ * that ban the edge, one country for everyone, and the edge's own address forwarded to
+ * the app as `X-Real-IP`.
+ */
+describe("NginxProvider real-ip for a Cloud-fronted free host", () => {
+  const FREE: RouteConfig = { domain: "myapp.opsh.io", tls: false, targetUrl: "http://127.0.0.1:3009" };
+
+  test("overrides the header at server scope, ahead of anything that serves", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute(FREE);
+    const c = conf("myapp-opsh-io")!;
+    expect(c).toContain("real_ip_header X-Real-IP;");
+    // Server scope, not location scope: realip has to run for the rules guard, the
+    // logger and `location /` alike.
+    expect(c.indexOf("real_ip_header")).toBeLessThan(c.indexOf("location / {"));
+    // Vhost-anchored rather than peer-anchored: the Cloud edge's egress address is not
+    // knowable from this box, and a peer list that misses it ignores the header silently.
+    // Bounded by the server_name — see cloudEdgeRealIpConf.
+    expect(c).toContain("set_real_ip_from 0.0.0.0/0;");
+  });
+
+  test("a custom domain does NOT get the blanket trust", async () => {
+    // The bound that makes the free-host block acceptable. On a custom domain the peer list
+    // is the security property, and trusting any peer would let a visitor choose their own
+    // rate-limit bucket and dodge IP bans.
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(PROXY);
+    expect(conf("app-example-com")).not.toContain("set_real_ip_from");
+  });
+
+  test("puts it in the same block as the rules guard, which is what reads the result", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute(FREE);
+    const c = conf("myapp-opsh-io")!;
+    if (luaSourceAvailable()) {
+      expect(c.indexOf("real_ip_header")).toBeLessThan(c.indexOf(RULES_GUARD_PATH));
+    }
+    // The corrected address is also what gets forwarded to the app.
+    expect(c).toContain("proxy_set_header X-Real-IP $remote_addr;");
+  });
+
+  test("leaves a custom domain on the http-scope Cloudflare block", async () => {
+    // The working path must not move: a custom domain behind Cloudflare keeps reading
+    // CF-Connecting-IP from the edge's own nginx.conf, and a vhost-scope
+    // set_real_ip_from would REPLACE that inherited list rather than add to it.
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(PROXY);
+    const c = conf("app-example-com")!;
+    expect(c).not.toContain("real_ip_header");
+    expect(c).not.toContain("set_real_ip_from");
+  });
+
+  test("carries it on every shape the host can take, not just the HTTP-only one", async () => {
+    // A free host normally has no cert here (Cloud terminates its TLS), but if one ever
+    // lands the address recovery must not silently drop for :443 traffic.
+    const { nginx, conf } = setup({ certDomains: ["myapp.opsh.io"] });
+    await nginx.registerRoute({ ...FREE, tls: true });
+    const c = conf("myapp-opsh-io")!;
+    const [httpBlock, tlsBlock] = c.split("listen 443 ssl;");
+    expect(httpBlock).toContain("real_ip_header X-Real-IP;");
+    expect(tlsBlock).toContain("real_ip_header X-Real-IP;");
+  });
+});
+
+/**
+ * A generated-config fix reaches a running box ONLY through this sweep. `registerRoute` is
+ * the sole writer and only a deploy, a domain save, a Retry or cert issuance calls it — so
+ * a project nobody redeploys keeps the vhost its first deploy produced, which is how the
+ * Cloud-fronted X-Real-IP block shipped and applied to nothing.
+ */
+describe("NginxProvider.reapplyStoredRoutes", () => {
+  const FREE_ROUTE: RouteConfig = {
+    domain: "myapp.opsh.io",
+    tls: false,
+    targetUrl: "http://127.0.0.1:3009",
+  };
+  /** What a pre-marker build left on disk: no generation line, no realip block. */
+  const age = (conf: string) =>
+    conf
+      .replace(/^# openship-vhost-gen: \d+\n/m, "")
+      .replace(/^\s*(real_ip_header|real_ip_recursive|set_real_ip_from) .*$/gm, "");
+
+  test("stamps the generation it wrote, so staleness is readable off the file", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute(FREE_ROUTE);
+    expect(readVhostGeneration(conf("myapp-opsh-io")!)).toBe(VHOST_GENERATION);
+  });
+
+  test("re-emits a stale vhost from its own sidecar", async () => {
+    const { nginx, files, conf } = setup();
+    await nginx.registerRoute(FREE_ROUTE);
+    files.set(`${SITES}/myapp-opsh-io.conf`, age(conf("myapp-opsh-io")!));
+    expect(conf("myapp-opsh-io")).not.toContain("real_ip_header X-Real-IP;");
+
+    const result = await nginx.reapplyStoredRoutes();
+    expect(result.repaired).toEqual(["myapp.opsh.io"]);
+    expect(result.failed).toEqual([]);
+    // The whole point: the fix landed without a deploy, and the route kept its target.
+    expect(conf("myapp-opsh-io")).toContain("real_ip_header X-Real-IP;");
+    expect(conf("myapp-opsh-io")).toContain("proxy_pass http://127.0.0.1:3009");
+  });
+
+  test("a converged box writes nothing and reloads nothing", async () => {
+    // This runs on the ordinary edge-ensure path, so the steady state has to be free.
+    const { nginx, calls, writes } = setup();
+    await nginx.registerRoute(FREE_ROUTE);
+    const reloads = calls.filter((c) => c.includes("-s reload")).length;
+    const written = writes.length;
+
+    const result = await nginx.reapplyStoredRoutes();
+    expect(result).toEqual({ scanned: 1, repaired: [], failed: [] });
+    expect(calls.filter((c) => c.includes("-s reload")).length).toBe(reloads);
+    expect(writes.length).toBe(written);
+  });
+
+  test("asks which vhosts are behind in ONE command", async () => {
+    // It runs on the deploy path against a possibly-remote box, where every read is a round
+    // trip. Reading 50 confs to learn that all 50 are current would put seconds on every
+    // deploy — a cost nobody would attribute to a repair sweep that repairs nothing.
+    const { nginx, calls } = setup();
+    await nginx.registerRoute(FREE_ROUTE);
+    calls.length = 0;
+    await nginx.reapplyStoredRoutes();
+    expect(calls.filter((c) => c.startsWith("grep -L")).length).toBe(1);
+  });
+
+  test("does not resurrect a route whose conf was removed", async () => {
+    // removeRoute deletes the conf and the sidecar together; a leftover sidecar must
+    // never bring a vhost an operator removed back to life.
+    const { nginx, files, conf } = setup();
+    await nginx.registerRoute(FREE_ROUTE);
+    files.set(`${SITES}/myapp-opsh-io.conf`, age(conf("myapp-opsh-io")!));
+    files.delete(`${SITES}/myapp-opsh-io.conf`);
+
+    expect(await nginx.reapplyStoredRoutes()).toEqual({ scanned: 1, repaired: [], failed: [] });
+    expect(conf("myapp-opsh-io")).toBeUndefined();
+  });
+
+  test("one unusable sidecar does not stop the rest of the sweep", async () => {
+    const { nginx, files, conf } = setup();
+    await nginx.registerRoute(FREE_ROUTE);
+    files.set(`${SITES}/myapp-opsh-io.conf`, age(conf("myapp-opsh-io")!));
+    files.set(`${SITES}/broken.conf`, "server {}");
+    files.set(`${SITES}/broken.route.json`, "{not json");
+
+    const result = await nginx.reapplyStoredRoutes();
+    expect(result.repaired).toEqual(["myapp.opsh.io"]);
+    expect(result.failed.map((f) => f.slug)).toEqual(["broken"]);
+  });
+
+  test("leaves a legacy route with no sidecar untouched", async () => {
+    // Scraping its conf would recover only the primary target, dropping composite
+    // locations and the webhook proxy — worse than leaving it as it is.
+    const { nginx, files } = setup();
+    files.set(`${SITES}/legacy.conf`, "server { listen 80; server_name legacy.test; }");
+    expect(await nginx.reapplyStoredRoutes()).toEqual({ scanned: 0, repaired: [], failed: [] });
+    expect(files.get(`${SITES}/legacy.conf`)).toBe("server { listen 80; server_name legacy.test; }");
+  });
+});
+
 describe("NginxProvider.serveEdgeChallenge", () => {
   const CHALLENGE = `${SITES}/_oblien-challenge-203-0-113-10.conf`;
 
@@ -181,7 +377,7 @@ describe("NginxProvider.serveEdgeChallenge", () => {
     const r = await nginx.serveEdgeChallenge({ host: "203.0.113.10" });
 
     expect(r).toMatchObject({ served: true, via: "challenge-vhost" });
-    expect(files.get(CHALLENGE)).toContain(`location ${EDGE_CHALLENGE_URL_PREFIX} {`);
+    expect(files.get(CHALLENGE)).toContain(`location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {`);
     // No token files yet — nothing has been issued.
     expect([...files.keys()].some((k) => k.startsWith(EDGE_CHALLENGE_DIR))).toBe(false);
   });
@@ -229,7 +425,7 @@ describe("NginxProvider.serveEdgeChallenge", () => {
     expect(r).toMatchObject({ served: true, via: "challenge-vhost" });
     const c = files.get(CHALLENGE)!;
     expect(c).toContain("server_name 203.0.113.10;");
-    expect(c).toContain(`location ${EDGE_CHALLENGE_URL_PREFIX} {`);
+    expect(c).toContain(`location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {`);
     expect(c).toContain("location / {");
     expect(c).toContain("Service not found");
     // Still a dead end: nothing here may reach a backend or serve a doc root at /.
@@ -304,7 +500,7 @@ describe("NginxProvider config generation", () => {
     expect(c).toContain("listen 80;");
     expect(c).not.toContain("listen 443 ssl;"); // no cert → no TLS server
     expect(c).toContain("proxy_pass http://127.0.0.1:3009;");
-    expect(c).toContain("location /.well-known/acme-challenge/");
+    expect(c).toContain("location ^~ /.well-known/acme-challenge/");
     // ACME challenge is proxied to certbot's standalone server (not a webroot).
     expect(c).toContain(`proxy_pass http://127.0.0.1:${ACME_HTTP01_PORT};`);
     expect(c).not.toContain("root /var/www/acme;");
@@ -420,6 +616,27 @@ describe("NginxProvider config generation", () => {
     expect(removed).toContain(secretDir);
   });
 
+  // The other end of that cleanup. `provisionCert` can only remove a directory whose
+  // path was RETURNED to it, so anything that throws while building the material has to
+  // clean up itself — and the directory exists from the mkdir onward, not just from the
+  // write. A refused `chmod` (read-only mount; or a container edge running the command
+  // inside while the mkdir landed on the host) left one `.openship-eab-*` behind in
+  // certbot's config dir on every attempt.
+  test("a refused chmod leaves no EAB directory behind", async () => {
+    const { nginx, calls, removed, writes } = setup({
+      failChmod: true,
+      provider: { acmeEabKid: "kid-123", acmeEabHmacKey: "c3VwZXItc2VjcmV0LWhtYWM" },
+    });
+    await expect(nginx.provisionCert("app.example.com")).rejects.toThrow(/chmod/);
+    const dirChmod = calls.find((c) => c.startsWith("chmod ") && c.includes("'700'"));
+    const secretDir = dirChmod?.match(/'(\/[^']*\.openship-eab-[^']*)'/)?.[1];
+    expect(secretDir).toBeDefined();
+    expect(removed).toContain(secretDir);
+    // It failed BEFORE the secret bytes were staged, and certbot never ran.
+    expect(writes.some((w) => w.path.includes(".openship-eab-"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("certbot "))).toBe(false);
+  });
+
   test("rejects incomplete or malformed EAB configuration before issuance", () => {
     expect(() => setup({ provider: { acmeEabKid: "kid-only" } })).toThrow(/requires both/i);
     expect(() => setup({
@@ -489,7 +706,32 @@ describe("NginxProvider config generation", () => {
   test("webhook proxy adds the /_openship/hooks/ location", async () => {
     const { nginx, conf } = setup();
     await nginx.registerRoute({ ...PROXY, webhookProxy: "http://127.0.0.1:4000/api/webhooks/" });
-    expect(conf("app-example-com")!).toContain("location /_openship/hooks/");
+    // `^~` for the same reason the ACME locations carry it: a compiled vercel.json
+    // catch-all is a REGEX location, which out-ranks any plain prefix. Measured on
+    // OpenResty 1.27.1.1 swallowing this one — either 308-ing the delivery away (losing
+    // the POST body, so push→redeploy silently stops) or proxying the payload AND its
+    // X-Hub-Signature to whatever origin the repo named.
+    expect(conf("app-example-com")!).toContain("location ^~ /_openship/hooks/");
+  });
+
+  test("a compiled catch-all cannot out-rank the webhook or a composite backend", async () => {
+    const { nginx, conf } = setup();
+    const compiled = compileVercelRouting({
+      rewrites: [{ source: "/:path*", destination: "http://127.0.0.1:9902/x/:path*" }],
+    });
+    await nginx.registerRoute({
+      ...PROXY,
+      webhookProxy: "http://127.0.0.1:4000/api/webhooks/",
+      proxyLocations: [
+        { pathPrefix: "/api/", targetUrl: "http://10.0.0.5:3000" },
+        ...compiled.proxyLocations,
+      ],
+    });
+    const c = conf("app-example-com")!;
+    expect(c).toContain("location ^~ /_openship/hooks/");
+    expect(c).toContain("location ^~ /api/ {");
+    // A loopback origin is one of OURS, so it keeps our Host rather than the origin's.
+    expect(c).not.toContain("proxy_set_header Host 127.0.0.1:9902;");
   });
 
   test("rejects a domain with shell metacharacters (injection guard)", async () => {
@@ -525,7 +767,7 @@ describe("NginxProvider config generation", () => {
     // :80 must keep SERVING: plain HTTP answers the ACME challenge, and pushing a
     // browser onto an untrusted cert is worse than serving HTTP.
     expect(c).not.toContain("return 301 https://");
-    expect(c).toContain("location /.well-known/acme-challenge/");
+    expect(c).toContain("location ^~ /.well-known/acme-challenge/");
     // Both blocks are name-bound, so unknown SNI still hits the reject-handshake
     // default — no cross-serving regression.
     expect(c.match(/server_name app\.example\.com;/g)?.length).toBe(2);
@@ -694,6 +936,27 @@ function serverBlocks(conf: string): string[] {
 
 const httpBlock = (conf: string) => serverBlocks(conf).find((b) => b.includes("listen 80;"))!;
 const tlsBlock = (conf: string) => serverBlocks(conf).find((b) => b.includes("listen 443 ssl;"))!;
+
+/**
+ * Every `location` NAME in one server block, modifier stripped for the prefix forms.
+ *
+ * That is nginx's own duplicate test: it compares names, and `^~` only sets `noregex`
+ * — so `location ^~ /` and `location /` are two inclusive locations called "/" and the
+ * whole vhost is refused with `[emerg] duplicate location "/"`. Regex names are kept
+ * marked, since nginx namespaces those separately.
+ */
+function locationNames(block: string): string[] {
+  return [...block.matchAll(/^\s*location\s+(?:(=|\^~|~\*?)\s+)?(\S+)\s*\{/gm)].map((m) =>
+    m[1]?.startsWith("~") ? `~ ${m[2]}` : m[2],
+  );
+}
+
+/** The body of one location inside a server block, from its header to its closing brace. */
+function locationBody(block: string, header: string): string {
+  const start = block.indexOf(header);
+  if (start < 0) throw new Error(`no ${header} in block`);
+  return block.slice(start, block.indexOf("\n    }", start));
+}
 
 /** Nesting depth at `index`; 0 = directly inside the `server { }` body. */
 function braceDepthAt(block: string, index: number): number {
@@ -907,6 +1170,281 @@ describe("issuing a certificate keeps the tunables", () => {
     expect(sidecar.proxy).toEqual({ clientMaxBodySize: "50m", gzip: true });
   });
 
+  // The sidecar is what `provisionCert` re-registers FROM, so anything missing from it
+  // is silently reverted the moment a certificate is issued. `pattern` is the whole #510
+  // fix (without it the rule falls back to a prefix and 308s every visitor to a literal
+  // `/news/`), and `trailingSlash: false` is exactly the value a truthiness round-trip
+  // loses — `!!false === false` is indistinguishable from "absent", which emits the
+  // OPPOSITE redirect.
+  test("the sidecar round-trips the compiled routing rules, pattern and tri-state included", async () => {
+    const { nginx, files, conf } = setup();
+    const compiled = compileVercelRouting({
+      cleanUrls: true,
+      trailingSlash: false,
+      redirects: [{ source: "/blog/:path*", destination: "/news/:path*", permanent: true }],
+      headers: [{ source: "/api/(.*)", headers: [{ key: "Cache-Control", value: "no-store" }] }],
+    });
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: false,
+      staticRoot: "/opt/openship/site",
+      redirects: compiled.redirects,
+      headerRules: compiled.headerRules,
+      cleanUrls: compiled.cleanUrls,
+      trailingSlash: compiled.trailingSlash,
+    } as unknown as RouteConfig);
+
+    const sidecar = JSON.parse(files.get(`${SITES}/app-example-com.route.json`)!) as RouteConfig;
+    expect(sidecar.redirects?.[0].pattern).toBe("/blog/(.*)");
+    expect(sidecar.headerRules).toEqual(compiled.headerRules);
+    expect(sidecar.cleanUrls).toBe(true);
+    // Present AND false — not merely falsy-or-missing.
+    expect(sidecar.trailingSlash).toBe(false);
+    expect("trailingSlash" in sidecar).toBe(true);
+
+    // And re-registering FROM that sidecar reproduces the same vhost, which is what
+    // provisionCert does. Byte-identical is the assertion that catches a lossy field.
+    const before = conf("app-example-com")!;
+    await nginx.registerRoute(sidecar);
+    expect(conf("app-example-com")).toBe(before);
+  });
+});
+
+/**
+ * An installed private key must not be world-readable at rest.
+ *
+ * Certbot chmods the `live/` and `archive/` trees it owns to 0700, which is why nothing
+ * here noticed: on a box where certbot ran, the directory hides the key whatever its own
+ * mode is. `installCert` is the path where certbot never ran — an operator upload, a cert
+ * carried in by a migration — so `_mkdir` creates `live/<domain>` at 0755 and the mode of
+ * the key file is the only thing left protecting it.
+ */
+describe("installCert leaves the private key unreadable to other users", () => {
+  /** Drop the two random staging segments so the assertion can be an exact path. */
+  const chmods = (calls: string[]) =>
+    calls
+      .filter((c) => c.startsWith("chmod "))
+      .map((c) => c.replace(/\.staging-[^/]+/, "").replace(/\.tmp-[^']+/, ""));
+
+  test("chmods the key to 0600 on the staged path, before it is published", async () => {
+    const { nginx, calls, files } = setup();
+    await nginx.installCert("app.example.com", makeTestCert(["app.example.com"]));
+
+    // On the STAGED path, because `mv` preserves the mode and a chmod afterwards would
+    // leave a window where the key is already in place and still 0644.
+    expect(chmods(calls)).toEqual([`chmod '600' '/etc/letsencrypt/live/app.example.com/privkey.pem'`]);
+    const chmodAt = calls.findIndex((c) => c.startsWith("chmod "));
+    const publishAt = calls.findIndex((c) => c.startsWith("mv -f "));
+    expect(chmodAt).toBeGreaterThanOrEqual(0);
+    expect(chmodAt).toBeLessThan(publishAt);
+
+    // The pair still lands as a pair — the mode must not cost the atomic swap.
+    expect(files.get("/etc/letsencrypt/live/app.example.com/privkey.pem")).toContain(
+      "PRIVATE KEY",
+    );
+    expect(files.get("/etc/letsencrypt/live/app.example.com/fullchain.pem")).toContain(
+      "CERTIFICATE",
+    );
+  });
+});
+
+/**
+ * On a CONTAINER edge the two halves of "write it, then tighten it" travel different
+ * channels: the write lands on the HOST (bind mount) while `chmod` runs INSIDE the
+ * container. Only a mount whose two sides are the same string — `/etc/letsencrypt`,
+ * `/opt/openship/static` in `EDGE_CONTAINER_MOUNTS` — makes those the same file, which
+ * is why both of today's mode-passing callers happen to work.
+ *
+ * A mode aimed anywhere else either misses (a path the container's shell cannot see) or
+ * hits a DIFFERENT file that exists there, leaving a TLS private key or the ACME EAB
+ * HMAC key at the default mode with the operation reporting success. So the provider
+ * refuses by name instead of writing the secret it cannot protect.
+ */
+describe("a container edge refuses a mode it cannot aim at the file it wrote", () => {
+  /** A cert store OUTSIDE the same-path mounts — visible on the host, not in the container. */
+  const OFF_MOUNT_CERT_DIR = "/var/lib/openship/edge/certs/live";
+
+  test("installCert refuses rather than staging a key it cannot chmod", async () => {
+    const { nginx, calls, files, writes } = setup({
+      provider: { containerEdge: true, certDir: OFF_MOUNT_CERT_DIR },
+    });
+
+    const message = await nginx
+      .installCert("app.example.com", makeTestCert(["app.example.com"]))
+      .then(() => "", (err: Error) => err.message);
+
+    // Names the path it refused — the STAGED one, which is where the write was aimed —
+    // and the mounts that would have been legal.
+    expect(message).toMatch(/^Refusing to write .*privkey\.pem with mode 0600/);
+    expect(message.replace(/\.staging-[^/]+/, "")).toContain(
+      `${OFF_MOUNT_CERT_DIR}/app.example.com/privkey.pem`,
+    );
+    expect(message).toContain("/etc/letsencrypt");
+
+    // Refused BEFORE the key bytes went anywhere: no write, no chmod at a path the
+    // container may or may not own, and nothing published into the cert dir.
+    expect(writes.some((w) => w.content.includes("PRIVATE KEY"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("chmod "))).toBe(false);
+    expect(files.get(`${OFF_MOUNT_CERT_DIR}/app.example.com/privkey.pem`)).toBeUndefined();
+    // The public half must not be published on its own either — a cert with no key
+    // beside it fails `openresty -t` for the whole edge.
+    expect(files.get(`${OFF_MOUNT_CERT_DIR}/app.example.com/fullchain.pem`)).toBeUndefined();
+  });
+
+  test("the EAB ini refuses too, and leaves no directory or secret behind", async () => {
+    const hmac = "c3VwZXItc2VjcmV0LWhtYWM";
+    const { nginx, calls, removed, writes } = setup({
+      provider: { containerEdge: true, certDir: OFF_MOUNT_CERT_DIR, acmeEabKid: "kid-123", acmeEabHmacKey: hmac },
+    });
+
+    await expect(nginx.provisionCert("app.example.com")).rejects.toThrow(
+      /Refusing to write .*\.openship-eab-.* with mode 0700/,
+    );
+    // The 0700 parent is refused first, so the HMAC never reaches disk and certbot
+    // never runs — and the mkdir'd directory is still cleaned up.
+    expect(writes.some((w) => w.content.includes(hmac))).toBe(false);
+    expect(calls.some((c) => c.startsWith("certbot ") || c.startsWith("env "))).toBe(false);
+    expect(removed.some((p) => p.includes(".openship-eab-"))).toBe(true);
+  });
+
+  test("but the mount they actually live on is still tightened", async () => {
+    // The other half of the guard: refusing must not become "never chmod on a
+    // container edge", which would ship the world-readable key this all exists to stop.
+    const { nginx, calls, files } = setup({ provider: { containerEdge: true } });
+    await nginx.installCert("app.example.com", makeTestCert(["app.example.com"]));
+
+    expect(
+      calls
+        .filter((c) => c.startsWith("chmod "))
+        .map((c) => c.replace(/\.staging-[^/]+/, "").replace(/\.tmp-[^']+/, "")),
+    ).toEqual([`chmod '600' '/etc/letsencrypt/live/app.example.com/privkey.pem'`]);
+    expect(files.get("/etc/letsencrypt/live/app.example.com/privkey.pem")).toContain(
+      "PRIVATE KEY",
+    );
+  });
+
+  /**
+   * The placeholder cert mixes the same two channels the other way round: `openssl`
+   * writes the pair on the COMMAND channel (inside the container) while `_exists` and
+   * `_mkdir` are FILE ops (on the host). Nothing here passes a mode, so the chmod guard
+   * above never fired — and the function's contract is to return two paths, which the
+   * caller then writes into a `:443` vhost. Off a same-path mount those paths exist only
+   * inside the container, so `openresty -t` fails for EVERY domain on the edge.
+   */
+  test("a placeholder cert it cannot place is declined, not published", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { nginx, conf, calls } = setup({
+        provider: { containerEdge: true, certDir: OFF_MOUNT_CERT_DIR },
+      });
+
+      await nginx.registerRoute(OURS); // must not throw: a placeholder can't fail a deploy
+
+      const c = conf("app-example-com")!;
+      expect(c).not.toContain("listen 443 ssl;");
+      expect(c).not.toContain("openship-bootstrap");
+      expect(c).toContain("proxy_pass http://127.0.0.1:3009;");
+      // Declined before the key was generated, so nothing was left in the container's
+      // own filesystem either.
+      expect(calls.some((c) => c.startsWith("openssl "))).toBe(false);
+
+      const said = warn.mock.calls.map((a) => String(a[0])).join("\n");
+      expect(said).toContain("not the same path");
+      expect(said).toContain("serving HTTP only");
+      // The real reason, not the openssl-missing guess the generic failure path prints.
+      expect(said).not.toContain("is openssl installed");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("and on the mount it does live on, the placeholder key is still tightened", async () => {
+    const { nginx, calls, files } = setup({ provider: { containerEdge: true } });
+    await nginx.registerRoute(OURS);
+
+    expect(files.get(`${BOOTSTRAP_DIR}/privkey.pem`)).toBe("PEM");
+    // On the staged path, before the pair-swap publishes it.
+    const chmodAt = calls.findIndex(
+      (c) => c.startsWith("chmod '600' ") && c.includes(".staging-") && c.includes("privkey.pem"),
+    );
+    const publishAt = calls.findIndex((c) => c.startsWith("mv -f "));
+    expect(chmodAt).toBeGreaterThanOrEqual(0);
+    expect(chmodAt).toBeLessThan(publishAt);
+  });
+});
+
+/**
+ * `registerRoute` REPLACES the vhost, so re-registering with FEWER rules has to leave no
+ * residue. The http-scope `map` prelude is the part that can rot: a variable still
+ * referenced by an `add_header` whose `map` is gone is an `[emerg] unknown variable` that
+ * fails `openresty -t` box-wide, and a duplicated prelude is a silently-wrong header.
+ */
+describe("re-registering a route leaves no stale rules", () => {
+  const STATIC_ROUTE: RouteConfig = {
+    domain: "app.example.com",
+    tls: false,
+    staticRoot: "/opt/openship/site",
+  } as unknown as RouteConfig;
+
+  const rules = (n: number) =>
+    compileVercelRouting({
+      headers: Array.from({ length: n }, (_, i) => ({
+        source: `/p${i}/(.*)`,
+        headers: [{ key: `X-P${i}`, value: String(i) }],
+      })),
+    }).headerRules;
+
+  test("drops the map blocks and add_headers of rules that went away", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...STATIC_ROUTE, headerRules: rules(3) });
+    const three = conf("app-example-com")!;
+    expect((three.match(/map \$request_uri/g) ?? [])).toHaveLength(3);
+
+    await nginx.registerRoute({ ...STATIC_ROUTE, headerRules: rules(1) });
+    const one = conf("app-example-com")!;
+    expect((one.match(/map \$request_uri/g) ?? [])).toHaveLength(1);
+    expect(one).not.toContain("X-P1");
+    expect(one).not.toContain("X-P2");
+    // Every variable an add_header reads must still have a map that defines it.
+    for (const [, name] of one.matchAll(/add_header \S+ \$(osh_hdr_\w+)/g)) {
+      expect(one).toContain(`map $request_uri $${name} {`);
+    }
+  });
+
+  test("and removing them all leaves no prelude at all", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...STATIC_ROUTE, headerRules: rules(2) });
+    await nginx.registerRoute({ ...STATIC_ROUTE });
+    const c = conf("app-example-com")!;
+    expect(c).not.toContain("map $request_uri");
+    expect(c).not.toContain("osh_hdr_");
+    expect(c.startsWith("# Auto-generated by Openship")).toBe(true);
+  });
+
+  test("is idempotent — the same rules twice produce the same file", async () => {
+    const { nginx, conf } = setup();
+    const route = { ...STATIC_ROUTE, headerRules: rules(2), cleanUrls: true } as RouteConfig;
+    await nginx.registerRoute(route);
+    const first = conf("app-example-com")!;
+    await nginx.registerRoute(route);
+    expect(conf("app-example-com")).toBe(first);
+  });
+
+  test("a failed reload restores the PREVIOUS rules, not an empty vhost", async () => {
+    // The rollback path with rules in play: the operator's live config must survive a
+    // vhost that nginx rejects, rather than the domain losing its rules to a bad edit.
+    const opts: FakeOpts = {};
+    const { nginx, conf } = setup(opts);
+    await nginx.registerRoute({ ...STATIC_ROUTE, headerRules: rules(2) });
+    const good = conf("app-example-com")!;
+
+    opts.failReload = true;
+    await expect(
+      nginx.registerRoute({ ...STATIC_ROUTE, headerRules: rules(5) }),
+    ).rejects.toThrow();
+    expect(conf("app-example-com")).toBe(good);
+  });
+
   test("a legacy route with no sidecar keeps them by scraping its own vhost", async () => {
     // Routes registered before the sidecar existed fall back to reading the conf.
     // Same table as the renderer, read backwards — so the recovery is not a
@@ -969,6 +1507,54 @@ describe("behind a TLS-terminating CDN", () => {
     expect(c).not.toContain("set $openship_fwd_proto $http_x_forwarded_proto;");
   });
 
+  // The upgrade has to cover every location that serves project traffic, not just
+  // `location /`. A composite `/api/` (or any vercel.json rewrite) that skipped it stayed
+  // answerable in cleartext AFTER the certificate landed — session cookies and
+  // Authorization headers on the exact paths that carry them, with no way for a visitor
+  // who typed `http://` to be moved off it.
+  const API_LOC: RouteConfig = {
+    ...OURS,
+    proxyLocations: [{ pathPrefix: "/api/", targetUrl: "http://10.0.0.5:3000" }],
+  };
+
+  test("a proxy location upgrades to https on :80, exactly like `location /`", async () => {
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(API_LOC);
+    const c = conf("app-example-com")!;
+    const api = locationBody(httpBlock(c), "location ^~ /api/ {");
+    expect(api).toContain("if ($openship_redirect_https) {");
+    expect(api).toContain("return 301 https://$server_name$request_uri;");
+    // Ahead of what serves — the chain is first-match-wins inside one location.
+    expect(api.indexOf("$openship_redirect_https")).toBeLessThan(api.indexOf("proxy_pass"));
+  });
+
+  test("…and never on :443, where the guard variable is 1 and would loop", async () => {
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(API_LOC);
+    const c = conf("app-example-com")!;
+    expect(locationBody(tlsBlock(c), "location ^~ /api/ {")).not.toContain(
+      "$openship_redirect_https",
+    );
+  });
+
+  test("…nor on a block with no real cert, which would bounce into nothing", async () => {
+    const { nginx, conf } = setup(); // no issued cert → bootstrap listener only
+    await nginx.registerRoute(API_LOC);
+    const c = conf("app-example-com")!;
+    for (const block of serverBlocks(c)) {
+      expect(locationBody(block, "location ^~ /api/ {")).not.toContain("return 301 https://");
+    }
+  });
+
+  // A 30x drops a webhook delivery's POST body, so this one location stays plaintext-
+  // answerable on purpose — the invariant is deliberate, not an oversight to "fix".
+  test("the webhook location is exempt from the upgrade", async () => {
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({ ...OURS, webhookProxy: "http://127.0.0.1:4000/api/webhooks/" });
+    const hooks = locationBody(httpBlock(conf("app-example-com")!), "location ^~ /_openship/hooks/ {");
+    expect(hooks).not.toContain("$openship_redirect_https");
+  });
+
   test("every block that sends the header also defines the variable", async () => {
     // A vhost referencing an undefined variable fails `openresty -t`, which means
     // the reload is refused and registerRoute rolls the route back — so the two must
@@ -985,6 +1571,526 @@ describe("behind a TLS-terminating CDN", () => {
         }
       }
     }
+  });
+});
+
+// vercel.json `redirects` → an `if ($request_uri …) { return … }` chain at the head of
+// every location that serves project traffic.
+//
+// These were once a location apiece, which nginx cannot express faithfully: a capture
+// needs a REGEX location, but a regex location matches `$uri` (which nginx rewrites
+// internally, so a rule re-fired on the SPA fallback and looped), out-ranks every plain
+// prefix regardless of file order (inverting vercel.json's first-match-wins, and
+// swallowing our own webhook/composite locations), and `return` drops the query string.
+// A compiled `/(.*)` whose destination referenced no capture was worse still — it kept
+// `path: "/"` and emitted a SECOND `location /`, i.e. `[emerg] duplicate location`, so
+// the domain got no vhost at all.
+describe("vercel.json path redirects", () => {
+  const appConf = (conf: (slug: string) => string | undefined) => conf("app-example-com")!;
+  /** The portable pattern as it is actually emitted: every capture excludes control
+   *  characters, so a request cannot plant a bare CR in the Location header. */
+  const emitted = (pattern: string) =>
+    pattern
+      .replace(/\(\.\*\)/g, "([^\\x00-\\x1f\\x7f]*)")
+      .replace(/\(\.\+\)/g, "([^\\x00-\\x1f\\x7f]+)")
+      .replace(/\(\[\^\/\]\+\)/g, "([^/\\x00-\\x1f\\x7f]+)")
+      .replace(/\(\[\^\/\]\*\)/g, "([^/\\x00-\\x1f\\x7f]*)");
+  /** Same, for a `$request_uri` sink: captures also exclude `?` so a greedy group cannot
+   *  swallow the query string that `$is_args$args` is about to re-append. */
+  const emittedQ = (pattern: string) => emitted(pattern).replace(/\\x7f\]/g, "\\x7f?]");
+  /** The full `if` condition for a compiled pattern. */
+  const ifPattern = (pattern: string) => `if ($request_uri ~ "^${emittedQ(pattern)}(?:[?].*)?$") {`;
+
+  test("emits a capture-preserving redirect rule for a wildcard redirect", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      redirects: [
+        {
+          path: "/blog/",
+          exact: false,
+          statusCode: 308,
+          destination: "/news/$1",
+          pattern: "/blog/(.*)",
+        },
+      ],
+    });
+    const c = appConf(conf);
+    expect(c).toContain(ifPattern("/blog/(.*)"));
+    // Vercel preserves the query on a redirect; the old `return <dest>;` form dropped it.
+    expect(c).toContain("return 308 /news/$1$is_args$args;");
+    // Neither the unanchored prefix location (which produced the literal `/news/`
+    // Location header, #510) nor a regex location (which re-fires on internal rewrites).
+    expect(c).not.toContain("location /blog/ {");
+    expect(c).not.toContain("location ~ ");
+  });
+
+  test("keeps a capture-free redirect on the same chain, anchored by exactness", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      redirects: [
+        { path: "/old", exact: true, statusCode: 301, destination: "/new" },
+        { path: "/legacy/", exact: false, statusCode: 302, destination: "/current" },
+      ],
+    });
+    const c = appConf(conf);
+    // Exact must not match a longer path, so it anchors past an optional query.
+    expect(c).toContain('if ($request_uri ~ "^/old(?:[?].*)?$") {');
+    expect(c).toContain("return 301 /new$is_args$args;");
+    // A prefix rule needs no end anchor — anything may follow.
+    expect(c).toContain('if ($request_uri ~ "^/legacy/") {');
+    expect(c).toContain("return 302 /current$is_args$args;");
+    expect(c).not.toContain("location = /old {");
+    expect(c).not.toContain("location /legacy/ {");
+  });
+
+  // The bug this shape exists to prevent: a root-level source with a capture-free
+  // destination is one of Vercel's own documented examples, and as a location it
+  // duplicated `location /` — `[emerg] duplicate location "/"`, no vhost, and
+  // registerRoute's rollback then DELETES the file for a brand-new domain.
+  test("never emits a second `location /` for a root-level catch-all", async () => {
+    const compiled = compileVercelRouting({
+      redirects: [{ source: "/(.*)", destination: "https://vercel.com/docs" }],
+    });
+    expect(compiled.skipped).toEqual([]);
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, redirects: compiled.redirects });
+    const c = appConf(conf);
+    expect(c.match(/location \/ \{/g)).toHaveLength(1);
+    expect(c).toContain("return 308 https://vercel.com/docs$is_args$args;");
+  });
+
+  test("redirect rules lead every serving location, in both server blocks", async () => {
+    // First-match-wins inside one location, so the chain must precede what serves — and
+    // it must be in the :80 block too, AFTER the https upgrade (reaching https first
+    // costs nothing; being redirected on plain http then again on https costs a hop).
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({
+      ...OURS,
+      redirects: [
+        { path: "/blog/", exact: false, statusCode: 308, destination: "/news/$1", pattern: "/blog/(.*)" },
+      ],
+    });
+    const c = appConf(conf);
+    const rule = ifPattern("/blog/(.*)");
+    for (const block of [httpBlock(c), tlsBlock(c)]) {
+      const serve = block.slice(block.indexOf("location / {"));
+      // Inside `location /` (so a `^~` challenge match never reaches it) and ahead of
+      // what serves, since the chain is first-match-wins.
+      expect(serve).toContain(rule);
+      expect(serve.indexOf(rule)).toBeLessThan(serve.indexOf("proxy_pass"));
+    }
+    expect(httpBlock(c).indexOf("$openship_redirect_https")).toBeLessThan(
+      httpBlock(c).indexOf(rule),
+    );
+  });
+
+  // vercel.json is first-match-wins. As locations, a later capture-bearing rule became a
+  // regex and out-ranked an earlier, narrower prefix one — so `/docs/legacy/x` answered
+  // the `/docs/` rule. An ordered `if` chain in one location restores source order.
+  test("evaluates redirects in vercel.json order, not by specificity", async () => {
+    const compiled = compileVercelRouting({
+      redirects: [
+        { source: "/docs/legacy/:p*", destination: "/archive", permanent: true },
+        { source: "/docs/:p*", destination: "/documentation/:p*", permanent: true },
+      ],
+    });
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, redirects: compiled.redirects });
+    const c = appConf(conf);
+    expect(c.indexOf("return 308 /archive")).toBeLessThan(c.indexOf("return 308 /documentation/$1"));
+  });
+
+  // The emitter's pattern guard is a WHITELIST, so it has to admit every shape the
+  // compiler can hand it — a guard narrower than the compiler would reject a valid
+  // vercel.json at deploy time instead of at compile time.
+  test("accepts every capture pattern compileVercelRouting can produce", async () => {
+    const compiled = compileVercelRouting({
+      redirects: [
+        { source: "/blog/:path*", destination: "/news/:path*" }, // (.*)
+        { source: "/all/:rest+", destination: "/every/:rest+" }, // (.+)
+        { source: "/u/:id", destination: "/users/:id" }, // ([^/]+)
+        { source: "/opt/:id?", destination: "/maybe/:id?" }, // ([^/]*)
+        { source: "/v1.0/:rest*", destination: "/v2/:rest*" }, // escaped dot
+        { source: "/:org/old/:rest*", destination: "/:org/new/:rest*" }, // multi-capture
+      ],
+    });
+    expect(compiled.skipped).toEqual([]);
+    expect(compiled.redirects.every((r) => r.pattern)).toBe(true);
+
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, redirects: compiled.redirects });
+    const c = appConf(conf);
+    for (const r of compiled.redirects) {
+      expect(c).toContain(ifPattern(r.pattern!));
+      expect(c).toContain(`return ${r.statusCode} ${r.destination}$is_args$args;`);
+    }
+  });
+
+  // `return` copies the capture into the Location header, so an unrestricted `.` would
+  // let `/blog/a%0Db` plant a bare CR there. Verified against nginx 1.27.5: the hardened
+  // class makes it fall through instead.
+  test("excludes control characters and the query delimiter from every capture", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      redirects: [
+        { path: "/blog/", exact: false, statusCode: 308, destination: "/news/$1", pattern: "/blog/(.*)" },
+        { path: "/u/", exact: false, statusCode: 301, destination: "/users/$1", pattern: "/u/([^/]+)" },
+      ],
+    });
+    const c = appConf(conf);
+    // Spelled out rather than via the helpers so the guard's actual text is asserted.
+    // `?` is excluded on top of the control characters because the sink is $request_uri:
+    // a greedy `(.*)` would otherwise capture `x?a=1` whole and $is_args$args would then
+    // append the query a SECOND time.
+    expect(c).toContain('if ($request_uri ~ "^/blog/([^\\x00-\\x1f\\x7f?]*)(?:[?].*)?$") {');
+    expect(c).toContain('if ($request_uri ~ "^/u/([^/\\x00-\\x1f\\x7f?]+)(?:[?].*)?$") {');
+    // An unrestricted `.` would match a CR; nothing we emit may contain one.
+    expect(c).not.toMatch(/\$request_uri ~ \S*\(\.[*+]\)/);
+  });
+
+  // A capture cannot go into `proxy_pass` — a variable there needs a `resolver` the edge
+  // has none of, so it would fail at request time rather than at `nginx -t`.
+  test("emits a wildcard rewrite as `rewrite … break` + a variable-free proxy_pass", async () => {
+    const compiled = compileVercelRouting({
+      rewrites: [{ source: "/proxy/:path*", destination: "https://api.example.com/v2/:path*" }],
+    });
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, proxyLocations: compiled.proxyLocations });
+    const c = appConf(conf);
+    const match = `^${emitted("/proxy/(.*)")}$`;
+    expect(c).toContain(`location ~ ${match} {`);
+    expect(c).toContain(`rewrite ${match} /v2/$1 break;`);
+    expect(c).toContain("proxy_pass https://api.example.com;");
+    // An external origin needs its own Host and SNI, not ours.
+    expect(c).toContain("proxy_set_header Host api.example.com;");
+    expect(c).toContain("proxy_ssl_server_name on;");
+  });
+
+  test("keeps our Host on an internal prefix proxy location, and makes it `^~`", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      proxyLocations: [{ pathPrefix: "/api/", targetUrl: "http://10.0.0.5:3000" }],
+    });
+    const c = appConf(conf);
+    // `^~` so a repo's compiled `/(.*)` regex cannot out-rank our own upstream and take
+    // the project's authenticated /api traffic — cookies and all — to a third party.
+    expect(c).toContain("location ^~ /api/ {");
+    expect(c).toContain("proxy_pass http://10.0.0.5:3000;");
+    expect(c).toContain("proxy_set_header Host $host;"); // ours, not the upstream's
+    expect(c).not.toContain("proxy_ssl_server_name");
+    expect(c).not.toContain("rewrite ");
+  });
+
+  // The rewrite twin of the `location /` duplication fixed for redirects above: a
+  // capture-free destination keeps `pathPrefix: "/"` (Vercel's own documented shape), and
+  // nginx compares location NAMES — `^~` only sets `noregex` — so `^~ /` next to `/` is
+  // `[emerg] duplicate location "/"`. Routing failures never fail a deploy, so the vhost
+  // is refused, rolled back, and the domain goes dark with a green deploy.
+  test("never emits a proxy location that duplicates `location /`", async () => {
+    const compiled = compileVercelRouting({
+      rewrites: [{ source: "/:path*", destination: "https://api.example.com/v2" }],
+    });
+    expect(compiled.proxyLocations[0]?.pathPrefix).toBe("/"); // genuinely the root
+    expect(compiled.proxyLocations[0]?.pattern).toBeUndefined(); // …as a plain prefix
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, proxyLocations: compiled.proxyLocations });
+    const c = appConf(conf);
+    expect(c).not.toContain("location ^~ / {");
+    const names = locationNames(httpBlock(c));
+    expect(names).toEqual([...new Set(names)]);
+    // `location /` keeps serving the project's own upstream.
+    expect(c).toContain("proxy_pass http://127.0.0.1:3009;");
+    expect(c).not.toContain("proxy_pass https://api.example.com/v2;");
+  });
+
+  // routing-apply and the compose deploy CONCATENATE a project's composite locations with
+  // the compiled vercel.json ones, so one prefix can arrive twice — the same `[emerg]`.
+  test("emits a repeated path prefix once, keeping the first upstream", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      proxyLocations: [
+        { pathPrefix: "/api/", targetUrl: "http://10.0.0.5:3000" },
+        { pathPrefix: "/api/", targetUrl: "http://10.0.0.9:3000" },
+      ],
+    });
+    const c = appConf(conf);
+    expect(c.match(/location \^~ \/api\/ \{/g)).toHaveLength(1);
+    expect(c).toContain("proxy_pass http://10.0.0.5:3000;");
+    expect(c).not.toContain("proxy_pass http://10.0.0.9:3000;");
+  });
+
+  // `/_openship/` is ours: a rewrite naming the webhook prefix duplicated the delivery
+  // location (same `[emerg]`), and the repo's origin must never be the one that wins it.
+  test("a rewrite cannot duplicate our own webhook location", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      webhookProxy: "http://127.0.0.1:4000/api/webhooks/",
+      proxyLocations: [{ pathPrefix: "/_openship/hooks/", targetUrl: "http://attacker.example" }],
+    });
+    const c = appConf(conf);
+    expect(c.match(/location \^~ \/_openship\/hooks\/ \{/g)).toHaveLength(1);
+    expect(c).toContain("proxy_pass http://127.0.0.1:4000/api/webhooks/;");
+    expect(c).not.toContain("attacker.example");
+  });
+
+  // A regex location outranks a plain prefix one, so a catch-all `vercel.json` rule used
+  // to swallow the ACME challenge and no certificate for the host could ever issue.
+  // Reproduced on 1.27.5: the challenge 308'd to `/landing/.well-known/acme-challenge/…`.
+  test("a catch-all cannot out-rank the challenge locations", async () => {
+    const compiled = compileVercelRouting({
+      redirects: [{ source: "/:path*", destination: "/landing/:path*", permanent: true }],
+    });
+    expect(compiled.redirects[0].pattern).toBe("/(.*)"); // genuinely a catch-all
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, redirects: compiled.redirects });
+    const c = appConf(conf);
+    // `^~` stops nginx at the prefix and skips regex matching entirely. The redirect
+    // chain now lives inside `location /`, which a `^~` prefix match never reaches — so
+    // the challenge is safe on both counts.
+    expect(c).toContain("location ^~ /.well-known/acme-challenge/ {");
+    expect(c).toContain(`location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {`);
+    const challenge = c.indexOf("location ^~ /.well-known/acme-challenge/ {");
+    expect(challenge).toBeLessThan(c.indexOf(ifPattern("/(.*)")));
+  });
+
+  // `^~` only protects while it is the LONGEST matching prefix, so a rule UNDER the
+  // challenge path defeats it — answering HTTP-01 from an origin the repo names, which is
+  // an attacker-mintable certificate for the operator's domain. `isSafePath` admits `.`
+  // and `-`, so nothing in the compiler's charclass stopped this.
+  test("refuses any rule under /.well-known/, in the compiler and at emit time", async () => {
+    const compiled = compileVercelRouting({
+      rewrites: [{ source: "/.well-known/acme-challenge/a", destination: "http://attacker.example" }],
+      redirects: [{ source: "/.well-known/x", destination: "/y", permanent: true }],
+    });
+    expect(compiled.proxyLocations).toEqual([]);
+    expect(compiled.redirects).toEqual([]);
+    expect(compiled.skipped).toHaveLength(2);
+
+    // A route can also arrive from the API or a sidecar, bypassing the compiler.
+    const { nginx } = setup();
+    await expect(
+      nginx.registerRoute({
+        ...PROXY,
+        proxyLocations: [
+          { pathPrefix: "/.well-known/acme-challenge/a", targetUrl: "http://attacker.example" },
+        ],
+      }),
+    ).rejects.toThrow(/well-known/);
+  });
+
+  // `$` is not in assertNoNginxInjection's charclass, and every value here lands in a
+  // complex value: `proxy_pass http://$http_x_target` is an open proxy any visitor steers
+  // with one request header, `return 307 https://$arg_next` an open redirect.
+  test("refuses a destination or upstream that smuggles an nginx variable", async () => {
+    const compiled = compileVercelRouting({
+      rewrites: [{ source: "/p/:path*", destination: "http://$http_x_target/:path*" }],
+      redirects: [
+        { source: "/go/:p*", destination: "https://$arg_next" },
+        { source: "/go2/:sub", destination: "https://:sub.example.com" },
+      ],
+    });
+    expect(compiled.proxyLocations).toEqual([]);
+    expect(compiled.redirects).toEqual([]);
+    expect(compiled.skipped).toHaveLength(3);
+
+    const { nginx } = setup();
+    await expect(
+      nginx.registerRoute({ ...PROXY, proxyLocations: [{ pathPrefix: "/p/", targetUrl: "http://$http_x_target" }] }),
+    ).rejects.toThrow(/variable/);
+    await expect(
+      nginx.registerRoute({
+        ...PROXY,
+        redirects: [{ path: "/go/", exact: false, statusCode: 307, destination: "https://$arg_next" }],
+      }),
+    ).rejects.toThrow(/variable/);
+  });
+
+  test("REFUSES a redirect whose pattern or destination could inject config", async () => {
+    // The compiler sanitizes these, but a route also arrives from the API and from a
+    // persisted sidecar — so the emitter re-checks rather than trusting its caller.
+    const { nginx } = setup();
+    const bad = [
+      { path: "/a/", exact: false, statusCode: 301, destination: "/b/$1", pattern: "/a/(.*)$ { } location /x { deny all; } location ~ ^/y" },
+      { path: "/a/", exact: false, statusCode: 301, destination: "/b;\n return 200 'pwned'" },
+      { path: "/a;\n deny all; #", exact: true, statusCode: 301, destination: "/b" },
+    ];
+    for (const redirect of bad) {
+      await expect(nginx.registerRoute({ ...PROXY, redirects: [redirect] })).rejects.toThrow();
+    }
+  });
+});
+
+// `headers` for a specific path, and the `cleanUrls`/`trailingSlash` URL shape. Both
+// used to be dropped on the floor for self-hosted while cloud honoured them.
+describe("vercel.json path headers and URL shape", () => {
+  const appConf = (conf: (slug: string) => string | undefined) => conf("app-example-com")!;
+  const STATIC: RouteConfig = { ...PROXY, targetUrl: undefined, staticRoot: "/opt/openship/site" } as unknown as RouteConfig;
+
+  test("backs a path-scoped header with a $request_uri map, not a location", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      headerRules: [
+        { path: "/", headers: [{ key: "X-Global", value: "g" }] },
+        { path: "/api/", headers: [{ key: "Cache-Control", value: "no-store" }] },
+      ],
+    });
+    const c = appConf(conf);
+    // Global stays literal; path-scoped goes through a namespaced map variable.
+    expect(c).toContain('add_header X-Global "g" always;');
+    expect(c).toMatch(/map \$request_uri \$osh_hdr_app_example_com_0 \{/);
+    expect(c).toContain('~^/api/ "no-store";');
+    expect(c).toContain("add_header Cache-Control $osh_hdr_app_example_com_0 always;");
+    // The map is http scope, so it must precede the server block.
+    expect(c.indexOf("map $request_uri")).toBeLessThan(c.indexOf("server {"));
+    // `$uri` follows internal rewrites, so it would miss the SPA-fallback case entirely.
+    expect(c).not.toContain("map $uri ");
+    // add_header inside a location would discard every inherited one.
+    expect(c).not.toMatch(/location [^\n]*\{[^}]*add_header/);
+  });
+
+  test("keys the URL shape on $request_uri inside `location /`", async () => {
+    // As regex locations on `$uri` these fired on nginx's OWN rewrites: `index` turned
+    // `/docs/` into `/docs/index.html` → 308 `/docs/index`, and the SPA fallback turned
+    // every 404 into a 308 to `/index`. Both reproduced on 1.27.5 before this changed.
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...STATIC, cleanUrls: true });
+    const c = appConf(conf);
+    expect(c).toContain('if ($request_uri ~ "^([^?]*)[.]html([?].*)?$") {');
+    expect(c).toContain("return 308 $1$2;");
+    expect(c).toContain("try_files $uri $uri.html $uri/ /index.html;");
+    // Inside `location /`, so an ACME challenge (its own location) can never reach it.
+    const serve = c.indexOf("location / {");
+    expect(c.indexOf("if ($request_uri")).toBeGreaterThan(serve);
+  });
+
+  test("drops $uri/ when stripping slashes, or an index-less directory loops", async () => {
+    // `$uri/` triggers nginx's own 301 adding the slash, which the strip rule 308s
+    // straight back. Measured on OpenResty 1.27.1.1: `/dir-no-index` → 301 `/dir-no-index/`
+    // → 308 `/dir-no-index` → …, `curl -L` exits 47. Probing `$uri/index.html` serves the
+    // same directories without ever asking nginx to add a slash we then remove.
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...STATIC, trailingSlash: false });
+    const c = appConf(conf);
+    expect(c).toContain("try_files $uri $uri/index.html /index.html;");
+    expect(c).not.toContain("$uri/ /index.html");
+    expect(c).toContain('if ($request_uri ~ "^([^?]+)/([?].*)?$") {');
+  });
+
+  // As an unconditional `if`, enforcement redirected before anything checked whether the
+  // path resolves, so `/LICENSE` 308'd to `/LICENSE/` and served the SPA index with a 200
+  // — worse than a 404, since monitoring and crawlers see success. As a try_files fallback
+  // it can only run once nothing resolved, which also makes it loop-free and lets it
+  // coexist with cleanUrls.
+  test("enforces the trailing slash only for a path that resolves to nothing", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...STATIC, trailingSlash: true });
+    const c = appConf(conf);
+    expect(c).toContain("try_files $uri $uri/ @osh_add_slash;");
+    expect(c).toContain("location @osh_add_slash {");
+    // A named location inherits nothing, so it must repeat `root` — without it
+    // `try_files /index.html` serves OpenResty's stock welcome page, not the site.
+    expect(c).toMatch(/location @osh_add_slash \{\n\s+root \/opt\/openship\/site;/);
+    // Declines a path that already ends in `/`, so the retry falls through to the index
+    // instead of bouncing again.
+    expect(c).toContain('if ($request_uri ~ "^([^?]*[^/?])([?].*)?$") {');
+    expect(c).toContain("return 308 $1/$2;");
+    expect(c).not.toContain("return 308 $1$2/$3;"); // the old unconditional form
+  });
+
+  test("combines cleanUrls with slash enforcement, no special case needed", async () => {
+    // `$uri.html` resolves `/about` before the fallback is reached, so the pair no longer
+    // depends on the build emitting `about/index.html` — and enforcement no longer has to
+    // be dropped outright to avoid that gamble.
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...STATIC, cleanUrls: true, trailingSlash: true });
+    const c = appConf(conf);
+    expect(c).toContain("try_files $uri $uri.html $uri/ @osh_add_slash;");
+    expect(c).toContain("[.]html"); // cleanUrls kept
+  });
+
+  // A map variable is http-wide, and the name used to be a slug of the path — so several
+  // `headers` entries for the SAME source (legal vercel.json) and paths that squash alike
+  // (`/a-b/` vs `/a/b/`) shared one variable. nginx does NOT reject that: `map` registers
+  // its variable as CHANGEABLE, `openresty -t` passes, and the last declaration wins — so
+  // one header shipped a sibling rule's value and the other silently vanished.
+  test("gives every path-scoped header its own map variable", async () => {
+    const compiled = compileVercelRouting({
+      headers: [
+        { source: "/api/(.*)", headers: [{ key: "X-One", value: "1" }] },
+        { source: "/api/(.*)", headers: [{ key: "X-Two", value: "2" }] },
+        { source: "/a-b/", headers: [{ key: "X-Dash", value: "dash" }] },
+        { source: "/a/b/", headers: [{ key: "X-Slash", value: "slash" }] },
+      ],
+    });
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, headerRules: compiled.headerRules });
+    const c = appConf(conf);
+    const names = [...c.matchAll(/map \$request_uri \$(osh_hdr_\w+)/g)].map((m) => m[1]);
+    expect(names).toHaveLength(4);
+    expect(new Set(names).size).toBe(4);
+    // Each add_header must read its OWN variable, in the same order.
+    for (const [i, key] of ["X-One", "X-Two", "X-Dash", "X-Slash"].entries()) {
+      expect(c).toContain(`add_header ${key} $${names[i]} always;`);
+    }
+    // The path lands in a regex, so an unescaped `.` would over-match.
+    expect(c).toContain('~^/a-b/ "dash";');
+  });
+
+  test("escapes a dot in a path-scoped header's path", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      ...PROXY,
+      headerRules: [{ path: "/v1.0/", headers: [{ key: "X-Ver", value: "1" }] }],
+    });
+    // Unescaped, `~^/v1.0/` would also fire on `/v1x0/`.
+    expect(appConf(conf)).toContain('~^/v1[.]0/ "1";');
+  });
+
+  // Both sinks are nginx COMPLEX values, so `$name` expands: `"build-$BUILD_ID"` is
+  // `[emerg] unknown "build_id" variable` (which costs the whole vhost), `"US $5 only"`
+  // silently serves `US  only`, and `"$http_cookie"` would reflect request state.
+  test("refuses a header value containing an nginx variable", async () => {
+    const compiled = compileVercelRouting({
+      headers: [
+        { source: "/(.*)", headers: [{ key: "X-B", value: "build-$BUILD_ID" }] },
+        { source: "/api/", headers: [{ key: "X-P", value: "US $5 only" }] },
+      ],
+    });
+    expect(compiled.headerRules).toEqual([]);
+    expect(compiled.skipped).toHaveLength(2);
+
+    const { nginx } = setup();
+    await expect(
+      nginx.registerRoute({
+        ...PROXY,
+        headerRules: [{ path: "/api/", headers: [{ key: "X-B", value: "$http_cookie" }] }],
+      }),
+    ).rejects.toThrow(/variable/);
+  });
+
+  test("never applies the URL shape to a PROXIED route (the framework owns it)", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({ ...PROXY, cleanUrls: true, trailingSlash: false });
+    const c = appConf(conf);
+    expect(c).not.toContain("$request_uri ~");
+    // The challenge location has a try_files of its own; the STATIC chain must be absent.
+    expect(c).not.toContain("try_files $uri $uri");
+  });
+
+  test("emits today's exact chain when neither flag is set", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute(STATIC);
+    const c = appConf(conf);
+    expect(c).toContain("try_files $uri $uri/ /index.html;");
+    expect(c).not.toContain("$request_uri ~");
+    expect(c).not.toContain("map ");
   });
 });
 
@@ -1034,7 +2140,7 @@ describe("canonical host redirect", () => {
     const { nginx, conf } = setup({ certDomains: ["www.example.com"] });
     await nginx.registerRoute(REDIRECT);
     const c = wwwConf(conf);
-    expect(c).toContain("location /.well-known/acme-challenge/");
+    expect(c).toContain("location ^~ /.well-known/acme-challenge/");
     expect(c).toContain(`proxy_pass http://127.0.0.1:${ACME_HTTP01_PORT}`);
   });
 
@@ -1048,7 +2154,7 @@ describe("canonical host redirect", () => {
     const { nginx, conf } = setup({ certDomains: ["www.example.com"] });
     await nginx.registerRoute(REDIRECT);
     const c = wwwConf(conf);
-    expect(c).toContain(`location ${EDGE_CHALLENGE_URL_PREFIX} {`);
+    expect(c).toContain(`location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {`);
     expect(c).toContain(`root ${EDGE_CHALLENGE_ROOT};`);
   });
 

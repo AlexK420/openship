@@ -15,8 +15,9 @@
  */
 
 import { repos, restoreSubgraph, PkCollisionError, type Service } from "@repo/db";
-import { slugify, safeErrorMessage } from "@repo/core";
-import type { ContainerStatus } from "@repo/adapters";
+import { slugify, safeErrorMessage, type ComposeAdvanced } from "@repo/core";
+import { buildNetworkAliases, type ContainerStatus } from "@repo/adapters";
+import { serviceAliasExtras } from "../../lib/deployable-service";
 import type { RequestContext } from "../../lib/request-context";
 import { ensureProject, createServicesProjectWithId } from "../projects/project-crud.service";
 import { getFileContent } from "../github/github.service";
@@ -58,6 +59,11 @@ export interface RepoComposeService {
   command?: string;
   commandArgv?: string[] | null; // #332
   restart?: string;
+  /** Extended compose keys (healthcheck, resource caps, shared namespaces). Must be
+   *  declared here AND forwarded into the row below — carrying it only out of the
+   *  parser leaves it stranded on this shape, which is how the blob went missing
+   *  from every migrated stack in the first place. */
+  advanced?: ComposeAdvanced;
 }
 
 /**
@@ -102,6 +108,11 @@ export async function parseRepoCompose(
         command: s.command ?? undefined,
         commandArgv: s.commandArgv ?? null, // #332
         restart: s.restart ?? undefined,
+        // Extended keys (healthcheck, resource caps, shared namespaces). This
+        // hand-written map dropped the whole blob, so a migrated stack lost its
+        // healthchecks and per-service caps along with them — the same
+        // field-by-field omission #533 is about.
+        advanced: s.advanced ?? undefined,
       }));
     } catch {
       return []; // invalid YAML → graceful empty
@@ -305,11 +316,19 @@ export function buildAdoptedServiceRows(
       restart: s.restart,
       // Built additively: an adopted container's live cpu/memory caps must
       // survive even when it has no healthcheck (and vice versa).
+      //
+      // Healthcheck and caps come from LIVE truth, which is the whole adopt model.
+      // Shared namespaces come from the repo spec instead, because they are the one
+      // part live inspect doesn't give us — and the row is what the NEXT deploy
+      // recreates the container from, so dropping them here means a service the
+      // compose file pins to a sidecar's namespace quietly comes up on its own.
       advanced:
-        s.healthcheck || s.resources
+        s.healthcheck || s.resources || repo?.advanced?.networkMode || repo?.advanced?.pidMode
           ? {
               ...(s.healthcheck && { healthcheck: s.healthcheck }),
               ...(s.resources && { resources: s.resources }),
+              ...(repo?.advanced?.networkMode && { networkMode: repo.advanced.networkMode }),
+              ...(repo?.advanced?.pidMode && { pidMode: repo.advanced.pidMode }),
             }
           : undefined,
     };
@@ -466,6 +485,10 @@ export async function adoptServerStack(opts: {
         command: rs.command,
         commandArgv: rs.commandArgv ?? null, // #332
         restart: rs.restart,
+        // The other half of the parser passthrough: without this the blob reaches
+        // RepoComposeService and stops there, so the migrated row still loses its
+        // healthcheck, caps, and shared namespaces.
+        advanced: rs.advanced,
       });
     }
   }
@@ -722,7 +745,13 @@ export async function joinReusedContainersToGroup(opts: {
     const discByName = new Map(attach.map((c) => [renames?.[c.name] ?? c.name, c]));
     const members = serviceRows
       .filter((s) => discByName.has(s.name))
-      .map((s) => ({ containerId: discByName.get(s.name)?.containerId ?? "", alias: s.name }))
+      .map((s) => ({
+        containerId: discByName.get(s.name)?.containerId ?? "",
+        // The SAME alias set a natively-deployed container gets (row name +
+        // `advanced.alias`), so east-west by a custom alias resolves for a reused
+        // container too instead of only for deployed ones.
+        aliases: buildNetworkAliases(s.name, serviceAliasExtras(s)),
+      }))
       .filter((m) => m.containerId.length > 0);
     await rt.joinServiceGroupContainers(slug, members);
   } finally {
@@ -759,8 +788,12 @@ async function refreshRestoredRuntime(
         containerId: sd.containerId,
         status: status === "running" ? "success" : "failure",
         imageRef: sd.imageRef ?? null,
-        hostPort: info?.hostPort ?? sd.hostPort ?? null,
-        ip: info?.ip ?? sd.ip ?? null,
+        // A live inspect that ANSWERED replaces the snapshot outright, including
+        // "publishes nothing" → null. Keeping the restored port here is what made
+        // the row claim a 127.0.0.1 publish the container doesn't have (#506).
+        // `info === null` = couldn't ask → keep the last-known values.
+        hostPort: info ? (info.hostPort ?? null) : (sd.hostPort ?? null),
+        ip: info ? (info.ip ?? null) : (sd.ip ?? null),
       });
     }
     await repos.deployment.updateStatus(deploymentId, deriveDeploymentStatus(states));

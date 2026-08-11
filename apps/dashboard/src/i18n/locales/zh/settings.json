@@ -115,10 +115,6 @@
     "noServers": "尚未配置任何服务器 —— 请从部署选择器中添加一个。",
     "clearDefault": "清除默认（每次都询问）",
     "targets": {
-      "local": {
-        "label": "本机",
-        "desc": "本地 Docker / 运行时"
-      },
       "server": {
         "label": "我的服务器",
         "desc": "已配置的 SSH 服务器"
@@ -130,8 +126,7 @@
     },
     "labelFor": {
       "yourServer": "你的服务器",
-      "cloud": "Openship Cloud",
-      "local": "本机"
+      "cloud": "Openship Cloud"
     },
     "toast": {
       "pickServer": "请先选择一个服务器",

@@ -94,7 +94,9 @@ async function resolveProjectTrackedDomains(project: Project): Promise<string[]>
  *
  * Server resolution order:
  *   1. Active deployment's `meta.serverId`
- *   2. First configured server (single-server setups)
+ *   2. This box's own canonical (`isLocal`) row, scoped to the project's organization
+ *
+ * There is no third step: a project whose org has neither is not observable from here.
  */
 export async function resolveProjectTracking(projectId: string): Promise<ProjectTracking | null> {
   const source = await resolveProjectTrafficSource(projectId);
@@ -128,10 +130,23 @@ async function buildTrafficSourcesForDomains(
     }));
   }
 
-  // Server: deployment meta first, then first configured server.
+  // Server: the deployment's own meta, else THIS box's canonical row — the same rule
+  // `postEdgeMgmt` uses below, so read and write resolve one machine.
+  //
+  // NOT `server.list()[0]`: that query is unscoped by organization AND by `isLocal`
+  // (server.repo.ts), so it returns the oldest row in the whole instance. On a box
+  // whose oldest row is a remote or foreign-org server — desktop, host-control-off,
+  // or an install that added remotes before its own row existed — a derived-local
+  // project (no `meta.serverId`, which is every one of them: deployment-runtime
+  // records the id only for the "server" target) had its traffic read from, and its
+  // tracked hostnames written to, a machine it never deployed to. `sshManager.acquire`
+  // looks the id up with no organizationId, and the caller holds only `{project, read}`.
+  //
+  // No local row means this box is not a deploy target, so there is no edge of ours to
+  // read and returning nothing is the correct answer, not a guess at another host.
   if (!serverId) {
-    const servers = await repos.server.list();
-    serverId = servers[0]?.id ?? null;
+    const local = await repos.server.findLocal(project.organizationId).catch(() => undefined);
+    serverId = local?.id ?? null;
   }
   if (!serverId) return [];
 

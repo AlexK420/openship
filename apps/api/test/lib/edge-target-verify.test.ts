@@ -51,7 +51,12 @@ vi.mock("@repo/db", async () => {
 vi.mock("../../src/lib/cloud/client", () => ({
   cloudClient: () => ({ edgeProxy: { requestVerification, checkVerification } }),
 }));
-vi.mock("../../src/lib/deployment-runtime", () => ({ resolveTargetPlatform }));
+// `disposePlatform` is the release step edge-verify now calls on the platform it
+// resolved (it only wants `.routing`); a no-op stub keeps this suite focused.
+vi.mock("../../src/lib/deployment-runtime", () => ({
+  resolveTargetPlatform,
+  disposePlatform: () => {},
+}));
 
 import { ensureTargetVerified } from "../../src/lib/edge-target-verify";
 

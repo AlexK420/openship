@@ -141,6 +141,17 @@ export interface InstallerConfig {
    * policy → the installer throws EdgeConflictError rather than guessing.
    */
   promptUser?: PromptUserFn;
+  /**
+   * Run the installer even when the component is already installed and working.
+   *
+   * The one way past `installDocker`'s skip (#491), and it exists because the thing
+   * it authorizes is destructive: the official installer pulls the CURRENT engine, so
+   * on an up-to-date box this is a major upgrade whose daemon restart bounces every
+   * container on the host. Only ever set from an explicit, per-component operator
+   * action ("Reinstall" on the Components tab, behind a confirm) — never inferred by
+   * a flow that merely needs Docker present.
+   */
+  reinstall?: boolean;
 }
 
 // ─── Edge (port 80/443) ownership ──────────────────────────────────────────────
@@ -265,4 +276,13 @@ export type EdgeConflictDetails = {
 
 // ─── Runtime mode ────────────────────────────────────────────────────────────
 
-export type RuntimeMode = "docker" | "bare";
+/**
+ * Re-exported, not redeclared: this was a second `"docker" | "bare"` that happened to
+ * agree with core's. Two identical unions type-check against each other, so nothing
+ * would have caught them drifting until a third member existed on one side only.
+ *
+ * Distinct from `runtime/index.ts`'s same-named type, which adds `"cloud"` — that one is
+ * a genuine superset for choosing a runtime adapter, which is why the barrel exports this
+ * one as `SystemRuntimeMode`.
+ */
+export type { RuntimeMode } from "@repo/core";

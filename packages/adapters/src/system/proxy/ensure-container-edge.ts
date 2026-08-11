@@ -37,6 +37,7 @@ import {
 } from "../managed-image";
 import { containerCommand, edgeContainerExecutor } from "../edge-container-executor";
 import { waitForPortListening } from "../port-listen";
+import { rootChecked, rootOrDegrade, type RootChecked } from "../privilege";
 import {
   EDGE_CONTAINER_NAME,
   edgeCrashReason,
@@ -113,6 +114,36 @@ export type EdgeProviderOptions = Omit<
 >;
 
 /**
+ * Elevate the HOST executor an edge provider will drive, before the container layer
+ * wraps it.
+ *
+ * Every side of this needs root on a non-root login and none of it was elevated: the
+ * vhost writes land in root-owned `/var/lib/openship/edge`, `/etc/letsencrypt` is
+ * 0700 root, and `docker exec` needs the daemon socket. `edgeContainerExecutor`'s
+ * docstring says privilege is the caller's problem — and then no caller solved it, so
+ * a deploy to a `deploy@host` box built and ran the app and quietly routed nothing.
+ * That was the one failure in this area that produced no error at all: routing gaps
+ * never fail a deploy, so the operator got a green deploy and an unreachable URL.
+ *
+ * Deliberately the INNER executor: `edgeContainerExecutor` composes commands into
+ * `docker exec …`, so elevating on the outside would produce
+ * `sudo -n sh -c 'docker exec …'` — right for the command half, but its file ops pass
+ * through to the inner executor and would stay unelevated. Elevating underneath gets
+ * both, and keeps the composition order the one thing the edge executor's tests pin.
+ * That ordering is why this is a named function for one call: it is a decision, and a
+ * decision inlined into an argument list is a decision nobody reads.
+ */
+function edgeHostExecutor(executor: CommandExecutor): Promise<RootChecked> {
+  return rootOrDegrade(executor, {
+    purpose: "Configuring routing and TLS",
+    consequence:
+      "Vhosts and certificates may not be writable, and routing will be incomplete — " +
+      "the deploy continues and the app still runs on its port.",
+    report: (message) => console.error(`[edge] ${message}`),
+  });
+}
+
+/**
  * Build the routing/SSL provider for a box whose edge is a CONTAINER reached from
  * outside it (over SSH). Shared by the deploy platform and the foreign-proxy
  * takeover so the path/pin decision is made in exactly one place — making it twice
@@ -130,7 +161,7 @@ export async function containerEdgeProvider(
     // migrate proxy scan, cert reuse, the mail cert symlinks — keeps working),
     // while reload/certbot run inside the container.
     paths: EDGE_HOST_PATHS,
-    executor: edgeContainerExecutor(executor, container),
+    executor: edgeContainerExecutor(await edgeHostExecutor(executor), container),
     // Challenge tokens go to the HOST side of the ACME mount, for the same reason
     // vhosts do. This is the ONE mount whose two sides differ
     // (/var/lib/openship/edge/acme → /var/www/acme), so the write path and the
@@ -166,7 +197,16 @@ export async function localContainerEdgeProvider(
   return new Provider({
     ...opts,
     paths: OPENRESTY_DEFAULT_PATHS,
-    executor: new DockerEdgeExecutor({ containerName: container }),
+    // The one place the privilege gate is the WRONG instrument, so the reason is stated
+    // instead: this executor's commands run inside the EDGE container, so probing
+    // through it would measure that container's interior and brand the result with a
+    // verdict about the wrong machine. Privilege here comes from the deployment shape —
+    // the api process is root in its own container, the vhost dir is a bind mount it
+    // owns, and the daemon socket is mounted in. There is no login to elevate.
+    executor: rootChecked(
+      new DockerEdgeExecutor({ containerName: container }),
+      "compose: api is root in its own container, writing shared mounts over a mounted socket",
+    ),
     // nginx.conf + the Lua are BAKED into the image — nothing to detect, install
     // or patch, and detection would answer from inside the container anyway.
     pinPaths: true,
@@ -417,8 +457,21 @@ export async function ensureContainerEdge(
       );
     }
   }
+  // These are the edge's entire persistent state — vhosts, certs, ACME webroot. A
+  // swallowed failure here does not stop the edge from starting: Docker creates a
+  // missing bind source itself, as an EMPTY root-owned dir, so the container comes up
+  // serving nothing and every later vhost write fails somewhere else entirely. Say it
+  // once, here, where the cause is still in hand.
   for (const mount of EDGE_CONTAINER_MOUNTS) {
-    await executor.exec(`mkdir -p ${sq(mount.host)}`).catch(() => {});
+    await executor.exec(`mkdir -p ${sq(mount.host)}`).catch((err: unknown) => {
+      onLog(
+        log(
+          `Could not create the edge state directory ${mount.host}: ${safeErrorMessage(err)}. ` +
+            `Docker will create it empty, so vhosts and certificates may not persist.`,
+          "warn",
+        ),
+      );
+    });
   }
 
   // 2. Whatever holds 80/443 → the ONE consent/takeover gate, which prompts, imports

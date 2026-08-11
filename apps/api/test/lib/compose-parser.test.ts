@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseComposeEnvFile, parseComposeFile } from "../../src/lib/compose-parser";
+import { blockingComposeFields, parseComposeEnvFile, parseComposeFile } from "../../src/lib/compose-parser";
 
 describe("parseComposeFile", () => {
   it("resolves Docker Compose environment interpolation from .env content", () => {
@@ -864,5 +864,162 @@ describe("parseComposeFile — service resource limits", () => {
     );
     expect(parsed.services[0]?.advanced?.resources?.memoryMb).toBe(1024);
     expect(parsed.services[0]?.advanced?.healthcheck?.test).toBe("curl -f localhost");
+  });
+});
+
+describe("parseComposeFile — shared namespaces (network_mode / pid)", () => {
+  const svc = (body: string) => `services:\n  app:\n    image: nginx\n${body}`;
+
+  it("stores the sharing forms on advanced, keyed the way the runtime reads them", () => {
+    const parsed = parseComposeFile(
+      svc("    network_mode: service:gluetun\n    pid: container:abc123\n"),
+    );
+    expect(parsed.services[0]?.advanced?.networkMode).toBe("service:gluetun");
+    expect(parsed.services[0]?.advanced?.pidMode).toBe("container:abc123");
+    expect(parsed.unsupported).toEqual([]);
+  });
+
+  it("stores network_mode: none", () => {
+    const parsed = parseComposeFile(svc("    network_mode: none\n"));
+    expect(parsed.services[0]?.advanced?.networkMode).toBe("none");
+  });
+
+  it("reports `host` as BLOCKING and stores nothing", () => {
+    // The refusal this feature is built around: importing it anyway deploys a
+    // container that bypasses the edge and can reach Openship's own loopback API.
+    // Blocking (not a warning) because there is nothing the wizard could collect
+    // to fix it — the compose file has to change.
+    const parsed = parseComposeFile(svc("    network_mode: host\n"));
+    expect(parsed.services[0]?.advanced?.networkMode).toBeUndefined();
+    expect(blockingComposeFields(parsed.unsupported)).toHaveLength(1);
+    expect(parsed.unsupported[0]).toMatchObject({
+      service: "app",
+      field: "network_mode",
+      blocking: true,
+    });
+  });
+
+  it("reports an unsupported value as blocking rather than dropping it", () => {
+    const parsed = parseComposeFile(svc("    network_mode: my-custom-net\n"));
+    expect(parsed.services[0]?.advanced?.networkMode).toBeUndefined();
+    expect(blockingComposeFields(parsed.unsupported)).toHaveLength(1);
+  });
+
+  it("says nothing about the compose default network", () => {
+    const parsed = parseComposeFile(svc("    network_mode: bridge\n"));
+    expect(parsed.services[0]?.advanced?.networkMode).toBeUndefined();
+    expect(parsed.unsupported).toEqual([]);
+  });
+
+  it("interpolates the value before validating it", () => {
+    const parsed = parseComposeFile(svc("    network_mode: service:${VPN_SVC}\n"), {
+      envFileContent: "VPN_SVC=gluetun\n",
+    });
+    expect(parsed.services[0]?.advanced?.networkMode).toBe("service:gluetun");
+  });
+
+  it("leaves advanced absent when neither key is declared", () => {
+    const parsed = parseComposeFile(svc("    ports:\n      - '80:80'\n"));
+    expect(parsed.services[0]?.advanced).toBeUndefined();
+  });
+});
+
+describe("parseComposeFile — dropped-key reporting", () => {
+  const svc = (body: string) => `services:\n  app:\n    image: nginx\n${body}`;
+
+  it("names each host-level key it can't honor, as a warning", () => {
+    const parsed = parseComposeFile(
+      svc("    privileged: true\n    cap_add:\n      - NET_ADMIN\n    sysctls:\n      net.ipv4.ip_forward: '1'\n"),
+    );
+    expect(parsed.unsupported.map((u) => u.field).sort()).toEqual([
+      "cap_add",
+      "privileged",
+      "sysctls",
+    ]);
+    // Warnings, not refusals: the service still runs, just without the extra.
+    expect(blockingComposeFields(parsed.unsupported)).toEqual([]);
+  });
+
+  it("ignores an empty declaration — nothing was actually requested", () => {
+    const parsed = parseComposeFile(svc("    cap_add: []\n    sysctls: {}\n"));
+    expect(parsed.unsupported).toEqual([]);
+  });
+
+  it("blocks a long-form tmpfs mount, which would otherwise become persistent disk", () => {
+    // Binds has no tmpfs syntax, so a sourceless mount reaches Docker as a bare
+    // path — an ANONYMOUS VOLUME. A RAM-backed, ephemeral, size-capped mount would
+    // silently become disk-backed and unbounded.
+    const parsed = parseComposeFile(
+      svc("    volumes:\n      - type: tmpfs\n        target: /run/cache\n"),
+    );
+    const blocking = blockingComposeFields(parsed.unsupported);
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0]?.field).toBe("volumes[].type=tmpfs");
+  });
+
+  it("blocks volume.subpath, which would otherwise mount the WHOLE volume", () => {
+    const parsed = parseComposeFile(
+      svc(
+        "    volumes:\n      - type: volume\n        source: data\n        target: /d\n        volume:\n          subpath: only/this\n",
+      ),
+    );
+    expect(blockingComposeFields(parsed.unsupported).map((u) => u.field)).toEqual([
+      "volumes[].volume.subpath",
+    ]);
+  });
+
+  it("warns on bind.propagation without blocking", () => {
+    const parsed = parseComposeFile(
+      svc(
+        "    volumes:\n      - type: bind\n        source: /h\n        target: /c\n        bind:\n          propagation: rslave\n",
+      ),
+    );
+    expect(parsed.unsupported.map((u) => u.field)).toEqual(["volumes[].bind.propagation"]);
+    expect(blockingComposeFields(parsed.unsupported)).toEqual([]);
+  });
+
+  it("reports only the unmodeled part of `deploy`, since resources.limits IS honored", () => {
+    const honored = parseComposeFile(
+      svc("    deploy:\n      resources:\n        limits:\n          memory: 1g\n"),
+    );
+    expect(honored.unsupported).toEqual([]);
+    expect(honored.services[0]?.advanced?.resources?.memoryMb).toBe(1024);
+
+    const partly = parseComposeFile(
+      svc("    deploy:\n      replicas: 3\n      resources:\n        limits:\n          memory: 1g\n"),
+    );
+    expect(partly.unsupported.map((u) => u.field)).toEqual(["deploy"]);
+    expect(partly.services[0]?.advanced?.resources?.memoryMb).toBe(1024);
+  });
+
+  it("says custom networks are flattened, and names them", () => {
+    const parsed = parseComposeFile(svc("    networks:\n      - backend\n"));
+    expect(parsed.unsupported[0]?.field).toBe("networks");
+    expect(parsed.unsupported[0]?.reason).toContain("backend");
+  });
+
+  it("reports nothing for a plain service", () => {
+    const parsed = parseComposeFile(
+      svc("    ports:\n      - '80:80'\n    volumes:\n      - ./c:/etc/c:ro\n"),
+    );
+    expect(parsed.unsupported).toEqual([]);
+  });
+});
+
+describe("parseComposeFile — a key set to its own default is not a loss", () => {
+  const svc = (body: string) => `services:\n  app:\n    image: nginx\n${body}`;
+
+  it("says nothing when the file explicitly asks for the default behaviour", () => {
+    // `privileged: false` requests exactly what the container already gets. Listing
+    // it teaches the operator to skim a list that mixes real losses with non-losses.
+    const parsed = parseComposeFile(
+      svc("    privileged: false\n    init: false\n    pids_limit: 0\n    read_only: false\n"),
+    );
+    expect(parsed.unsupported).toEqual([]);
+  });
+
+  it("still reports the same keys when they ask for something", () => {
+    const parsed = parseComposeFile(svc("    privileged: true\n    pids_limit: 100\n"));
+    expect(parsed.unsupported.map((u) => u.field).sort()).toEqual(["pids_limit", "privileged"]);
   });
 });

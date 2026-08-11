@@ -20,7 +20,7 @@
  */
 
 import { DEFAULT_RETAIN_COUNT } from "@repo/core";
-import { db, repos, schema } from "@repo/db";
+import { db, eq, repos, schema } from "@repo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
@@ -98,6 +98,23 @@ async function seedRuns(
     );
   }
   return rows;
+}
+
+/**
+ * A mail server = a `servers` row (where the org lives) plus the `mail_servers`
+ * row that `backup_policy.mail_server_id` actually points at. Both are needed:
+ * the FK is on mail_servers, the org lookup goes through servers.
+ */
+let mailServerSeq = 0;
+async function seedMailServer(orgId: string): Promise<string> {
+  // Rows survive the beforeEach wipe (it clears policies and runs), so the id
+  // has to be unique across the file, not just within a test.
+  const id = `server_mail_${++mailServerSeq}`;
+  await db
+    .insert(schema.servers)
+    .values({ id, organizationId: orgId, name: "mail", sshHost: "10.0.0.9" });
+  await db.insert(schema.mailServers).values({ serverId: id, domain: "example.test" });
+  return id;
 }
 
 describe("retention defaults", () => {
@@ -227,6 +244,8 @@ describe("prunePolicy", () => {
 
   it("reports WHY it did nothing instead of returning a bare zero", async () => {
     // Silence is what let "retention is on" and "retention runs" diverge.
+    // A policy with neither source column set can't be scoped to an org, so the
+    // paged read can't even be issued — that has to be said, not returned as 0.
     const policy = await seedBackupPolicy(destinationId, {
       sourceKind: "mail_server",
       projectId: null,
@@ -235,8 +254,48 @@ describe("prunePolicy", () => {
     const outcome = await prunePolicy(policy);
     expect(outcome).toEqual({
       dropped: 0,
-      skipped: "mail-server policy — retention not implemented",
+      skipped: "policy has neither a project nor a mail server",
     });
+  });
+
+  it("prunes a mail-server policy by mailServerId, against real SQL", async () => {
+    // The mail source used to be skipped outright: the one backup whose payload
+    // is every stored message was also the one with no ceiling. This goes through
+    // the real query rather than a mocked repo, because "does listByOrganization
+    // honor mailServerId" is the assumption the whole path rests on.
+    const mailServerId = await seedMailServer(organizationId);
+    const policy = await seedBackupPolicy(destinationId, {
+      sourceKind: "mail_server",
+      projectId: null,
+      mailServerId,
+      retainCount: 1,
+    });
+    const runs = await seedRuns(policy.id, 3, { projectId: null, mailServerId });
+
+    const outcome = await prunePolicy(policy);
+
+    expect(outcome).toEqual({ dropped: 2, skipped: null });
+    expect(h.deleted).toEqual(["artifact-1.tar", "artifact-0.tar"]);
+    expect((await repos.backupRun.findById(runs[2]!.id))?.deletedAt).toBeNull();
+  });
+
+  it("names the skip when the mail server row is gone", async () => {
+    // No org means no scoped read; deleting on a guess would cross tenants.
+    const mailServerId = await seedMailServer(organizationId);
+    const policy = await seedBackupPolicy(destinationId, {
+      sourceKind: "mail_server",
+      projectId: null,
+      mailServerId,
+      retainCount: 1,
+    });
+    await seedRuns(policy.id, 2, { projectId: null, mailServerId });
+    await db.delete(schema.servers).where(eq(schema.servers.id, mailServerId));
+
+    expect(await prunePolicy(policy)).toEqual({
+      dropped: 0,
+      skipped: "mail server row is gone",
+    });
+    expect(h.deleted).toEqual([]);
   });
 
   it("says so when the destination row is gone", async () => {

@@ -16,6 +16,7 @@ import { DockerRuntime, type RuntimeAdapter } from "@repo/adapters";
 import { safeErrorMessage } from "@repo/core";
 import { platform } from "../../lib/controller-helpers";
 import {
+  disposeRuntime,
   resolveDeploymentRuntime,
   resolveDeploymentPlatform,
   type DeploymentMeta,
@@ -559,6 +560,9 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
     } catch {
       continue;
     }
+    // Only the runtime's KIND is read here (nothing is executed against it), so
+    // release the transport immediately rather than at the end of the loop.
+    disposeRuntime(runtime);
     if (runtime instanceof DockerRuntime) {
       selfHosted = true;
       networkSlugs.add(project.slug);
@@ -797,6 +801,10 @@ export async function executeCleanup(
   const concurrency = opts?.concurrency ?? DEFAULT_CONCURRENCY;
   const { routing } = platform();
   const result: CleanupResult = { total: manifest.resources.length, succeeded: 0, failed: [] };
+  // The manifest's resources CARRY their runtime — collection resolves one per
+  // deployment and hands it over for destruction here, so this is the first point
+  // at which the transports are finished with. See `disposeManifestRuntimes`.
+  try {
 
   // Process in bounded batches
   for (let i = 0; i < manifest.resources.length; i += concurrency) {
@@ -822,6 +830,25 @@ export async function executeCleanup(
   }
 
   return result;
+  } finally {
+    disposeManifestRuntimes(manifest);
+  }
+}
+
+/**
+ * Release the transports a cleanup manifest is holding.
+ *
+ * Collection resolves ONE runtime per deployment and attaches it to every
+ * resource it produced, so the same handle repeats — dedupe before disposing.
+ * Exported because `executeCleanup` is not the only end of a manifest's life: the
+ * force-orphan teardown records the resources for the GC sweep and returns
+ * WITHOUT executing, which would otherwise strand one Docker-over-SSH bridge per
+ * deployment on every enforced delete.
+ */
+export function disposeManifestRuntimes(manifest: CleanupManifest): void {
+  for (const runtime of new Set(manifest.resources.map((r) => r.runtime))) {
+    disposeRuntime(runtime ?? undefined);
+  }
 }
 
 /** Destroy a single resource with one retry on failure. */

@@ -1,6 +1,8 @@
 export * from "./types";
 export * from "./stacks";
 export * from "./volumes";
+export * from "./compose-namespace";
+export * from "./compose-spec";
 export * from "./object-storage";
 export * from "./constants";
 export * from "./shell-split";
@@ -38,3 +40,7 @@ export * from "./project-source";
 export * from "./updates";
 export * from "./proxy-settings";
 export * from "./audit-taxonomy";
+export * from "./answer";
+export * from "./host-profile";
+export * from "./host-firewall";
+export * from "./host-channel";

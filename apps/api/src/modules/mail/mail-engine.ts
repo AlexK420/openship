@@ -32,6 +32,13 @@
  * to tune and no cache to invalidate by hand. A command that fails with a
  * "wrong flavor" signature drops the memo and re-probes to report the accurate
  * reason, so a hand-migrated box self-corrects on its next call.
+ *
+ * Only a POSITIVE topology (an engine exists) is retained. A `flavor: "none"` is
+ * NOT memoized: that executor is pooled per server, so a `getStatus` poll probing
+ * a box mid-setup would otherwise pin "no engine" for the whole run — and the DKIM
+ * step one line after "Mail engine container running" would trust it and refuse.
+ * A "nothing here" is exactly the state `deploy_engine` ends, so it's re-probed
+ * every call, same as a transient failure.
  */
 
 import {
@@ -94,12 +101,24 @@ const probes = new WeakMap<CommandExecutor, Promise<MailEngineProbe>>();
 export async function resolveMailEngine(executor: CommandExecutor): Promise<MailEngineProbe> {
   const cached = probes.get(executor);
   if (cached) return cached;
-  // Cache the promise, not the result — and drop it if the probe itself throws,
-  // so a transient SSH failure isn't remembered as "no mail engine".
-  const pending = detectMailEngine(executor).catch((err: unknown) => {
-    probes.delete(executor);
-    throw err;
-  });
+  // Cache the in-flight promise so concurrent callers on one connection share a
+  // single probe — then drop the memo for the two answers that go stale under a
+  // pooled executor:
+  //   - a throw (transient SSH failure), so it isn't remembered as "no engine";
+  //   - a `flavor: "none"`, the state `deploy_engine` ends. A concurrent
+  //     `getStatus` poll on the SAME pooled executor probing a box before its
+  //     container is up would otherwise pin "none" for the whole 5-min run, and
+  //     the DKIM step would refuse with "no mail engine" one line after the
+  //     deploy step logged the engine running.
+  const pending = detectMailEngine(executor)
+    .then((probe) => {
+      if (probe.flavor === "none") probes.delete(executor);
+      return probe;
+    })
+    .catch((err: unknown) => {
+      probes.delete(executor);
+      throw err;
+    });
   probes.set(executor, pending);
   return pending;
 }
@@ -276,12 +295,55 @@ export function mailEngineCommand(flavor: MailEngineFlavor, cmd: string): string
   return flavor === "container" ? `docker exec ${MAIL_CONTAINER} ${cmd}` : cmd;
 }
 
-/** The path each editable config file has INSIDE the engine (= on a legacy host). */
+/**
+ * The path each editable config file has INSIDE the engine.
+ *
+ * The engine is our own Debian-based `openship-mail` image, so these are fixed — and
+ * they are *also* correct for a legacy Debian-family host, which is where the
+ * "(= on a legacy host)" this comment used to claim came from. It is NOT correct for a
+ * legacy RHEL-family box, whose amavis has no `conf.d` include dir at all; that one path
+ * is resolved by probing the box instead — see {@link HOST_AMAVIS_CONF_CANDIDATES}. The
+ * postfix paths need no such treatment: `/etc/postfix` is postfix's config dir on every
+ * family Openship supports.
+ */
 const MAIL_ENGINE_PATHS = {
   saslPasswd: "/etc/postfix/sasl_passwd",
   senderRelayhost: "/etc/postfix/sender_relayhost",
+  relayTlsPolicy: "/etc/postfix/openship_tls_policy",
   amavisUserConf: "/etc/amavis/conf.d/50-user",
 } as const satisfies Record<keyof typeof MAIL_HOST_PATHS, string>;
+
+/**
+ * Where amavis keeps its editable config on a LEGACY host install, most specific first.
+ *
+ * Probed rather than derived from the host's `distroFamily`, because what differs across
+ * families is the include *mechanism*, not just a path: the Debian family ships a
+ * `conf.d` directory and expects an override file in it, while the RHEL family has no
+ * such directory and keeps one monolithic `amavisd.conf`. The packaged layout also moves
+ * between iRedMail versions on the same distro. So the box is asked, and a location we
+ * cannot see is refused rather than assumed.
+ *
+ * The bug this replaces was silent by construction: on a RHEL-family box we wrote
+ * `dkim_key(...)` into `/etc/amavis/conf.d/50-user`, a file amavis never reads, and every
+ * step reported success while outbound mail went out unsigned.
+ */
+export const HOST_AMAVIS_CONF_CANDIDATES = [
+  // The include dir, not the file: 50-user is ours to create, so requiring it to exist
+  // already would reject a box that simply hasn't been given an override yet.
+  { test: "-d /etc/amavis/conf.d", path: "/etc/amavis/conf.d/50-user" },
+  { test: "-f /etc/amavisd/amavisd.conf", path: "/etc/amavisd/amavisd.conf" },
+  { test: "-f /etc/amavisd.conf", path: "/etc/amavisd.conf" },
+] as const;
+
+/**
+ * `sh` fragment emitting `conf=<path>` for the first candidate this box has.
+ *
+ * Emits nothing when there is none — the caller's "no `conf=` line" branch is the
+ * refusal, so a box we can't place amavis on cannot be mistaken for one we can.
+ */
+export const HOST_AMAVIS_CONF_PROBE: string = HOST_AMAVIS_CONF_CANDIDATES.map(
+  (c, i) => `${i === 0 ? "if" : "elif"} [ ${c.test} ]; then echo "conf=${c.path}"`,
+).join("; ") + "; fi";
 
 /**
  * Where an editable daemon config file lives on each side.
@@ -301,6 +363,20 @@ export function mailConfigFile(
 }
 
 // ─── Daemon state ────────────────────────────────────────────────────────────
+
+/*
+ * The `host` arms below are systemd-shaped on purpose, and the gate is upstream.
+ *
+ * `detectMailEngine` only returns `flavor: "host"` after `systemctl show` reported the
+ * legacy units as loaded, so a box with no systemd resolves to `none` and never reaches
+ * here. That is why these keep their literal `systemctl` / `journalctl` strings instead of
+ * going through `envOps().serviceIsActive()` etc.: routing them would add a SECOND opinion
+ * about whether this box runs systemd, which could disagree with the probe that chose the
+ * flavor in the first place — and the two facts they depend on have no cross-distro form.
+ * `systemctl show -p LoadState -p ActiveState -p SubState -p ActiveEnterTimestamp` is four
+ * properties one parser reads together, not an is-active; and `--no-block` is what lets
+ * "restart all" kick every unit without waiting on a slow one.
+ */
 
 /** Normalized daemon state, shared by both flavors' probes. */
 export type MailUnitStatus =
@@ -413,6 +489,22 @@ export function mailUnitActionCommand(
       : `docker exec ${MAIL_CONTAINER} supervisorctl ${action} ${unit}`;
   }
   return `systemctl --no-block ${action} ${unit}`;
+}
+
+/**
+ * The outbound queue, as `postqueue -p` prints it.
+ *
+ * Only `postqueue` itself has to run inside the engine — the pipeline is the OUTER
+ * shell's (the pipe in `docker exec … postqueue -p | tail` is interpreted on the
+ * host), so one string serves both flavors.
+ *
+ * Bounded on purpose: a box that has been deferring for a week can hold thousands
+ * of entries, and this runs on a 10-second poll. `tail` keeps the summary line
+ * (postqueue prints it last, and it counts the WHOLE queue regardless of what we
+ * read) while capping the per-message lines we sample reasons from.
+ */
+export function mailQueueProbeCommand(flavor: MailEngineFlavor, lines = 400): string {
+  return `timeout 10 ${mailEngineCommand(flavor, "postqueue -p")} 2>&1 | tail -n ${lines} || true`;
 }
 
 /**

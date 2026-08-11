@@ -67,10 +67,17 @@
     "emails": "Correos",
     "settings": "Configuración",
     "billing": "Facturación y uso",
+    "mailSetup": "Configurar el correo",
+    "mailSetupProgress": "Progreso de la configuración",
+    "addMailbox": "Añadir buzón",
+    "webmail": "Webmail",
     "sections": {
       "main": "Principal",
       "settings": "Configuración",
       "infrastructure": "Infraestructura",
+      "mail": "Correo",
+      "delivery": "Entrega",
+      "system": "Sistema",
       "account": "Cuenta"
     },
     "apps": "Apps",

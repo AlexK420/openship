@@ -34,6 +34,28 @@
       "project": "Projekt",
       "hostedOn": "Gehostet auf"
     },
+    "projectMenu": {
+      "rename": "Projekt umbenennen",
+      "copyId": "Projekt-ID kopieren",
+      "idCopied": "Projekt-ID kopiert",
+      "copyFailed": "Kopieren in die Zwischenablage fehlgeschlagen",
+      "pause": "Projekt pausieren",
+      "resume": "Projekt fortsetzen",
+      "delete": "Projekt löschen"
+    },
+    "rename": {
+      "title": "Projekt umbenennen",
+      "description": "Ändert den Anzeigenamen. Es wird nichts neu bereitgestellt.",
+      "label": "Projektname",
+      "placeholder": "Mein Projekt",
+      "identityNote": "Das Projekt behält die Identität „{slug}“ — URL, Container-Namen und Volumes bleiben unverändert. Um die URL zu ändern, bearbeite die Domain unter „Domains & Routen“.",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "toast": {
+        "renamed": "Umbenannt in {name}",
+        "failed": "Projekt konnte nicht umbenannt werden"
+      }
+    },
     "statusActive": "Aktiv",
     "statusDisabled": "Deaktiviert",
     "hostedCloud": "Openship Cloud",

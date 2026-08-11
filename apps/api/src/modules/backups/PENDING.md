@@ -94,10 +94,20 @@ one of them came to be the one that didn't.
   A run whose policy was deleted (`SET NULL`, so history outlives the schedule) is
   unrecoverable; those ids are logged every boot rather than swallowed, because the
   alternative is the operator discovering it at the one moment it matters.
-- **Mail policy retention still stores null-on-omission** (`mail.controller.ts`,
-  ~1339, comment-flagged there). It's inert today because `prunePolicy` skips
-  mail-server policies outright, but omitted and explicit-null have to be told apart
-  before mail retention can run.
+- ~~**Mail policy retention still stores null-on-omission**~~ — **done.**
+  `saveMailBackupPolicy` now draws the same omitted-vs-explicit-null distinction
+  `createPolicy` does (omitted keeps the stored value, or defaults ON when creating),
+  and `prunePolicy` prunes mail policies for real: it pages runs by `mailServerId`
+  and reads the org off the mail server's row (`policyOrganizationId`), instead of
+  bailing out on `!projectId`. Also from that pass: a non-positive `retainCount`
+  normalizes to "unset" inside `prunePolicy` rather than putting every run outside
+  the keep-set, and `saveMailBackupPolicy` calls `syncPolicySchedule` so a schedule
+  change registers its job immediately instead of at the next boot reconcile.
+  Existing installs still carry mail policies written before this, whose retention
+  columns are both NULL and therefore read as "unlimited" — the same ambiguity 0096
+  fixed for project policies. **Not** backfilled here: unlike 0096, that would be a
+  behavior change (start deleting backups) on rows an operator may have left alone
+  deliberately, so it wants an explicit call rather than a migration.
 
 ## Retention, and what NULL means now
 

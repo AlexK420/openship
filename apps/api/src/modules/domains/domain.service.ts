@@ -34,7 +34,11 @@ import { untrackedSiteFor } from "../../lib/edge-orphans.service";
 import type { UntrackedEdgeSite } from "@repo/core";
 import { publicEndpointHostname, resolveServicePublicEndpoints } from "../../lib/public-endpoints";
 import { sshManager } from "../../lib/ssh-manager";
-import { resolveServerIdForProject, withServerHostExecutor } from "../../lib/edge-host-executor";
+import {
+  resolveServerIdForProject,
+  withCertStoreExecutor,
+  withServerHostExecutor,
+} from "../../lib/edge-host-executor";
 import {
   assertRedirectSupported,
   assertRedirectTargets,
@@ -594,14 +598,13 @@ function isPathSafeHostname(hostname: string): boolean {
  * box, or a foreign reverse proxy (nginx/caddy/apache/traefik, bare OR container)
  * we're taking over — adopt the cert that's already there instead of re-issuing via
  * ACME (which fails behind Cloudflare, or when the cert isn't at certbot's standard
- * path). Sources, in order, all read on the HOST executor so it works when the API
- * is containerized:
+ * path). Sources, in order, each read on the executor that can actually see it:
  *   1. certbot's /etc/letsencrypt on the serving host, via the platform provider
  *      (verifyExistingCert).
- *   2. the host's certbot lineage dir read directly on the HOST executor — the
- *      bare-edge case where the API container's own /etc/letsencrypt is a
- *      different volume. Includes the `-0001` re-issue lineages, which a bare
- *      `live/<host>` lookup misses entirely.
+ *   2. certbot's lineage dirs read as plain files. On the local box that store is a
+ *      1:1 bind mount in the api container, so this reads it THERE and needs no host
+ *      channel (`withCertStoreExecutor`). Includes the `-0001` re-issue lineages,
+ *      which a bare `live/<host>` lookup misses entirely.
  *   3. whatever the edge proxy itself serves, via `edgeProxy().certFor()` — our
  *      OpenResty at a non-standard path, an nginx/apache declared path, caddy's
  *      own cert store, or traefik's acme.json.
@@ -669,11 +672,13 @@ export async function reuseServerCertForDomain(ctx: RequestContext, domainId: st
 
     const rejections: string[] = [];
 
-    // 2. Read the host's certbot store directly on the HOST executor — covers a
-    //    bare-metal edge whose certs live on the host while the API container's own
-    //    /etc/letsencrypt is a separate, empty volume.
+    // 2. Read certbot's store directly — covers a bare-metal edge whose certs live on
+    //    the host. On the local box that store is a 1:1 bind mount in the api
+    //    container, so this must NOT go over the host channel: a firewalled or
+    //    switched-off channel would make an adoptable cert unreadable and send the
+    //    domain to ACME instead (#490). See `withCertStoreExecutor`.
     if (isPathSafeHostname(domain.hostname)) {
-      const hostCert = await withServerHostExecutor(project, async (exec) => {
+      const hostCert = await withCertStoreExecutor(project, async (exec) => {
         for (const base of await certbotLineageDirs(exec, domain.hostname)) {
           const certPem = await readEdgeFile(exec, `${base}/fullchain.pem`);
           const keyPem = await readEdgeFile(exec, `${base}/privkey.pem`);

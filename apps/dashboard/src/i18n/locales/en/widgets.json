@@ -72,7 +72,7 @@
       "serverLabel": "Server",
       "loadingServers": "Loading servers…",
       "noServerConnected": "No server connected",
-      "connectServerFirst": "Connect a server first, then come back to continue setup.",
+      "connectServerFirst": "Add one now without leaving this page.",
       "addServer": "Add Server",
       "selectServer": "Select a server…",
       "addNewServer": "Add new server…"

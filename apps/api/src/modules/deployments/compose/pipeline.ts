@@ -56,6 +56,9 @@ export interface ComposePipelineOpts {
   /** Target host executor (SSH/local) — writes app template config files onto
    *  the Docker host for read-only bind-mounts. Null on cloud. */
   executor: CommandExecutor | null;
+  /** The target IS this machine (`platform.localHost`) — host-path writes go
+   *  through the host channel, not `executor`. */
+  localHost?: boolean;
   usesManagedRouting: boolean;
   logger: BuildLogger;
   ctx: LifecycleContext;
@@ -92,6 +95,7 @@ export async function executeComposePipeline(opts: ComposePipelineOpts): Promise
     ssl,
     system,
     executor,
+    localHost,
     usesManagedRouting,
     logger,
     ctx,
@@ -159,6 +163,7 @@ export async function executeComposePipeline(opts: ComposePipelineOpts): Promise
     ssl,
     system,
     executor,
+    localHost,
     usesManagedRouting,
     serverId: snapshot.serverId,
     targetServiceIds,

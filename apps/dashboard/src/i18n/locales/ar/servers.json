@@ -113,7 +113,20 @@
     "running": "قيد التشغيل",
     "upToDate": "محدَّث",
     "notInstalled": "غير مثبَّت",
-    "installEdge": "تثبيت الحافة"
+    "installEdge": "تثبيت الحافة",
+    "edgeAbsentImpactOne": "{n} مشروع منشور على هذا الخادم ولا شيء يوجّه حركة المرور إليه.",
+    "edgeAbsentImpactMany": "{n} مشاريع منشورة على هذا الخادم ولا شيء يوجّه حركة المرور إليها."
+  },
+  "modules": {
+    "title": "تحديثات الوحدات متاحة",
+    "checkFailedTitle": "تعذر التحقق من تحديثات الوحدات",
+    "needsConfirmation": "يحتاج تأكيدًا",
+    "update": "تحديث",
+    "updating": "جارٍ التحديث…",
+    "confirmTitle": "تحديث {module}؟",
+    "confirmIntro": "يتضمن هذا التحديث تغييرات تحتاج موافقتك:",
+    "cancel": "إلغاء",
+    "updateFailed": "فشل تحديث {module}"
   },
   "form": {
     "sshConnection": "اتصال SSH",
@@ -146,6 +159,10 @@
     "testConnection": "اختبار الاتصال",
     "saveChanges": "حفظ التغييرات",
     "saveAndContinue": "حفظ ومتابعة الإعداد",
+    "modalTitle": "أضف خادمك",
+    "modalSubtitle": "اتصل عبر SSH. يمكنك إكمال الإعداد لاحقًا.",
+    "saveServer": "حفظ الخادم",
+    "savingServer": "جارٍ الحفظ…",
     "toastIpRequired": "عنوان IP للخادم مطلوب",
     "toastPasswordSwitchRequired": "كلمة المرور مطلوبة عند التبديل إلى مصادقة كلمة المرور",
     "toastKeyPathSwitchRequired": "مسار المفتاح مطلوب عند التبديل إلى مصادقة مفتاح SSH",

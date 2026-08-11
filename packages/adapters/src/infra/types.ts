@@ -26,6 +26,20 @@ export interface RoutingProvider {
   removeRoute(domain: string): Promise<void>;
 
   /**
+   * Re-emit vhosts an older generator wrote, so a fix to the EMITTED config shape reaches
+   * a box that isn't redeploying. Converged boxes do nothing; see
+   * `NginxProvider.reapplyStoredRoutes`.
+   *
+   * Optional: only a provider that keeps generated config on disk has anything to replay.
+   * Cloud routes through Oblien's API and desktop has no edge at all.
+   */
+  reapplyStoredRoutes?(): Promise<{
+    scanned: number;
+    repaired: string[];
+    failed: { slug: string; reason: string }[];
+  }>;
+
+  /**
    * Does a static `root` actually resolve WHERE THE PROXY LOOKS?
    *
    * Optional: only a provider that serves files from a path answers. The point is

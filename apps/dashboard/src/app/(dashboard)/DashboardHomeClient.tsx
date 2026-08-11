@@ -342,16 +342,19 @@ export default function DashboardHomeClient({ initialData }: DashboardHomeClient
                     </svg>
                     <p className="text-sm font-medium text-foreground">{t.dashboard.home.appsEmptyTitle}</p>
                     <p className="mt-0.5 text-xs text-muted-foreground/70">{t.dashboard.home.appsEmptyDesc}</p>
-                    {/* Overlapping logo stack — the full catalog at a glance, on-theme. */}
+                    {/* Overlapping logo stack — the full catalog at a glance, on-theme.
+                        Curated for color: every mark here renders in its brand color
+                        (no dark/monochrome glyph that vanishes or reads as a black blob
+                        on the dark card). */}
                     <div className="mt-3.5 flex items-center justify-center">
-                      {["supabase", "convex", "n8n", "ghost", "vaultwarden", "metabase"].map((id, i) => (
+                      {["supabase", "convex", "neon", "n8n", "metabase", "minio"].map((id, i) => (
                         <div
                           key={id}
                           className={`flex size-7 items-center justify-center rounded-full border border-border/60 bg-card ${
                             i > 0 ? "-ml-2" : ""
                           }`}
                         >
-                          <AppLogo appId={id} className="size-3.5" />
+                          <AppLogo appId={id} className="size-4" />
                         </div>
                       ))}
                     </div>

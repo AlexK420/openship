@@ -8,6 +8,7 @@
   },
   "status": {
     "live": "运行中",
+    "paused": "已暂停",
     "attention": "需要处理",
     "queued": "排队中",
     "building": "构建中",
@@ -156,7 +157,7 @@
     "subtextOther": "此项目尚无运行中的部署。请检查源并重试。",
     "deployNow": "立即部署",
     "connectSource": "连接源",
-    "settings": "设置",
+    "settings": "部署设置",
     "attemptsTitle": "部署尝试",
     "attemptsDescription": "此项目的每一次构建——点击其中一个即可打开",
     "sourceTitle": "源",

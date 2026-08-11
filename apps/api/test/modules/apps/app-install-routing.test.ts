@@ -50,8 +50,10 @@ vi.mock("../../../src/lib/cloud/require-cloud", () => ({
 import {
   installApp,
   planInstallRouting,
+  serviceRoutingPatch,
   type InstallAppRoute,
 } from "../../../src/modules/apps/app-install.service";
+import { mergeServiceRoutingPatch, type StoredServiceRouting } from "../../../src/lib/public-endpoints";
 import type { RequestContext } from "../../../src/lib/request-context";
 
 const ctx = { organizationId: "org1", userId: "u1" } as RequestContext;
@@ -213,5 +215,58 @@ describe("planInstallRouting", () => {
     const plan = planInstallRouting(template, "store", []);
     expect(plan.get("db")).toEqual({ exposed: false, publicEndpoints: [] });
     expect(plan.get("minio")).toEqual({ exposed: false, publicEndpoints: [] });
+  });
+});
+
+/**
+ * The patch has to survive the MERGE, not just look right on its own: it is
+ * applied to a row that already exists (a re-install, or the webmail proxy
+ * variant's `reapplyRouting`), so what matters is the routing the row ends up
+ * with. Asserted through `mergeServiceRoutingPatch` for that reason.
+ */
+describe("serviceRoutingPatch", () => {
+  const routed = {
+    exposed: true,
+    exposedPort: "3210",
+    ports: ["3210:3210"],
+    domain: null,
+    customDomain: "webmail.example.com",
+    domainType: "custom",
+    publicEndpoints: [{ port: 3210, domainType: "custom", customDomain: "webmail.example.com" }],
+  } as StoredServiceRouting;
+
+  it("unroutes the row when the plan is empty", () => {
+    // An empty plan is a DECISION (route by port only / the webmail proxy
+    // variant), not an absence. Omitting the scalars made it unsayable: the
+    // array cleared while the row kept the hostname it was redeployed to drop,
+    // which kept its derived domain row alive — and a surviving row is what made
+    // `onWebmailDeployed` skip registering the vhost + cert for the hostname the
+    // operator actually asked for.
+    const next = mergeServiceRoutingPatch({
+      patch: serviceRoutingPatch({ exposed: false, publicEndpoints: [] }),
+      stored: routed,
+    });
+
+    expect(next.exposed).toBe(false);
+    expect(next.domain).toBeNull();
+    expect(next.customDomain).toBeNull();
+    expect(next.publicEndpoints).toEqual([]);
+    // Same routing a FIRST install writes for an empty plan (createService sends no
+    // domainType, which normalizeRoutingFields resolves to "free" with null
+    // hostnames) — which is the invariant reapplyRouting's docstring claims.
+    expect(next.domainType).toBe("free");
+  });
+
+  it("replaces a stored hostname with the planned one", () => {
+    const next = mergeServiceRoutingPatch({
+      patch: serviceRoutingPatch({
+        exposed: true,
+        publicEndpoints: [{ port: 3210, domainType: "custom", customDomain: "mail.example.com" }],
+      }),
+      stored: routed,
+    });
+
+    expect(next.customDomain).toBe("mail.example.com");
+    expect(next.domain).toBeNull();
   });
 });

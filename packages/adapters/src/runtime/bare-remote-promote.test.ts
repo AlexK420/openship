@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BareRuntime, STATIC_RELEASE_BASE } from "./bare";
+import { probeOutput } from "../system/environment.fixtures";
 import type { CommandExecutor } from "../types";
 
 /**
@@ -40,6 +41,13 @@ function remoteNonRootServer() {
   const executor = {
     exec: vi.fn(async (command: string) => {
       commands.push(command);
+      // `resolveEnvironment`'s single-shot probe: this exact box — non-root `deploy`
+      // (uid 1000) with passwordless sudo and its home at $HOME. Answered before the
+      // `$HOME` branch below, which the probe script's `opsh_home=$HOME` would otherwise
+      // swallow.
+      if (command.includes("opsh_begin")) {
+        return probeOutput({ uid: "1000", user: "deploy", home: HOME, sudo: "y" });
+      }
       if (command.includes("$HOME")) return `${HOME}\n`;
       if (command === "id -u") return "1000";
       if (command === "id -un" || command === "id -gn") return "deploy\n";

@@ -18,7 +18,7 @@
  *     reset        POST   /mail/setup/reset          { serverId }
  *     forget       DELETE /mail/servers/:serverId
  *   Post-install
- *     health       GET    /mail/health/:serverId
+ *     health       GET    /mail/health/:serverId   (daemons + outbound delivery)
  *     logs         GET    /mail/admin/:serverId/components/:key/logs?lines=
  *     postmaster   POST   /mail/credentials/postmaster  { serverId, password }
  *   Admin panel   (/mail/admin/:serverId/…)
@@ -29,7 +29,7 @@
  *     dns-scan     GET    /admin/:id/dns-scan?domain=
  *   Webmail
  *     targets      GET    /mail/webmail/targets?serverId=
- *     deploy       POST   /mail/webmail/deploy-project  { mailServerId, hostname, target, internalPort? }
+ *     deploy       POST   /mail/webmail/deploy-project  { mailServerId, hostname, target }
  *
  * Setup + webmail-deploy logs stream over lib/sse (sseRequest /
  * streamDeploymentLogs). The mail admin component-logs route is a JSON
@@ -387,7 +387,7 @@ const forgetCmd = new Command("forget")
 // ─── Post-install ─────────────────────────────────────────────────────────────
 
 const healthCmd = new Command("health")
-  .description("Show live status of every mail daemon")
+  .description("Show live status of every mail daemon, and whether mail is leaving the box")
   .argument("<serverId>", "Mail server ID")
   .action(
     guard(async (serverId: string) => {
@@ -395,6 +395,7 @@ const healthCmd = new Command("health")
       const res = await apiRequest<{
         serverId: string;
         components: Array<{ key: string; label: string; status: string; subState?: string; unit: string }>;
+        delivery?: MailDeliveryHealth;
       }>(`/mail/health/${encodeURIComponent(serverId)}`);
       sp?.stop();
       if (isJsonMode()) return printJson(res);
@@ -407,8 +408,47 @@ const healthCmd = new Command("health")
         })),
         ["component", "unit", "status", "sub"],
       );
+      // Nine green daemons say nine processes are running, not that anything is
+      // being delivered — a relay with a wrong password looks identical to a
+      // healthy box in the table above. Optional so an older API still prints.
+      if (res.delivery) printDelivery(res.delivery);
     }),
   );
+
+interface MailDeliveryHealth {
+  status: "ok" | "warn" | "fail" | "unknown";
+  mode: "direct" | "relay";
+  relayHost?: string;
+  relayScope?: "all" | "selected";
+  relayDomains?: string[];
+  queued: number;
+  sampled: boolean;
+  deferrals: Array<{ kind: string; count: number; reason: string }>;
+  detail?: string;
+}
+
+function printDelivery(d: MailDeliveryHealth): void {
+  const paint = d.status === "fail" ? chalk.red : d.status === "warn" ? chalk.yellow : chalk.dim;
+  info(`  Outbound delivery: ${paint(d.status)}`);
+  info(
+    d.mode === "relay"
+      ? `    send path  relay via ${d.relayHost ?? "?"}` +
+          (d.relayScope === "selected" && d.relayDomains?.length
+            ? ` (${d.relayDomains.join(", ")})`
+            : "")
+      : "    send path  direct to recipients",
+  );
+  if (d.status === "unknown") {
+    if (d.detail) info(`    ${chalk.dim(d.detail)}`);
+    return;
+  }
+  info(`    queued     ${d.queued}${d.sampled ? " (reasons below are a sample)" : ""}`);
+  // The remote's verbatim refusal is the line that names the cause, so print it
+  // whole rather than summarising it into our own words.
+  for (const deferral of d.deferrals) {
+    info(`    ${deferral.kind.padEnd(9)} ×${deferral.count}  ${deferral.reason}`);
+  }
+}
 
 const logsCmd = new Command("logs")
   .description("Tail a mail component's journal (snapshot)")

@@ -67,10 +67,17 @@
     "emails": "البريد الإلكتروني",
     "settings": "الإعدادات",
     "billing": "الفوترة والاستخدام",
+    "mailSetup": "إعداد البريد",
+    "mailSetupProgress": "تقدّم الإعداد",
+    "addMailbox": "إضافة صندوق بريد",
+    "webmail": "بريد الويب",
     "sections": {
       "main": "الرئيسية",
       "settings": "الإعدادات",
       "infrastructure": "البنية التحتية",
+      "mail": "البريد",
+      "delivery": "التسليم",
+      "system": "النظام",
       "account": "الحساب"
     },
     "apps": "التطبيقات",

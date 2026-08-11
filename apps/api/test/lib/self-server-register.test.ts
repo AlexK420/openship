@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * row (cloud-connect mirrors the admin first → bootstrap 409s → the CLI resets).
  */
 
-const serverRepo = vi.hoisted(() => ({ findLocal: vi.fn(), create: vi.fn() }));
+const serverRepo = vi.hoisted(() => ({ findLocal: vi.fn(), create: vi.fn(), update: vi.fn() }));
 const boxOwningOrgId = vi.hoisted(() => vi.fn());
 const resolveInstancePublicIp = vi.hoisted(() => vi.fn(async () => "203.0.113.9"));
 const hostControlDisabled = vi.hoisted(() => vi.fn(() => false));
@@ -34,12 +34,15 @@ beforeEach(() => {
   hostControlDisabled.mockReturnValue(false);
   serverRepo.findLocal.mockResolvedValue(null);
   serverRepo.create.mockImplementation(async (data) => ({ id: "srv_1", ...data }));
+  serverRepo.update.mockResolvedValue(undefined);
+  delete process.env.OPENSHIP_HOST_SSH_USER;
   boxOwningOrgId.mockResolvedValue("org_usr_1");
   resolveInstancePublicIp.mockResolvedValue("203.0.113.9");
 });
 
 afterEach(() => {
   delete process.env.SERVER_IP;
+  delete process.env.OPENSHIP_HOST_SSH_USER;
 });
 
 describe("ensureLocalServer", () => {
@@ -50,8 +53,34 @@ describe("ensureLocalServer", () => {
       organizationId: "org_usr_1",
       name: "This Server",
       sshHost: "203.0.113.9",
+      sshUser: "root",
       isLocal: true,
     });
+  });
+
+  // The row's ssh_user must match the account the host channel logs in as — the CLI
+  // writes OPENSHIP_HOST_SSH_USER for the local channel (issue #489). Default "root".
+  it("stamps the record's ssh_user from OPENSHIP_HOST_SSH_USER", async () => {
+    process.env.OPENSHIP_HOST_SSH_USER = "ubuntu";
+    await ensureLocalServer();
+    expect(serverRepo.create).toHaveBeenCalledWith(expect.objectContaining({ sshUser: "ubuntu" }));
+  });
+
+  // Startup consistency check: a pre-existing row whose ssh_user drifted from the env
+  // user actually dialed is reconciled in place (never a second row).
+  it("reconciles a drifted ssh_user on the existing row", async () => {
+    process.env.OPENSHIP_HOST_SSH_USER = "ubuntu";
+    serverRepo.findLocal.mockResolvedValue({ id: "srv_existing", isLocal: true, sshUser: "root" });
+    const row = await ensureLocalServer();
+    expect(serverRepo.update).toHaveBeenCalledWith("srv_existing", { sshUser: "ubuntu" });
+    expect(row).toMatchObject({ id: "srv_existing", sshUser: "ubuntu" });
+    expect(serverRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("leaves an already-consistent ssh_user untouched", async () => {
+    serverRepo.findLocal.mockResolvedValue({ id: "srv_existing", isLocal: true, sshUser: "root" });
+    await ensureLocalServer();
+    expect(serverRepo.update).not.toHaveBeenCalled();
   });
 
   // The boot-order case: no admin at boot → bail, then the SAME call succeeds once

@@ -2,6 +2,7 @@ import type { Dictionary } from "@/i18n";
 
 export type ProjectStatus =
   | "live"
+  | "paused"
   | "attention"
   | "queued"
   | "building"
@@ -13,6 +14,14 @@ export type ProjectStatus =
 
 export type ProjectStatusSource = {
   activeDeploymentId?: string | null;
+  /**
+   * The operator's switch (server-derived from `disabled_at`). False means a human
+   * deliberately stopped this project's containers.
+   *
+   * Undefined is treated as enabled, so a payload that predates the field — or one
+   * that legitimately has no such notion — reads exactly as before.
+   */
+  enabled?: boolean | null;
   /** Status of the LIVE release (the active deployment's own row). Lets a
    *  caller that can't supply `latestDeploymentId` still tell "the newest deploy
    *  IS the live one" from "there's a newer one that didn't land". */
@@ -53,6 +62,12 @@ export const PROJECT_STATUS_META: Record<
   live: {
     badge: "bg-success-bg text-success",
     dot: "bg-success-solid",
+  },
+  // Muted, not amber: a paused project is a state the operator CHOSE, so it must
+  // not read as something demanding their attention.
+  paused: {
+    badge: "bg-muted text-muted-foreground",
+    dot: "bg-muted-foreground",
   },
   attention: {
     badge: "bg-warning-bg text-warning",
@@ -180,6 +195,18 @@ export function getProjectStatus(project: ProjectStatusSource): ProjectStatus {
       return "deploying";
     default:
       break;
+  }
+
+  // Paused by a human, and nothing is in flight (the switch above already claimed
+  // those). Sits above every remaining arm because they all read the deployment
+  // ROW, which a pause deliberately does not touch: a project whose containers
+  // were stopped on purpose still has a `ready` active deployment, so every card,
+  // the sidebar and the home list reported a green "Live" over a project serving
+  // nothing.
+  //
+  // Deliberately NOT "attention" — see PROJECT_STATUS_META.paused.
+  if (project.enabled === false) {
+    return "paused";
   }
 
   // Needs the operator: a partial-failure deploy awaiting keep/reject, one whose

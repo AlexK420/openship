@@ -30,12 +30,14 @@
  *   GET /health                        - 200 ok
  */
 
-import { safeErrorMessage } from "@repo/core";
+import { answered, refused, safeErrorMessage } from "@repo/core";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EMBEDDED_LUA } from "./lua-embedded";
+import { resolveEnvironment } from "../system/environment";
+import { envOps, opScript } from "../system/environment-ops";
 import type { CommandExecutor } from "../types";
 import { EDGE_REAL_IP_CONF_NAME, edgeRealIpConf } from "./edge-real-ip";
 import { EDGE_NOT_FOUND_LOCATION } from "./edge-not-found";
@@ -229,6 +231,22 @@ export const EDGE_CONTAINER_MOUNTS: ReadonlyArray<{ host: string; container: str
   { host: `${EDGE_HOST_STATE_DIR}/acme`, container: "/var/www/acme" },
   { host: "/opt/openship/static", container: "/opt/openship/static" },
 ];
+
+/**
+ * The subset of {@link EDGE_CONTAINER_MOUNTS} whose host and container names are the
+ * SAME string — today `/etc/letsencrypt` and `/opt/openship/static`.
+ *
+ * Two unrelated rules need exactly this set, which is why it lives next to the table
+ * rather than being re-filtered at each: a container edge runs commands INSIDE the
+ * container while file ops land on the host, so only a same-path mount lets a `chmod`
+ * aim at the bytes a `writeFile` just produced (`NginxProvider._chmod`); and on the
+ * local box only a same-path mount can be read without the host channel
+ * (`sharedMountExecutor`). Derived, so a new mount can't be forgotten here — and
+ * shared, so the two rules can't come to disagree about which paths qualify.
+ */
+export const EDGE_SAME_PATH_MOUNTS: readonly string[] = EDGE_CONTAINER_MOUNTS.filter(
+  (m) => m.host === m.container,
+).map((m) => m.host.replace(/\/+$/, ""));
 
 /**
  * Paths for driving a containerized edge from OUTSIDE the container — i.e. over
@@ -645,9 +663,15 @@ export const ACME_HTTP01_PORT = 49180;
  * The `/.well-known/acme-challenge/` location block — proxies the HTTP-01
  * challenge to certbot's transient standalone server. SHARED by the default
  * catch-all here and the per-vhost templates in nginx.ts so all three agree.
+ *
+ * `^~` is load-bearing, not decoration: a REGEX location outranks a plain prefix one
+ * however specific the prefix is, so a `vercel.json` catch-all (`"source": "/(.*)"`)
+ * compiled to `location ~ ^/(.*)$` would otherwise swallow the challenge and every
+ * certificate for that host would fail to issue. `^~` tells nginx to stop at this
+ * prefix and never try the regexes.
  */
 export const ACME_CHALLENGE_LOCATION = `\
-    location /.well-known/acme-challenge/ {
+    location ^~ /.well-known/acme-challenge/ {
         proxy_pass http://127.0.0.1:${ACME_HTTP01_PORT};
         proxy_set_header Host $host;
     }`;
@@ -724,7 +748,7 @@ export const EDGE_CHALLENGE_HOST_DIR = `${EDGE_HOST_STATE_DIR}/acme/oblien${EDGE
  * reply, and point their slug at us.
  */
 export const EDGE_CHALLENGE_LOCATION = `\
-    location ${EDGE_CHALLENGE_URL_PREFIX} {
+    location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {
         root ${EDGE_CHALLENGE_ROOT};
         default_type text/plain;
         try_files $uri =404;
@@ -1020,28 +1044,31 @@ export async function ensureLuaScripts(
  */
 async function installGeoDeps(executor: CommandExecutor): Promise<void> {
   // ── 1. libmaxminddb (C library) ───────────────────────────────────────
-  // Detect package manager on the remote server and install accordingly.
-  try {
-    const hasPkg = async (cmd: string) => {
-      try { await executor.exec(`command -v ${cmd}`); return true; }
-      catch { return false; }
-    };
+  //
+  // This used to be its own package-manager ladder (`command -v apt-get`, then dnf,
+  // then yum, then apk) that simply RAN OUT on anything else: nothing installed,
+  // nothing logged, and geo_country then returned nil for every lookup with no trace
+  // of why. The host answers which package it wants; a host that can't answer says so.
+  const profile = await resolveEnvironment(executor).catch((err) => safeErrorMessage(err));
+  const install =
+    typeof profile === "string"
+      ? refused(`the host profile could not be read: ${profile}`)
+      : envOps(profile).pkgInstallVariants({
+          apt: answered(["libmaxminddb0", "libmaxminddb-dev"]),
+          dnf: answered(["libmaxminddb", "libmaxminddb-devel"]),
+          yum: answered(["libmaxminddb", "libmaxminddb-devel"]),
+          apk: answered(["libmaxminddb"]),
+          brew: refused("the bare edge is Linux-only, so Openship has no macOS package for it."),
+        });
 
-    if (await hasPkg("apt-get")) {
-      await executor.exec(
-        "apt-get update -qq && apt-get install -y -qq libmaxminddb0 libmaxminddb-dev",
+  if (install.supported) {
+    await executor.exec(opScript(install.value)).catch((err) => {
+      console.warn(
+        `[openresty] libmaxminddb install failed — geo lookups return nil: ${safeErrorMessage(err)}`,
       );
-    } else if (await hasPkg("dnf")) {
-      await executor.exec("dnf install -y libmaxminddb libmaxminddb-devel");
-    } else if (await hasPkg("yum")) {
-      await executor.exec("yum install -y libmaxminddb libmaxminddb-devel");
-    } else if (await hasPkg("apk")) {
-      // Alpine — the openresty base image's distro, and the branch whose absence
-      // meant geo could never initialise on a containerized edge.
-      await executor.exec("apk add --no-cache libmaxminddb");
-    }
-  } catch {
-    // Non-fatal - geo just won't work
+    });
+  } else {
+    console.warn(`[openresty] libmaxminddb not installed — geo lookups return nil: ${install.reason}`);
   }
 
   // ── 2. GeoLite2-Country database ──────────────────────────────────────

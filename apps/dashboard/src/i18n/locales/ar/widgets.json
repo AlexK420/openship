@@ -72,7 +72,7 @@
       "serverLabel": "الخادم",
       "loadingServers": "جارٍ تحميل الخوادم…",
       "noServerConnected": "لا يوجد خادم متصل",
-      "connectServerFirst": "قم بتوصيل خادم أولاً، ثم عد لمتابعة الإعداد.",
+      "connectServerFirst": "أضف خادمًا الآن دون مغادرة هذه الصفحة.",
       "addServer": "إضافة خادم",
       "selectServer": "اختر خادمًا…",
       "addNewServer": "إضافة خادم جديد…"

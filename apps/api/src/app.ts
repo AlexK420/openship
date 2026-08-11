@@ -17,6 +17,11 @@ import { runWithCallSource } from "./lib/call-source";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { auth } from "./lib/auth";
 import { oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata } from "better-auth/plugins";
+import {
+  MCP_RESOURCE_PATHS,
+  protectedResourceMetadata,
+  publicOriginFor,
+} from "./lib/mcp-resource";
 import { projectRoutes } from "./modules/projects/project.routes";
 import { appRoutes } from "./modules/apps/app.routes";
 import { appSettingsRoutes } from "./modules/apps/app-settings.routes";
@@ -161,6 +166,33 @@ app.route("/api/notices", noticeRoutes);
 // so `Authorization`-less requests to /api/mcp can be discovered end-to-end.
 app.get("/.well-known/oauth-authorization-server", (c) => oauthAuthServerMetadata(c.req.raw));
 app.get("/.well-known/oauth-protected-resource", (c) => oauthProtectedResourceMetadata(c.req.raw));
+
+// RFC 9728 §3.1: metadata for a resource whose identifier has a PATH lives at
+// the well-known prefix FOLLOWED BY that path. A client configured with
+// `https://host/api/mcp` looks there, not at the root — and the root document's
+// `resource` (the bare origin) doesn't match the URL it connected to, so a
+// strict client (Claude.ai) rejects the authorization it just completed.
+// Serve one document per URL that addresses this instance's MCP endpoint.
+const OAUTH_DISCOVERY_HEADERS = {
+  "Content-Type": "application/json",
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+} as const;
+
+for (const path of MCP_RESOURCE_PATHS) {
+  app.get(`/.well-known/oauth-protected-resource${path}`, (c) => {
+    const origin = publicOriginFor(c.req.raw);
+    const body = protectedResourceMetadata(origin, `${origin}${path}`);
+    return new Response(JSON.stringify(body), { status: 200, headers: OAUTH_DISCOVERY_HEADERS });
+  });
+  // RFC 8414 path-aware authorization-server metadata. Same document as the
+  // root one — served here so a client that only probes the path-aware location
+  // finds it instead of falling back.
+  app.get(`/.well-known/oauth-authorization-server${path}`, (c) =>
+    oauthAuthServerMetadata(c.req.raw),
+  );
+}
 
 /* ---------- OAuth callback landing pages ---------- */
 const authCallbackHtml = `<!DOCTYPE html><html><head><title>Success</title></head><body><script>window.close();</script><p>Authentication successful. You can close this window.</p></body></html>`;

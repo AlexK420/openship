@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
 import { BlurIp } from "@/components/BlurIp";
 import {
   Server,
@@ -12,6 +11,7 @@ import {
 } from "lucide-react";
 import { systemApi, type ServerInfo } from "@/lib/api/system";
 import { useI18n } from "@/components/i18n-provider";
+import { useAddServerModal } from "@/components/servers/add-server-modal";
 
 /* ── Types ──────────────────────────────────────────────────────────── */
 
@@ -70,13 +70,13 @@ export default function ServerSelector({
   dropUp = false,
   autoSelectFirst = false,
 }: ServerSelectorProps) {
-  const router = useRouter();
   const { t } = useI18n();
   const w = t.widgets.shared.serverSelector;
   const labelText = label ?? w.serverLabel;
   const [servers, setServers] = useState<ServerOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const openAddServer = useAddServerModal();
 
   const fetchServers = useCallback(async () => {
     try {
@@ -105,6 +105,17 @@ export default function ServerSelector({
     fetchServers();
   }, [fetchServers]);
 
+  // Adding a server never leaves the flow: the panel opens on top, and the
+  // saved row is spliced in and selected so the caller can carry straight on.
+  // createServerEntry returns the full row, so no refetch is needed.
+  const addServer = useCallback(() => {
+    openAddServer((created: ServerInfo) => {
+      const opt = serverInfoToOption(created);
+      setServers((prev) => (prev.some((p) => p.id === opt.id) ? prev : [...prev, opt]));
+      onSelect(opt);
+    });
+  }, [openAddServer, onSelect]);
+
   const selected = servers.find((s) => s.id === value) ?? null;
 
   /* ── Loading state ─────────────────────────────────────────────────── */
@@ -128,6 +139,27 @@ export default function ServerSelector({
   /* ── No servers - empty state ──────────────────────────────────────── */
 
   if (servers.length === 0) {
+    // Compact hosts (picker rows inside wizards and modals) get a single
+    // clickable row instead of a full-height hero — same action, no layout jump.
+    if (compact) {
+      return (
+        <button
+          type="button"
+          onClick={addServer}
+          disabled={disabled}
+          className="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border border-dashed border-border text-start transition-colors hover:bg-muted/20 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+            <Plus className="size-4 text-muted-foreground" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-foreground">{w.addServer}</p>
+            <p className="text-xs text-muted-foreground truncate">{w.noServerConnected}</p>
+          </div>
+        </button>
+      );
+    }
+
     return (
       <div className="flex items-center justify-center py-16">
         <div className="max-w-sm w-full text-center">
@@ -141,8 +173,10 @@ export default function ServerSelector({
             {w.connectServerFirst}
           </p>
           <button
-            onClick={() => router.push("/servers/new")}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-xl hover:bg-primary/90 transition-all hover:shadow-lg hover:shadow-primary/25"
+            type="button"
+            onClick={addServer}
+            disabled={disabled}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-xl hover:bg-primary/90 transition-all hover:shadow-lg hover:shadow-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Plus className="size-4" />
             {w.addServer}
@@ -194,6 +228,17 @@ export default function ServerSelector({
           ) : (
             <span className="size-4 rounded-full border border-border shrink-0" aria-hidden />
           )}
+        </button>
+        {/* One server is not a closed set — the second one has to be reachable
+            from here too, or adding it means abandoning the flow. */}
+        <button
+          type="button"
+          onClick={addServer}
+          disabled={disabled}
+          className="mt-1.5 inline-flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Plus className="size-3.5" />
+          {w.addNewServer}
         </button>
       </div>
     );
@@ -280,7 +325,7 @@ export default function ServerSelector({
                 type="button"
                 onClick={() => {
                   setOpen(false);
-                  router.push("/servers/new");
+                  addServer();
                 }}
                 className="w-full flex items-center gap-3 px-3.5 py-3 text-start transition-colors hover:bg-muted/40"
               >

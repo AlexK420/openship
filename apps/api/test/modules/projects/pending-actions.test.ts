@@ -108,6 +108,55 @@ beforeEach(() => {
   listByProjects.mockResolvedValue(new Map());
 });
 
+/**
+ * `compiled.skipped` was read by NOTHING before this: a vercel.json rule the proxy
+ * couldn't translate simply never existed, with no log line and no UI. Recomputed here
+ * from the stored config (the compiler is pure), so it needs no column and can't go
+ * stale — and it reports before the project has ever deployed.
+ */
+describe("routing_rules_dropped", () => {
+  const withRouting = (routingConfig: unknown) =>
+    projectFindById.mockResolvedValue({ id: PROJECT, organizationId: ORG, routingConfig });
+
+  it("names each rule that is not live", async () => {
+    withRouting({
+      redirects: [
+        // Destination references a wildcard the source never captures.
+        { source: "/blog/:path*", destination: "/news/:slug*" },
+      ],
+    });
+
+    const [action] = await getProjectPendingActions(PROJECT, ORG);
+
+    expect(action.kind).toBe("routing_rules_dropped");
+    expect(action.severity).toBe("advisory");
+    expect(action.title).toBe("1 routing rule could not be applied");
+    expect(action.message).toContain("/blog/:path*");
+    expect((action.details as { skipped: string[] }).skipped).toHaveLength(1);
+  });
+
+  it("is silent for a config that compiles cleanly", async () => {
+    withRouting({
+      redirects: [{ source: "/blog/:path*", destination: "/news/:path*", permanent: true }],
+      cleanUrls: true,
+    });
+    expect(await getProjectPendingActions(PROJECT, ORG)).toEqual([]);
+  });
+
+  it("is silent with no routing config at all", async () => {
+    withRouting(null);
+    expect(await getProjectPendingActions(PROJECT, ORG)).toEqual([]);
+  });
+
+  // On a single-service project the app already receives `/api/…` via `location /`, and
+  // on a composite one the deploy path supplies the real backend. Reporting it as
+  // dropped would be noise in both cases.
+  it("does not report a path rewrite as dropped just for lacking a backend", async () => {
+    withRouting({ rewrites: [{ source: "/api/(.*)", destination: "/api/index.js" }] });
+    expect(await getProjectPendingActions(PROJECT, ORG)).toEqual([]);
+  });
+});
+
 describe("deploy_blocked — the case nothing could see before", () => {
   it("is surfaced from the LATEST deploy even while an older release is live", async () => {
     projectFindById.mockResolvedValue({

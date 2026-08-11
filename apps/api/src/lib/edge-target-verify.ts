@@ -23,7 +23,7 @@ import { repos } from "@repo/db";
 import type { Platform } from "@repo/adapters";
 import { cloudClient } from "./cloud/client";
 import { canonicalEdgeTarget } from "./edge-target";
-import { resolveTargetPlatform } from "./deployment-runtime";
+import { disposePlatform, resolveTargetPlatform } from "./deployment-runtime";
 
 type Routing = Platform["routing"];
 
@@ -278,6 +278,10 @@ export async function resolveRoutingFor(
   try {
     const target = serverId ? "server" : "local";
     const resolved = await resolveTargetPlatform(target, "docker", serverId, organizationId);
+    // Only `.routing` is wanted, but "docker" mode already bound a
+    // Docker-over-SSH bridge for a remote server. Routing drives the box through
+    // the pooled SSH executor, so it survives the release.
+    disposePlatform(resolved);
     return resolved.routing;
   } catch (err) {
     console.warn(

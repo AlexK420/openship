@@ -13,32 +13,28 @@
 import { repos, type BackupDestination } from "@repo/db";
 import { type DestinationKind, type BackupDestinationRow } from "@repo/adapters";
 import crypto from "node:crypto";
-import { assertLocalEndpointInRoot } from "./local-path";
 import { encryptSecretField } from "../../lib/credential-encryption";
 import { assertResourceInOrg } from "../../lib/controller-helpers";
 import type { RequestContext } from "../../lib/request-context";
 import { env } from "../../config/env";
 import { assertPublicUrl, assertPublicHost } from "../../lib/ssrf-guard";
 import { toAdapterRow, hydrateServerAdapterRow } from "./hydrate-server";
+import { assertLocalDestinationAllowed } from "./local-gate";
 import { safeErrorMessage, type ConnectivityCode } from "@repo/core";
 import { runConnectivityCheck } from "../../lib/connectivity";
 import "../../lib/connectivity-checks"; // registers the backup-destination check
 
 /**
- * Gate + sandbox a local destination endpoint. The env gates live here; the
- * path rules live in local-path.ts (see it for why the deny list applies to
- * the root rather than the endpoint).
+ * Gate + sandbox a local destination endpoint at WRITE time, so the operator gets
+ * the refusal while they're still editing rather than at the next backup run.
+ *
+ * The policy itself lives in ./local-gate.ts and is enforced again on every path
+ * that USES a destination (`toAdapterRow`) — this call is the early, friendly copy
+ * of that check, not the authority. Keeping one implementation is the point: the
+ * two used to be able to disagree, and only this one existed.
  */
 async function validateLocalEndpoint(endpoint: string): Promise<void> {
-  if (env.CLOUD_MODE) {
-    throw new Error("Local destinations are disabled in cloud mode");
-  }
-  if (!env.BACKUP_ALLOW_LOCAL_DESTINATION) {
-    throw new Error(
-      "Local destinations are disabled. Set BACKUP_ALLOW_LOCAL_DESTINATION=true and BACKUP_LOCAL_ROOT to enable.",
-    );
-  }
-  await assertLocalEndpointInRoot(endpoint, env.BACKUP_LOCAL_ROOT);
+  await assertLocalDestinationAllowed(endpoint);
 }
 
 // ─── Public shapes ───────────────────────────────────────────────────────────

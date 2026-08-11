@@ -642,7 +642,7 @@ export function reconcileStack(opts: {
   }
   if (composeProjects.length > 0 || declared.size > 0) {
     warnings.push(
-      "Compose `configs`, `secrets`, `expose`, and `depends_on` conditions are not modeled by Openship and won't carry over.",
+      "Compose `configs`, `secrets`, `expose`, `depends_on` conditions, and host-level keys (`privileged`, `cap_add`, `devices`, `sysctls`) are not modeled by Openship and won't carry over. A container currently sharing another's namespace (`network_mode`/`pid`) is adopted onto the project network instead — re-declare it in the stack's compose file if it must stay shared.",
     );
   }
   if (services.some((s) => Object.keys(s.env).length > 0)) {

@@ -24,6 +24,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/lib/deployment-runtime", () => ({
+  // The orchestrator releases the runtime it resolved when the run ends; these
+  // stubs hold no transport, so the release is a no-op here.
+  disposeRuntime: () => {},
+  disposePlatform: () => {},
   resolveTargetPlatform: mocks.resolveTargetPlatform,
 }));
 

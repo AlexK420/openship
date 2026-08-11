@@ -1,7 +1,15 @@
 import type { LogEntry } from "@repo/adapters";
 
 /**
- * Make captured build output STORABLE before it becomes a jsonb value.
+ * Make captured build output STORABLE — and safe to store — before it becomes a
+ * jsonb value. Two jobs, both funnelled through `sanitizeLogText`:
+ *
+ *   1. STORABILITY (below): Postgres refuses NULs and unpaired surrogates.
+ *   2. REDACTION (`redactCredentials`): the pipeline embeds a git credential in a
+ *      command it runs, and that command's output is persisted.
+ *
+ * Same reason for both: this is the one place the persisted array is built, so no
+ * call site can forget either.
  *
  * `build_session.logs` is jsonb, and Postgres refuses a jsonb value that
  * contains a NUL ("unsupported Unicode escape sequence") or an unpaired
@@ -30,6 +38,53 @@ export const MAX_ENTRY_CHARS = 32_768;
 
 /** Whole-payload cap. jsonb tops out at 1 GB; this keeps a single row sane. */
 export const MAX_TOTAL_CHARS = 4_000_000;
+
+/**
+ * Credentials embedded in a URL's userinfo. The shape that matters is the one
+ * `injectGitToken` builds for a private clone:
+ *
+ *   https://x-access-token:<installation-token>@github.com/owner/repo.git
+ *
+ * That URL is interpolated into a shell command whose git output is streamed into
+ * the persisted build log, so without this the token lands in `build_session.logs`
+ * — readable by anyone with `deployment:read` long after it was minted, and by
+ * anyone restoring a backup of that table.
+ *
+ * `[^\s/@]` cannot run past the authority, so a path segment containing `@` is
+ * untouched. The SSH form (`git@github.com:owner/repo`) has no `://` and carries no
+ * secret, so it is deliberately not matched.
+ *
+ * BOTH quantifiers are BOUNDED, and that is not cosmetic. Written as `[a-z0-9+.-]*`
+ * the scheme prefix backtracks across any long run of scheme-legal characters at
+ * every start position — quadratic. Build output is exactly where a multi-megabyte
+ * line of such characters shows up, and this function runs on the persist path, so
+ * the unbounded form turned a big log into a hang (the oversized-payload case in
+ * build-log-sanitize.test.ts went from milliseconds to >280s). Real schemes are
+ * under 16 characters and real userinfo is far under 512.
+ */
+const URL_USERINFO = /([a-z][a-z0-9+.-]{0,15}:\/\/)[^\s/@]{1,512}@/gi;
+
+/**
+ * Bare GitHub tokens, for the paths that log a token without a URL around it
+ * (a `git config` echo, a curl -H line, an error body quoting the header).
+ * Belt-and-braces on top of URL_USERINFO, not a replacement for it.
+ */
+const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
+
+const REDACTED = "***";
+
+/**
+ * Strip credentials from text on its way into storage.
+ *
+ * Deliberately NOT trying to be a general secret scanner — env values are already
+ * masked upstream by `maskServicesEnv`/`secret-env`, and a greedy matcher here would
+ * corrupt legitimate build output. This covers the one class the deploy path
+ * manufactures itself: a credential the pipeline embedded in a command it ran.
+ */
+export function redactCredentials(text: string): string {
+  if (!text) return text;
+  return text.replace(URL_USERINFO, `$1${REDACTED}@`).replace(GITHUB_TOKEN, REDACTED);
+}
 
 /**
  * Cut to at most `max` UTF-16 code units WITHOUT splitting a surrogate pair.
@@ -101,7 +156,10 @@ function stripAndRepair(text: string): string {
  * what the input was.
  */
 export function sanitizeLogText(text: string): string {
-  const cleaned = stripAndRepair(text);
+  // Redaction runs FIRST, before the cap. A cut that lands mid-token would leave a
+  // prefix behind and, worse, would stop the pattern matching at all — so redacting
+  // after capping would silently do nothing for exactly the longest lines.
+  const cleaned = stripAndRepair(redactCredentials(text));
   const capped = capEntryLength(cleaned);
   return capped === cleaned ? capped : stripAndRepair(capped);
 }

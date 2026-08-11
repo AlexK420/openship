@@ -67,10 +67,17 @@
     "emails": "E-Mails",
     "settings": "Einstellungen",
     "billing": "Abrechnung & Nutzung",
+    "mailSetup": "Mail einrichten",
+    "mailSetupProgress": "Einrichtungsfortschritt",
+    "addMailbox": "Postfach hinzufügen",
+    "webmail": "Webmail",
     "sections": {
       "main": "Allgemein",
       "settings": "Einstellungen",
       "infrastructure": "Infrastruktur",
+      "mail": "E-Mail",
+      "delivery": "Zustellung",
+      "system": "System",
       "account": "Konto"
     },
     "apps": "Apps",

@@ -15,10 +15,10 @@
  * `:::PORT` (or Node's default dual-stack) shows in tcp6 — either counts.
  */
 
+import type { ExecOnly } from "../types";
+
 /** Minimal command surface this probe needs. A full `CommandExecutor` satisfies it. */
-export interface PortProbeExecutor {
-  exec(command: string, opts?: { timeout?: number }): Promise<string>;
-}
+export type PortProbeExecutor = ExecOnly;
 
 export interface PortProbeResult {
   /** True if a LISTEN socket on the port was found. */

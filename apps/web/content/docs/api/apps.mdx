@@ -34,6 +34,7 @@ Cloud while a local project is served by your own instance.
 |---|---|---|
 | `GET /api/apps/catalog` | `project:list` | List the app catalog. |
 | `GET /api/apps/catalog/:id` | `project:list` | Get one app's full definition by id. |
+| `GET /api/apps/catalog/:id/host-fit` | `project:list` | Check a destination against the app's declared minimum resources. |
 | `GET /api/apps/custom` | `project:list` | List this organization's custom (uploaded, unverified) apps. |
 | `POST /api/apps/custom` | `project:write` | Add a custom app from an uploaded JSON definition. |
 | `DELETE /api/apps/custom/:appId` | `project:write` | Remove a custom app from this organization's catalog. |
@@ -72,6 +73,11 @@ Because the overlay can be **ahead of your instance**, entries carry compatibili
   }}
 />
 
+Each entry also carries `hosting` (`"experimental"` marks a stack that runs but is heavy or not
+production-grade upstream) and, for the few apps that declare one, `minResources` — the host floor
+you can check with [host-fit](#check-a-destination) before installing. Apps marked `unlisted` are
+absent from this list by design: they stay installable by id, reached through another app's wizard.
+
 ## Get one app
 
 ```
@@ -92,6 +98,49 @@ An install request for the same name **adopts that draft** rather than starting 
 must render the draft's stored configuration, not the app's defaults — otherwise Install silently
 changes what the operator set up last time.
 </Callout>
+
+## Check a destination
+
+```
+GET /api/apps/catalog/:id/host-fit?deployTarget=server&serverId=<id>
+```
+
+Does a machine meet what the app declares in
+[`minResources`](/docs/reference/app-catalog)? Ask before installing, so the operator sees the
+shortfall instead of discovering it from a failed deploy.
+
+<TypeTable
+  type={{
+    minResources: { type: '{ memoryMb?, cpuCores? } | null', description: 'What the app declares. null when it declares nothing — then there is nothing to check.' },
+    capacity: { type: '{ cpuCores, memoryMb, source }', description: 'What the machine reported. source is "docker" | "local" | "unknown"; "unknown" means it could not be measured.' },
+    fit: { type: '{ ok, memory?, cpu? }', description: 'ok:false only on a measured shortfall. Each present dimension carries { needed, available }.' },
+  }}
+/>
+
+```json
+{
+  "data": {
+    "minResources": { "memoryMb": 8192, "cpuCores": 4 },
+    "capacity": { "cpuCores": 2, "memoryMb": 2048, "source": "docker" },
+    "fit": {
+      "ok": false,
+      "memory": { "needed": 8192, "available": 2048 },
+      "cpu": { "needed": 4, "available": 2 }
+    }
+  }
+}
+```
+
+<Callout title="Advisory, not the gate" type="info">
+This endpoint never refuses anything — it reports. The enforcement point is deploy preflight, which
+reads the same declaration through the same comparison and fails a **first** deploy with
+`HOST_RESOURCES_INSUFFICIENT`. Both are described under
+[Host requirements](/docs/reference/app-catalog).
+</Callout>
+
+An id from another organization, a target of `cloud`, or a machine that cannot be probed all return
+`fit: { "ok": true }` with `capacity.source: "unknown"` — the same "nothing to enforce" answer, so a
+client has one shape to handle.
 
 ## Install an app
 

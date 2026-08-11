@@ -692,7 +692,35 @@
       "idx": 98,
       "version": "7",
       "when": 1787437307325,
-      "tag": "0098_dns_credential",
+      "tag": "0098_instance_product_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1787523707325,
+      "tag": "0099_mail_webmail_project",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1787610107325,
+      "tag": "0100_server_ssh_private_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787696507325,
+      "tag": "0101_mail_resume_step",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1787869307325,
+      "tag": "0103_dns_credential",
       "breakpoints": true
     }
   ]

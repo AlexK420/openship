@@ -72,7 +72,7 @@
       "serverLabel": "Sunucu",
       "loadingServers": "Sunucular yükleniyor…",
       "noServerConnected": "Bağlı sunucu yok",
-      "connectServerFirst": "Önce bir sunucu bağlayın, ardından kuruluma devam etmek için geri dönün.",
+      "connectServerFirst": "Bu sayfadan ayrılmadan hemen bir sunucu ekleyin.",
       "addServer": "Sunucu Ekle",
       "selectServer": "Bir sunucu seçin…",
       "addNewServer": "Yeni sunucu ekle…"

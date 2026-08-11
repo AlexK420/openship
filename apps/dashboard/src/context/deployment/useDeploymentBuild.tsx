@@ -29,7 +29,10 @@ import {
   usesServiceDeployment,
 } from "./types";
 import type { RawComposeService } from "./types";
-import { parseCloudRequiredCode } from "@repo/core";
+import {
+  deployErrorCloudCapability,
+  shouldPromptCloudConnect,
+} from "@/lib/deploy-error-routing";
 
 const ERROR_DEBOUNCE_MS = 1000;
 const MAX_RENDERED_BUILD_LOGS = 2000;
@@ -206,7 +209,10 @@ export function useDeploymentBuild(
   setConfig: React.Dispatch<React.SetStateAction<DeploymentConfig>>,
 ) {
   const { showToast } = useToast();
-  const { requireCloud } = useCloud();
+  // `connected` is read, not just `requireCloud`: the catch below has to tell
+  // "connecting is the missing step" from "we already think we're connected and the
+  // server still said no" — the two cases requireCloud's return value conflates.
+  const { requireCloud, connected: cloudConnected } = useCloud();
   const { baseDomain, selfHosted, deployMode } = usePlatform();
   const { showModal, hideModal } = useModal();
   const openGithubConnect = useServerGitHubConnectModal();
@@ -932,8 +938,15 @@ export function useDeploymentBuild(
       // (copy from the shared registry — no hardcoded strings). The up-front
       // Sidebar gate handles the happy path; this is the fallback. On dismiss,
       // surface the original error; on connect, the user re-deploys.
-      const cloudCapability = parseCloudRequiredCode(errorCode);
-      if (cloudCapability && canConnectCloud) {
+      //
+      // Gated on `!cloudConnected` (see shouldPromptCloudConnect): `requireCloud`
+      // resolves TRUE immediately when the dashboard already believes it is
+      // connected, opening no modal and asking nothing — and `if (!connected)` then
+      // skipped the toast, so a 403 the server was perfectly clear about
+      // ("Free subdomain … requires Openship Cloud") reached the user as nothing at
+      // all, visible only in the network tab.
+      const cloudCapability = deployErrorCloudCapability(errorCode);
+      if (shouldPromptCloudConnect({ errorCode, canConnectCloud, cloudConnected }) && cloudCapability) {
         const connected = await requireCloud(cloudCapability, { domain: baseDomain });
         if (!connected) showToast(message, "error", "Error");
       } else if (!maybeOpenCredentialModal(errorCode)) {
@@ -944,7 +957,7 @@ export function useDeploymentBuild(
       setState((prev) => ({ ...prev, isDeploying: false }));
       return null;
     }
-  }, [baseDomain, config, deployMode, hideModal, installUrl, maybeOpenCredentialModal, openGithubConnect, requireCloud, selfHosted, setConfig, showModal, showToast]);
+  }, [baseDomain, cloudConnected, config, deployMode, hideModal, installUrl, maybeOpenCredentialModal, openGithubConnect, requireCloud, selfHosted, setConfig, showModal, showToast]);
 
   // `startBuild` controls which SSE endpoint to hit:
   //   - true  → POST /:id/build, which ALSO kicks off the build. Now only

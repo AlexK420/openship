@@ -3,6 +3,293 @@
 All notable changes to Openship. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 
+## 0.6.2
+
+A hardening and reach release. Reported security issues are fixed (see Security
+below), the container→host control channel is provisioned and diagnosed end to end
+instead of failing quietly, and Openship now installs on any mainstream Linux — and on hosts
+where you don't log in as root. It also adds `openship edge` (the whole reverse
+proxy from the terminal), real resource limits that respect the machine you own,
+an Openship Mail product shell with split outbound delivery, webmail rebuilt as an
+ordinary catalog app, and five new one-click apps.
+
+### Security
+
+- **Security fixes** — this release resolves a number of reported security issues,
+  with regression tests added for each. Areas touched: authorization on
+  instance-wide and GitHub operations, access-token minting, path handling,
+  the mail engine, webmail's HTML sanitizer, the desktop shell, and redaction in
+  stored build output. Details are published as advisories on the repository.
+  **Upgrading is recommended.**
+- **Hardening** — host-control operations are pinned to the host channel rather
+  than defaulting to the API process's own container, cloud builds can never run
+  on the API host, and stored SSH key material is encrypted at rest and stripped
+  from any cross-host export.
+
+### The host control channel
+
+- **`openship up` provisions the container→host channel, and tells you when it
+  can't** — when Openship runs in Docker, a handful of operations are genuinely
+  host-level (freeing a foreign proxy off `:80`/`:443`, host system config, the
+  mail engine, writing a catalog app's generated config), and they reach the host
+  over SSH on the internal bridge. Install now generates the key, appends a
+  restricted `from=`-pinned `authorized_keys` line, checks that sshd listens on an
+  address containers can reach, opens the port in whichever firewall the host
+  runs, and verifies the round trip — instead of reporting success and failing on
+  the first host operation weeks later.
+- **It probes every layer, because the failure looks like nothing** — this
+  address is host-local, so it traverses `filter/INPUT` where a default-deny `ufw`
+  lives; published container ports are DNAT'd and skip it, which is exactly why
+  the rest of the stack looks healthy while this one channel hangs. Firewall,
+  sshd listen address, key, and reachability are each probed and reported
+  separately.
+- **One explanation, five surfaces** — the CLI preflight, the API's boot banner,
+  `openship doctor`, the dashboard's server banner, and the deploy log a host
+  operation dies in had drifted into different stories. They now read from one
+  shared vocabulary, because every line is either "your install is fine, this one
+  feature isn't" or "your install is broken" — and an operator who reads the
+  wrong one either tears down a working box or ignores a dead feature for months.
+- **`openship update` repairs an unprovisioned channel** — an install from before
+  this work, or a raw `docker compose` install, can be fixed in place by updating,
+  rather than re-running `up` and risking the environment. A deploy that needs the
+  channel emits the notice once per deploy, before the fan-out, instead of once
+  per service.
+- **The channel must be root, and says so** — an operation that needs a
+  root-owned path fails with the actual cause instead of
+  `mkdir: cannot create directory '/root': Permission denied`.
+- **Documented for hand-rolled installs** — `.env.example` spells out all five
+  steps (key, restricted authorized_keys line, sshd listen address, firewall
+  rule, recreate the api because `env_file:` is read at container creation), and a
+  new [troubleshooting page](https://openship.io/docs/troubleshooting/host-channel)
+  walks the repair.
+
+### Any Linux, and hosts that aren't root
+
+- **Openship installs on the distros it always claimed to** — Docker installation
+  was `curl get.docker.com | sh` on every Linux, a script that hard-refuses
+  Amazon Linux, AlmaLinux, Oracle Linux and Alpine. Each call site had its own
+  package-manager table (there were five, and they disagreed), its own systemd
+  test, and its own reading of "host outside my allowlist" — always "nothing to
+  do". Host facts now come from one detector, the commands that act on them live
+  in one module, and adding a distro is a compile error rather than a silent
+  no-op.
+- **A working Docker engine is never replaced implicitly** — only an explicit
+  reinstall overrides an engine that's already running, and an installer that
+  skips an already-working component says so instead of leaving the one
+  actionable line nowhere at all.
+- **Deploying as a non-root user works** — three layers answered "may I do
+  root-owned work here?" differently: component installs gated properly,
+  toolchain installs never gated at all, and the server state store assumed the
+  login was root. There's now one privilege resolver, and it elevates the write
+  rather than the verify (so a `sudo` shell never resolves a different `$HOME`).
+  A forced-command host that can't report a uid is no longer told to "connect as
+  root", which was the opposite of its fix.
+- **Language toolchains install per host, not per assumption** — the toolchain
+  catalog and installer were rewritten onto the same host profile, so a bare-metal
+  build on a non-Debian box gets its runtime installed instead of a
+  `not found` at build time.
+
+### `openship edge`
+
+- **The whole reverse proxy, from the terminal** — a new top-level command:
+  `edge up` stands the proxy up and serves `:80`/`:443`, `edge migrate` takes over
+  an existing nginx/Apache/Caddy and imports its sites, `edge takeover` and
+  `edge free` claim the ports, `edge sites` lists what could be imported, and
+  `edge repair` diagnoses why it isn't serving (`--fix` resolves a port
+  conflict).
+- **Domains, rules and traffic without opening the dashboard** —
+  `edge domains add app.example.com --port 8080` registers a hostname against a
+  port and issues a certificate; `edge rules` manages per-route rate limits, bans
+  and geo/CIDR access; and `edge traffic`, `edge analytics` and `edge logs` read
+  what the proxy already records. Host operations are Linux-only; the
+  control-plane half works from any machine, including desktop, against whichever
+  context is active.
+- **Documented as both reference and walkthrough** — a new
+  [The edge](https://openship.io/docs/guides/the-edge) guide for the tasks, and a
+  full [command reference](https://openship.io/docs/cli/edge).
+
+### Resource limits
+
+- **Self-hosted containers are unlimited by default** — a self-hosted project
+  silently inherited the cloud free tier (0.5 vCPU · 512 MB) and OOM-killed
+  memory-hungry images. On your own box the container's real ceiling is the
+  machine, so `0` (no limit) is now the default and every consumer tests for a
+  limit before applying a cap.
+- **A custom cap is bounded by the actual machine** — caps were validated against
+  hardcoded constants (4 cores / 8192 MB), so a 64 GB box could not be told to
+  give a container more than 8 GB. The ceiling is read from the Docker daemon's
+  own `/info` (`NCPU`, `MemTotal`) — identical for the local socket and a remote
+  daemon over the pooled SSH bridge — falling back to the OS when Docker isn't
+  reachable. Cloud is unchanged: a metered workspace is still sized from the tier
+  table.
+- **Deploys preflight the target's capacity** — a cap larger than the host can
+  allocate is rejected before any build work starts, with the machine's real
+  numbers in the message.
+
+### Openship Mail
+
+- **Run the instance as a mail product** — an instance can present itself as
+  Openship Mail (`OPENSHIP_PRODUCT`, or a toggle in Settings): the left rail
+  becomes the mail control plane — the ten admin tabs promoted to nav entries
+  across three headings, plus the host and settings rows an operator still needs —
+  and the platform nav is hidden. This is presentation only, never an
+  authorization boundary: webmail still deploys through the ordinary project
+  pipeline, so platform endpoints stay live. Cloud is always the full platform.
+- **Switch between mail servers** — the mail surfaces are scoped to a selected
+  server rather than assuming one, with a switcher in the shell and the scope
+  carried through the admin tabs.
+- **Outbound relay providers are real identities** — the relay code carried a
+  `"ses" | "custom"` union, so SendGrid, Mailgun and Postmark lost their identity
+  the moment they were saved: no SPF include, no round-trip in the UI, and adding
+  a provider meant editing an `if` in the service, the DNS builder and the
+  scanner. Per-provider facts are now data that all three read, and split
+  delivery (receive here, send through someone else) is a first-class setup.
+- **"Is mail actually leaving this box?"** — the daemon sweep reports that nine
+  processes are running, which says nothing about whether Postfix can hand a
+  message to the next hop. One wrong character in a relay password gave nine
+  green daemons, green DNS, a Test-tab email that reported success (our Postfix
+  accepts and queues before the relay hop), and mail that quietly deferred
+  forever. Outbound delivery is now probed and surfaced on its own, with a
+  reworked Health tab and a summary that names the failing hop.
+- **A mail console** — live engine output in the dashboard, so a setup that stalls
+  can be read rather than guessed at.
+- **Backups you can schedule** — the mail admin Backup tab gains a real schedule
+  and retention plan, wired to the same pruning the rest of Openship uses.
+- **Setup fails earlier and clearer** — a preflight checks the things that used to
+  surface mid-stream (password shape, firewall step, DNS), and setup errors render
+  in a banner instead of vanishing into the stream.
+
+### Webmail
+
+- **Webmail is an ordinary catalog app now** — it installs through the same
+  generic installer, image, volume and routing pipeline as every other app, and
+  installs from /apps just as well as from /emails. The mail-specific part is the
+  only part that stayed: which IMAP/SMTP backend it belongs to — one of your
+  Openship mail servers, or an external provider.
+- **The link is stored, not parsed out of a slug** — the old lookup read
+  `webmail-<serverId>` back out of the project slug, which the generic installer
+  never produces, and which mislinked any project someone happened to name
+  "Webmail Prod". It's a real foreign key now, nulled (not orphaned) when the
+  webmail project is deleted, with a legacy-slug fallback that stamps the column
+  the first time it resolves a pre-existing install.
+- **Its own image and database bootstrap** — a dedicated webmail Dockerfile and a
+  bootstrap script, so first boot provisions its schema instead of depending on
+  the mail engine's.
+
+### App catalog
+
+- **Five new one-click apps** — Meilisearch, Redis, PostHog, Umami and Neon
+  (Postgres), each declaring its internal connection so it can be linked into a
+  project over the internal network.
+- **Badges that tell you what you're installing** — verified, unverified and
+  hosting-mode badges with explanatory tooltips, so a community template isn't
+  visually indistinguishable from one Openship has booted and checked.
+- **Catalog schema updates** — the published `app.schema.json` gains the fields
+  behind the above, and the reference docs and "Add an app" guide were rewritten
+  around them.
+
+### Routing & domains
+
+- **A deploy stops wiping your `vercel.json` routing** — `registerRoute` replaces
+  the whole vhost, so a caller that omitted `cleanUrls` / `redirects` / `headers`
+  didn't leave them alone, it deleted them. Those fields were built inline in two
+  places, so a plain deploy neither applied them nor preserved them, and an
+  unrelated redeploy silently erased whatever a "Retry routing" had installed.
+  They're now compiled once, in a pure module every route-registration site
+  carries.
+- **One decision about what the edge dials** — a single resolver owns the
+  `proxy_pass` target: a pinned loopback host port by default (stable across
+  restart, never internet-facing), the container's bridge IP as an advanced
+  option, and a transparent fallback to the container IP for an internal Compose
+  service that publishes no host port. Selectable per instance, with `auto` as the
+  default.
+- **A domain redirect survives certificate issuance** — the redirect installed
+  for a hostname is no longer reverted the moment certbot succeeds, and it no
+  longer re-fires on internal rewrites.
+- **Real client IPs at the edge** — the real-IP configuration is derived in one
+  place for every scope, so free subdomains and custom domains agree on what the
+  visitor's address is.
+- **Route rules have an end-to-end suite** — per-route rate limits, bans and
+  access rules are covered by an e2e test that drives the real proxy.
+
+### Servers
+
+- **One add-server form** — the page and the modal were two 400-line forks that
+  had drifted; they're now one component with a variant, so a field added in one
+  place exists in both.
+- **Paste or upload an SSH private key** — `ssh_key_path` points at a file on the
+  API host, which is useless on a remote or VPS instance where your key lives on
+  your own laptop. A key can now be pasted or uploaded from any browser, stored
+  encrypted at rest, never serialized back to the client, and preferred over the
+  on-disk path when present.
+- **The server page's connection banner explains itself** — reachability, host
+  channel state, and what each one does or doesn't affect, rather than a single
+  red dot.
+- **Deploy defaults can't be set to something derived** — the instance default
+  target is a server or cloud; "this machine" is derived (on a server-host box it
+  is already in the server list), so it's no longer an option that means two
+  different things.
+
+### Projects & deploys
+
+- **Rename a project from its heading** — a rename modal, plus copy-id and
+  pause/resume, on the heading where the name actually is. The slug stays
+  immutable (it's infrastructure identity); the display name is free.
+- **Container actions go through one pipe** — pause, restart and logs run through
+  the same deployment-runtime path as everything else, so they can't disagree
+  with the platform about which host or runtime a service lives on.
+- **Reconcile and teardown are steadier** — record-only deletes, orphan GC
+  scheduling, pending actions and port checks were tightened around the same
+  runtime path.
+
+### Compose & install
+
+- **`up` preserves your `.env`** — a variable you set by hand is kept and marked
+  as yours, instead of being regenerated out of a fixed key list.
+- **A secret is never rotated out from under a running install** — `up` detects
+  that it would mint a secret an existing install already has (which would leave
+  encrypted env undecryptable), and refuses rather than silently replacing it.
+  The replaced `.env` is kept for recovery.
+- **Image versions can be pinned** — an explicit `--image-version` wins over the
+  environment and the CLI's own version, for the case where a release reaches npm
+  ahead of its images reaching the registry.
+- **A foreign Postgres data directory is refused, not adopted** — the volume's
+  contents are probed before a cluster is started on top of them.
+- **`openship doctor` and `repair` cover more** — the host channel, an
+  unprovisioned install, and port conflicts, in the same run.
+
+### Desktop
+
+- **Local deploys are gated behind an explicit "coming soon"** — desktop mode is
+  built to control remote servers; running the workload on the desktop itself
+  isn't enabled yet, and the UI now says that once, in one place, instead of
+  offering a target that fails later.
+- **Shell hardening and a safer updater** — see Security above.
+
+### Docs & site
+
+- **New and rewritten pages** — "The edge" guide, the `openship edge` command
+  reference, host-channel troubleshooting, a rewritten "Add an app" guide and app
+  catalog reference, plus notes on installation, updating and logs/monitoring.
+- **Docs get social previews** — generated OG images per page.
+- **A better changelog page** — entries collapse to headlines and expand to
+  detail, with controls to expand or filter, driven by this file.
+
+### Fixes
+
+- **Zero-auth login doesn't bounce a remote browser forever** — an instance with
+  no sign-in form grants its session only to a browser on the same machine, so
+  bouncing a remote one was guaranteed to fail, leaving a spinner and then either
+  a connection error for a host that isn't yours or an endless redirect. The page
+  now names the cause.
+- **Mail retention pruning respects mail backups** — pruning no longer considers
+  a mail engine backup an ordinary project artifact.
+- **A migrated container joins the network it's routed on** — a same-server
+  migration attached a container that was never published, leaving it unreachable
+  behind a verified domain.
+- **Every new string is translated** — the release's new copy landed across all
+  shipped languages, with the parity test extended to the new namespaces.
+
 ## 0.6.1
 
 A large release. It adds a full service-to-service networking plane, around-the-clock

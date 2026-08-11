@@ -19,6 +19,8 @@ import {
   normalizeAliasStrict,
   aliasConflictsWithSiblings,
   normalizeFramework,
+  deriveProjectDeployTarget,
+  type DeployTarget,
   type ReleaseSource,
   type UpdatableIdentity,
 } from "@repo/core";
@@ -88,6 +90,20 @@ const GIT_SOURCE_IDENTITY_KEYS = new Set([
   "installationId",
 ]);
 
+/**
+ * The project's INFRASTRUCTURE identity — settable at creation, immutable after.
+ * `slug` names the `openship-<slug>` network, the `openship-<slug>-<svc>`
+ * containers, the `openship-<slug>-<vol>` named volumes, and the monorepo app row
+ * (matched by `service.name === project.slug`). Repointing it via PATCH renamed
+ * nothing on the host: the live containers kept the old name while the next deploy
+ * recreated them under the new slug against EMPTY volumes, and the free
+ * `<slug>.opsh.io` hostname moved out from under the running app. It had no caller
+ * and no collision check. Creation still accepts an explicit slug
+ * (CreateProjectBody/EnsureProjectBody, both guarded); the free hostname is edited
+ * on its own terms in the Domains tab.
+ */
+const PROJECT_IDENTITY_KEYS = new Set(["slug"]);
+
 /** Derived from the route validator so the accepted fields can't drift from it. */
 type EnsureProjectBody = TEnsureProjectBody;
 
@@ -96,20 +112,58 @@ type ParsedComposeServiceInput = NonNullable<EnsureProjectBody["services"]>[numb
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** The deploy target + server aren't project columns — they live in the active
- *  deployment's `meta` JSON. This is the one place that parse happens, so every
- *  caller (enrichProject, its batch variant, getGitInfo) reads them the same
- *  way. Server *name* resolution stays at the call site because single vs batch
- *  fetch it differently (one `server.get` vs a prefetched map). */
-function readDeployMeta(dep: Deployment | null | undefined): {
-  deployTarget: string | null;
-  serverId: string | null;
-} {
-  const meta = (dep?.meta ?? null) as { deployTarget?: string; serverId?: string } | null;
-  return {
-    deployTarget: meta?.deployTarget ?? null,
-    serverId: meta?.serverId ?? null,
-  };
+/** Where a project runs, for every read surface. This is the one place that
+ *  resolution happens, so enrichProject, its batch variant, and getGitInfo cannot
+ *  answer it differently. Server *name* resolution stays at the call site because
+ *  single vs batch fetch it differently (one `server.get` vs a prefetched map).
+ *
+ *  The target is DERIVED (`deriveProjectDeployTarget`) from the cloud binding and the
+ *  server id resolved here, NOT read from `meta.deployTarget` as it used to be. That
+ *  snapshot is per-deploy state a fresh or partial redeploy can drop, and the drop was
+ *  silent: a cloud project then reported `deployTarget: null`, which flips `isCloud`
+ *  below — swapping the resource ceilings the dashboard renders — and switches off every
+ *  cloud gate in the dashboard, where `deployTarget === "cloud"` IS the cloud test. It
+ *  also left the two fields disagreeing, since `serverId` already coalesced to its
+ *  column while the target did not. */
+function readDeployMeta(
+  p: Pick<Project, "cloudWorkspaceId" | "serverId" | "activeDeploymentId">,
+  dep: Deployment | null | undefined,
+): { deployTarget: DeployTarget | null; serverId: string | null } {
+  const meta = (dep?.meta ?? null) as { serverId?: string } | null;
+  // Snapshot first, column second, and deliberately so: meta.serverId is where the live
+  // release ACTUALLY runs, the column is where the project is bound, and this projection
+  // answers the former. The column fills in when a fresh or partial deploy dropped the
+  // snapshot, or when a deleted server nulled the column (ON DELETE SET NULL) — the same
+  // coalesce `resolveOrgServer` and `project.repo.countActiveByServer` use, so the id
+  // here names the machine a deploy would actually reach. Pinned by
+  // test/modules/projects/enrich-project-server-id.test.ts.
+  const serverId = meta?.serverId ?? p.serverId ?? null;
+  // Bound to nothing and never deployed: no target yet. Answering "local" here would be
+  // picking one on the operator's behalf — the hosting badge renders none, and the deploy
+  // wizard seeds a validated target rather than inheriting a guess from this projection.
+  if (!p.cloudWorkspaceId && !serverId && !p.activeDeploymentId) {
+    return { deployTarget: null, serverId: null };
+  }
+  const deployTarget = deriveProjectDeployTarget({ cloudWorkspaceId: p.cloudWorkspaceId, serverId });
+  // The pair must agree. A cloud-bound project can still carry a server id — from the
+  // column it was bound to before it moved, or from the snapshot of that last deploy —
+  // and emitting both is how a card ends up labelled "Cloud" while holding a server's
+  // name, or a wizard hydrates its target from one field and its destination from the
+  // other. The target won; the id it didn't come from goes.
+  return { deployTarget, serverId: deployTarget === "server" ? serverId : null };
+}
+
+/** `readDeployMeta` for callers that don't already hold the active deployment row.
+ *  Exported so the project DETAIL read resolves the target through this rule instead
+ *  of re-deriving it inline — the detail payload is what the deploy wizard hydrates
+ *  its target from, so a second copy of the rule there is a wrong destination. */
+export async function resolveProjectDeployTarget(
+  p: Pick<Project, "cloudWorkspaceId" | "serverId" | "activeDeploymentId">,
+): Promise<{ deployTarget: DeployTarget | null; serverId: string | null }> {
+  const activeDep = p.activeDeploymentId
+    ? ((await repos.deployment.findById(p.activeDeploymentId)) ?? null)
+    : null;
+  return readDeployMeta(p, activeDep);
 }
 
 // The attention predicates live in a dependency-free leaf module so the
@@ -144,6 +198,22 @@ function readActiveDeploymentSummary(dep: Deployment | null | undefined): {
   };
 }
 
+/**
+ * Whether the operator has this project switched ON — the ONE derived name every
+ * client reads for that question.
+ *
+ * `disabled_at` is the storage (a timestamp: when the intent was recorded), and
+ * both the project detail panel and the org "pause all" action want the boolean.
+ * Each had guessed at its own field name — `project.active` and `project.enabled`
+ * — and neither was ever sent, so both silently read `undefined` and defaulted to
+ * "on": a disabled project rendered as Active, and "pause all" saw zero running
+ * projects and did nothing. Derived here, in the one place that computes a
+ * project's client-facing fields, so a third surface can't invent a fourth name.
+ */
+function readEnabled(p: Project): { enabled: boolean } {
+  return { enabled: !p.disabledAt };
+}
+
 /** Enrich a project row with computed fields. `deployTarget` is the
  *  only signal the dashboard needs — `deployTarget === "cloud"` IS
  *  the cloud-project test; the dashboard combines it with its own
@@ -153,21 +223,17 @@ export async function enrichProject(p: Project) {
   const production = p.resources as ResourceConfig | null;
   const build = p.buildResources as ResourceConfig | null;
 
-  // Resolve deploy target + server (id + name) from the active deployment's meta
-  let deployTarget: string | null = null;
-  let serverId: string | null = null;
-  let serverName: string | null = null;
   let activeDep: Deployment | null = null;
   if (p.activeDeploymentId) {
     activeDep = (await repos.deployment.findById(p.activeDeploymentId)) ?? null;
-    ({ deployTarget, serverId } = readDeployMeta(activeDep));
   }
-  // The durable project.serverId is the source of truth for the server binding;
-  // meta.serverId is a per-deploy snapshot a fresh/partial deploy can drop. Fall
-  // back to the column so the binding (and its name) survive a stale snapshot.
-  serverId = serverId ?? p.serverId ?? null;
+  const { deployTarget, serverId } = readDeployMeta(p, activeDep);
+  let serverName: string | null = null;
   if (serverId) {
-    const server = await repos.server.get(serverId);
+    // Org-scoped: the meta half of `serverId` above is a client-supplied snapshot
+    // value, so an unscoped read leaks a foreign server's name/sshHost into this
+    // projection. Same gate as build-status.service.ts.
+    const server = await repos.server.getInOrganization(serverId, p.organizationId);
     serverName = server?.name || server?.sshHost || null;
   }
 
@@ -176,6 +242,7 @@ export async function enrichProject(p: Project) {
     deployTarget,
     serverId,
     serverName,
+    ...readEnabled(p),
     ...readActiveDeploymentSummary(activeDep),
     // isCloud decides the fallback when nothing is configured: the metered free
     // tier on cloud, NO limits self-hosted (the machine is the cap).
@@ -210,8 +277,8 @@ export async function enrichProjectsBatch(
     const meta = d.meta as { serverId?: string } | null;
     if (meta?.serverId) serverIds.add(meta.serverId);
   }
-  // Prefetch the durable column's servers too — enrich coalesces to it when the
-  // snapshot meta dropped serverId, so its name must be in the map (see below).
+  // Prefetch the durable column's servers too — readDeployMeta coalesces to it when the
+  // snapshot dropped serverId, so its name must be in the map (see below).
   for (const p of projects) {
     if (p.serverId) serverIds.add(p.serverId);
   }
@@ -223,15 +290,12 @@ export async function enrichProjectsBatch(
     const production = p.resources as ResourceConfig | null;
     const build = p.buildResources as ResourceConfig | null;
 
-    let deployTarget: string | null = null;
-    let serverId: string | null = null;
-    let serverName: string | null = null;
     let activeDep: Deployment | null = null;
     if (p.activeDeploymentId) {
       activeDep = deployments.get(p.activeDeploymentId) ?? null;
-      ({ deployTarget, serverId } = readDeployMeta(activeDep));
     }
-    serverId = serverId ?? p.serverId ?? null;
+    const { deployTarget, serverId } = readDeployMeta(p, activeDep);
+    let serverName: string | null = null;
     if (serverId) {
       const server = servers.get(serverId);
       serverName = server?.name || server?.sshHost || null;
@@ -242,6 +306,7 @@ export async function enrichProjectsBatch(
       deployTarget,
       serverId,
       serverName,
+      ...readEnabled(p),
       ...readActiveDeploymentSummary(activeDep),
       // isCloud decides the fallback when nothing is configured: the metered
       // free tier on cloud, NO limits self-hosted (the machine is the cap).
@@ -528,6 +593,29 @@ async function createProductionProject(
   slug: string,
   organizationId: string,
 ) {
+  // Multi-tenant SaaS: never trust a client-supplied installationId. It binds the
+  // project to a GitHub App installation, and the push-webhook fan-out deploys by
+  // matching project.installationId to the DELIVERY's installation (webhook-push.ts
+  // triggerBranchDeployments). A tenant could otherwise claim another org's
+  // installation id (or just reference another org's repo string) and get fanned into
+  // that org's pushes — leaking the repo's commit metadata into their delivery feed
+  // and triggering unauthorized deploys. Resolve the installation from the caller's
+  // OWN org + owner; if this org hasn't installed the App on that owner, drop it so
+  // the project can never match — and thus never join — another org's push delivery.
+  //
+  // Sits HERE, at the funnel, and not at the callers: it used to live in
+  // createProject only, so `ensureProject` — which reaches creation directly, and is
+  // the path the folder-upload deploy flow takes — wrote the raw body value AND
+  // force-enables autoDeploy. Same shape as every other gate we have had to move:
+  // put it where the row is written, not on one of the roads leading there.
+  // (linkProjectRepo resolves it server-side on its own path.)
+  if (env.CLOUD_MODE) {
+    const owner = data.gitOwner?.trim();
+    data.installationId = owner
+      ? ((await getInstallationIdByOrg(organizationId, owner)) ?? undefined)
+      : undefined;
+  }
+
   // Atomic free-domain gate — same rule and shape as updateProject. When the
   // caller EXPLICITLY sends endpoints, a free (*.opsh.io) route only resolves
   // behind the Openship Cloud edge, so refuse BEFORE any group/project row is
@@ -757,11 +845,11 @@ async function uniqueProjectSlug(organizationId: string, baseSlug: string) {
 
 /**
  * A cheap "current version" label for an app environment — the real axis for
- * apps (which have no meaningful git branch). Release/self/webmail → semver;
+ * apps (which have no meaningful git branch). Release/self → semver;
  * image apps → the running image tag. Null for git projects (they keep branch).
  */
 async function resolveEnvVersion(row: Project, latest: Deployment | null): Promise<string | null> {
-  if (row.appTemplateId === "openship" || row.appTemplateId === "mail-webmail") return readApiVersion();
+  if (row.appTemplateId === "openship") return readApiVersion();
   if (isReleaseProvider(row.gitProvider)) {
     const pinned = (row.releaseSource as ReleaseSource | null)?.pinnedVersion;
     return latest?.releaseVersion ?? pinned ?? null;
@@ -1053,24 +1141,8 @@ export async function createProject(
   const existing = await findProjectByAppSlug(organizationId, slug);
   if (existing) throw new ConflictError(`Project "${data.name}" already exists`);
 
-  // Multi-tenant SaaS: never trust a client-supplied installationId. It binds
-  // the project to a GitHub App installation, and the push-webhook fan-out
-  // deploys by matching project.installationId to the DELIVERY's installation
-  // (webhook-push.ts triggerBranchDeployments). A tenant could otherwise claim
-  // another org's installation id (or just reference another org's repo string)
-  // and get fanned into that org's pushes — leaking the repo's commit metadata
-  // into their delivery feed and triggering unauthorized deploys. Resolve the
-  // installation from the caller's OWN org + owner; if this org hasn't installed
-  // the App on that owner, drop it (null) so the project can never match — and
-  // thus never join — another org's push delivery. (linkProjectRepo already
-  // resolves it server-side; this closes the direct-create path.)
-  if (env.CLOUD_MODE) {
-    const owner = data.gitOwner?.trim();
-    data.installationId = owner
-      ? ((await getInstallationIdByOrg(organizationId, owner)) ?? undefined)
-      : undefined;
-  }
-
+  // installationId is resolved server-side inside createProductionProject, which
+  // both creating entry points share — see the comment there.
   const p = await createProductionProject(data, slug, organizationId);
 
   return enrichProject(p);
@@ -1111,15 +1183,27 @@ export async function updateProject(
     // no sibling fan-out. gitUrl is derived by the linker, so it's not set here
     // either (deriving it from an owner/repo we don't apply would desync it).
     if (GIT_SOURCE_IDENTITY_KEYS.has(key)) continue;
+    if (PROJECT_IDENTITY_KEYS.has(key)) continue;
     if (raw[key] !== undefined) update[key] = raw[key];
   }
+  // A rename changes the DISPLAY NAME only — `slug` is deliberately NOT
+  // recomputed. The slug is this project's infrastructure identity, not a label:
+  // it names the `openship-<slug>` docker network, the `openship-<slug>-<svc>`
+  // service containers, the `openship-<slug>-<vol>` named volumes
+  // (scopeVolumeBinds), the monorepo app row (matched by `service.name ===
+  // project.slug`), and it seeded the free `<slug>.opsh.io` hostname. Writing a
+  // new slug here moved the LIVE public URL (deregistering the old hostname)
+  // while the running containers kept the old name — and the next deploy then
+  // recreated them under the new slug against brand-new EMPTY volumes. The URL
+  // stays editable on its own terms in the Domains tab.
+  //
+  // The collision check stays: the slug namespace remains reserved per org, so
+  // names can't silently converge (same rule as createProject).
   if (data.name && data.name !== p.name) {
-    const newSlug = slugify(data.name);
-    const existing = await repos.project.findBySlugInOrg(organizationId, newSlug);
+    const existing = await repos.project.findBySlugInOrg(organizationId, slugify(data.name));
     if (existing && existing.id !== projectId) {
       throw new ConflictError(`Project "${data.name}" already exists`);
     }
-    update.slug = newSlug;
   }
 
   if (data.rollbackWindow !== undefined) {
@@ -1218,11 +1302,13 @@ export async function updateProject(
   // Reconcile routes AFTER persisting the project (best-effort) — a route-sync
   // failure must not discard the field edits already committed; the next deploy
   // re-syncs. Same ordering as updateOptions.
-  if (
-    data.publicEndpoints !== undefined ||
-    update.slug !== undefined ||
-    update.port !== undefined
-  ) {
+  // Whether the per-domain re-apply below runs. Read again by the routingConfig branch,
+  // which must not add a SECOND concurrent writer to the same vhost.
+  // No slug term: the slug is immutable here (PROJECT_IDENTITY_KEYS), so a rename
+  // never re-syncs routes — which is the point. Its hostname is edited as a domain.
+  const routesReapplied =
+    data.publicEndpoints !== undefined || update.port !== undefined;
+  if (routesReapplied) {
     // Snapshot the live hostnames before the sync so re-application can tear
     // down any the edit drops — AND so the free-cloud gate only fires for
     // NET-NEW free routes.
@@ -1255,16 +1341,16 @@ export async function updateProject(
       await assertFreeEndpointsAllowed(organizationId, netNew);
     }
 
-    // Best-effort ONLY for incidental re-syncs (a slug/port edit) — the field
-    // edit is already committed and the next deploy re-syncs routes. But when
-    // the caller EXPLICITLY sent publicEndpoints, the domain add/edit IS the
+    // Best-effort ONLY for an incidental re-sync (a port edit) — the field edit
+    // is already committed and the next deploy re-syncs routes. But when the
+    // caller EXPLICITLY sent publicEndpoints, the domain add/edit IS the
     // operation: swallowing a failure here would return success while nothing
     // was persisted (silent drop). Fail loudly so the real reason (e.g. a slug
     // conflict) surfaces to the user instead of a false success.
     try {
       await syncProjectRouteState(p, {
         nextPublicEndpoints: data.publicEndpoints,
-        slug: typeof update.slug === "string" ? update.slug : p.slug,
+        slug: p.slug,
       });
     } catch (err) {
       if (data.publicEndpoints !== undefined) throw err;
@@ -1317,18 +1403,38 @@ export async function updateProject(
   // best-effort internally.
   if (data.routingConfig !== undefined) {
     await applyProjectRouting(projectId);
+    // `applyProjectRouting` only emits the COMPOSITE (1 static + 1 server) and migration
+    // fan-out shapes — for a single-app or lone-static project it builds no registers and
+    // returns having written nothing, so the Domains-tab save reported success and changed
+    // nothing on the edge. The per-domain path is what carries the rules for those, so run
+    // it here.
+    //
+    // Skipped when the block above already queued one: that re-apply is fire-and-forget,
+    // and two writers on one vhost can interleave their snapshot/rollback — the loser
+    // restores a file the winner had already replaced.
+    if (!routesReapplied) {
+      const forRouting = await repos.project.findById(projectId);
+      if (forRouting) {
+        await reapplyProjectLiveRoutes(forRouting, []).catch((err) =>
+          console.warn(
+            `[updateProject] routing re-apply failed (non-fatal, applies next deploy): ${safeErrorMessage(err)}`,
+          ),
+        );
+      }
+    }
   }
 
   if (p.groupId) {
-    // Only non-source fields fan out here (name/slug). Repo identity is owned by
-    // linkProjectRepo, which does its OWN group + sibling propagation — the
-    // generic editor no longer sets git source, so it must not fan it out either.
-    const appUpdate: Record<string, unknown> = {};
-    if (typeof update.name === "string") appUpdate.name = update.name;
-    if (typeof update.slug === "string" && p.environmentSlug === "production")
-      appUpdate.slug = update.slug;
-    if (Object.keys(appUpdate).length > 0) {
-      await repos.projectGroup.update(p.groupId, appUpdate);
+    // The display name fans out to the group row so the app-level name stays in
+    // step — it's what the on-server manifest records as `appName`
+    // (openship-manifest-sync), which is how a re-scan recovers our own projects.
+    // The group's SLUG deliberately does NOT move with it: same immutable identity
+    // as the project's, and it's what `findProjectByAppSlug` resolves against.
+    // Repo identity is owned by linkProjectRepo, which does its OWN group + sibling
+    // propagation — the generic editor no longer sets git source, so it must not
+    // fan it out either.
+    if (typeof update.name === "string") {
+      await repos.projectGroup.update(p.groupId, { name: update.name });
     }
   }
   const updated = await repos.project.findById(projectId);
@@ -1542,7 +1648,7 @@ export type DriftStatus = Awaited<ReturnType<typeof evaluateDrift>>;
 /** Which of the three drift shapes a project has, from local fields only. */
 export function driftMode(p: Project): "commit" | "release" | "image" {
   if (isReleaseProvider(p.gitProvider)) return "release";
-  if (p.appTemplateId === "openship" || p.appTemplateId === "mail-webmail") return "release";
+  if (p.appTemplateId === "openship") return "release";
   return p.gitOwner && p.gitRepo ? "commit" : "image";
 }
 
@@ -1579,15 +1685,11 @@ async function imageServicesOf(p: Project) {
  * question worth a network round-trip, so readers skip the poll entirely rather
  * than resolving a HEAD they'd only discard.
  *
- * The self-app and webmail qualify without a deployment row: they report the
- * running API's own version (see `resolveDeployedDrift`).
+ * The self-app qualifies without a deployment row: it reports the running API's
+ * own version (see `resolveDeployedDrift`).
  */
 export function hasDeployedSide(p: Project): boolean {
-  return (
-    Boolean(p.activeDeploymentId) ||
-    p.appTemplateId === "openship" ||
-    p.appTemplateId === "mail-webmail"
-  );
+  return Boolean(p.activeDeploymentId) || p.appTemplateId === "openship";
 }
 
 /**
@@ -1704,12 +1806,9 @@ export async function resolveDeployedDrift(
   }
 
   if (mode === "release") {
-    // Self-app/webmail without a releaseSource track the running API's own
-    // version — they never ship a releaseVersion through the pipeline.
-    if (
-      !isReleaseProvider(p.gitProvider) &&
-      (p.appTemplateId === "openship" || p.appTemplateId === "mail-webmail")
-    ) {
+    // The self-app without a releaseSource tracks the running API's own
+    // version — it never ships a releaseVersion through the pipeline.
+    if (!isReleaseProvider(p.gitProvider) && p.appTemplateId === "openship") {
       return { mode: "release", currentVersion: readApiVersion() };
     }
     let currentVersion: string | null = null;
@@ -1853,12 +1952,8 @@ export async function getGitInfo(projectId: string, organizationId: string) {
   const p = await repos.project.findById(projectId);
   assertResourceInOrg(p, "Project", organizationId, projectId);
 
-  // Resolve deploy target from active deployment meta
-  let deployTarget: string | null = null;
-  if (p.activeDeploymentId) {
-    const dep = await repos.deployment.findById(p.activeDeploymentId);
-    ({ deployTarget } = readDeployMeta(dep));
-  }
+  // Same one rule as the cards and the detail read.
+  const { deployTarget } = await resolveProjectDeployTarget(p);
 
   return {
     gitProvider: p.gitProvider,

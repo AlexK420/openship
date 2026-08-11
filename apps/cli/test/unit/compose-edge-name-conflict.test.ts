@@ -21,6 +21,7 @@ vi.mock("node:fs", () => ({
   mkdirSync: () => undefined,
   readFileSync: () => "",
   writeFileSync: () => undefined,
+  renameSync: () => undefined,
 }));
 vi.mock("../../src/lib/source-install", () => ({ readSourceInstall: () => null }));
 vi.mock("@repo/adapters/proxy", () => ({ sanitizeEdgeVhosts: async () => {} }));

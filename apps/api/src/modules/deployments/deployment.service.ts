@@ -11,11 +11,15 @@ import { NotFoundError, ForbiddenError } from "@repo/core";
 import type { LogEntry } from "@repo/adapters";
 import type { RequestContext } from "../../lib/request-context";
 import {
-  resolveDeploymentRuntime,
-  resolveDeploymentRuntimeForRead,
+  deploymentContainerIds,
+  withDeploymentRuntime,
   type DeploymentMeta,
 } from "../../lib/deployment-runtime";
-import { assertResourceInOrg } from "../../lib/controller-helpers";
+import {
+  assertNotControlPlane,
+  assertNotControlPlaneById,
+  assertResourceInOrg,
+} from "../../lib/controller-helpers";
 import { collectDeploymentManifest, executeCleanup } from "../projects/project-cleanup.service";
 import { assertGitHubRepoAccess } from "../github/github-access";
 import { maskDeploymentEnv } from "../../lib/secret-env";
@@ -63,17 +67,6 @@ export async function assertGitHubAccessForDeployment(
     owner: project.gitOwner,
     repo: project.gitRepo,
   });
-}
-
-async function listServiceContainerIds(deploymentId: string): Promise<string[]> {
-  const rows = await repos.service.listByDeployment(deploymentId);
-  return [...new Set(rows.map((row) => row.containerId).filter((id): id is string => !!id))];
-}
-
-async function listDeploymentContainerIds(dep: { id: string; containerId?: string | null }) {
-  const serviceContainerIds = await listServiceContainerIds(dep.id);
-  if (serviceContainerIds.length > 0) return serviceContainerIds;
-  return dep.containerId ? [dep.containerId] : [];
 }
 
 export async function listDeployments(
@@ -161,34 +154,24 @@ export async function getDeployment(
   return dep;
 }
 
-/**
- * Refuse a mutating action on the self-deployed control plane's deployment. Its
- * row is an ADOPT deployment over the already-running host process (supervised
- * by the CLI, not this pipeline) — rollback/restart/delete/pin would be
- * meaningless or would detach the live app (clearing activeDeploymentId).
- * Build/redeploy is already blocked in build.service (triggerDeployment).
- */
-async function assertNotControlPlaneDeployment(dep: { projectId: string }): Promise<void> {
-  const project = await repos.project.findById(dep.projectId);
-  if (project?.appTemplateId === "openship") {
-    throw new ForbiddenError(
-      "The Openship control plane manages its own runtime — this action isn't available here. Use the CLI.",
-    );
-  }
-}
+// Mutating actions on the self-deployed control plane's deployment are refused by
+// the shared policy (`assertNotControlPlane*`, controller-helpers): its row is an
+// ADOPT deployment over a host process the CLI supervises, so rollback / restart /
+// delete / pin would either be meaningless or detach the live app. Build and
+// redeploy are blocked separately, in build.service's triggerDeployment.
 
 export async function deleteDeployment(
   deploymentId: string,
   organizationId: string,
 ) {
   const dep = await getDeployment(deploymentId, organizationId);
-  await assertNotControlPlaneDeployment(dep);
+
+  const project = await repos.project.findById(dep.projectId);
+  assertNotControlPlane(project);
 
   if (["queued", "building", "deploying"].includes(dep.status)) {
     throw new ForbiddenError("Cannot delete a deployment that is in progress. Cancel it first.");
   }
-
-  const project = await repos.project.findById(dep.projectId);
 
   // protectRetained: a compose service that didn't change carries its container
   // and image onto later releases, so this release's rows can name artifacts a
@@ -223,7 +206,7 @@ export async function rollbackDeployment(
 ) {
   // Existence + org-scope check (throws if deployment isn't in this org).
   const dep = await getDeployment(deploymentId, organizationId);
-  await assertNotControlPlaneDeployment(dep);
+  await assertNotControlPlaneById(dep.projectId);
   await rollback(deploymentId);
   // Return the post-rollback deployment row (now with any updated container id).
   return (await repos.deployment.findById(dep.id)) ?? dep;
@@ -238,7 +221,7 @@ export async function rollbackDeployment(
  */
 export async function previewRestore(deploymentId: string, organizationId: string) {
   const dep = await getDeployment(deploymentId, organizationId);
-  await assertNotControlPlaneDeployment(dep);
+  await assertNotControlPlaneById(dep.projectId);
   const { target, project, plan } = await resolveRestorePlan(deploymentId);
   const consequences =
     plan.mode === "ineligible"
@@ -346,7 +329,7 @@ export async function setDeploymentPin(
   pinned: boolean,
 ) {
   const dep = await getDeployment(deploymentId, organizationId);
-  await assertNotControlPlaneDeployment(dep);
+  await assertNotControlPlaneById(dep.projectId);
   await setPin(deploymentId, pinned);
   return (await repos.deployment.findById(dep.id)) ?? dep;
 }
@@ -539,9 +522,9 @@ export async function getDeploymentLogs(
     return buildSessions.logs as LogEntry[];
   }
 
-  if (dep.containerId) {
-    const { runtime } = await resolveDeploymentRuntime(dep);
-    return runtime.getRuntimeLogs(dep.containerId, tail);
+  const containerId = dep.containerId;
+  if (containerId) {
+    return withDeploymentRuntime(dep, (runtime) => runtime.getRuntimeLogs(containerId, tail));
   }
 
   return [];
@@ -552,20 +535,21 @@ export async function restartDeployment(
   organizationId: string,
 ) {
   const dep = await getDeployment(deploymentId, organizationId);
-  await assertNotControlPlaneDeployment(dep);
+  await assertNotControlPlaneById(dep.projectId);
 
   if (dep.status !== "ready") {
     throw new ForbiddenError("Can only restart a running deployment");
   }
-  const containerIds = await listDeploymentContainerIds(dep);
+  const containerIds = await deploymentContainerIds(dep);
   if (containerIds.length === 0) {
     throw new ForbiddenError("Deployment has no container");
   }
 
-  const { runtime } = await resolveDeploymentRuntime(dep);
-  for (const containerId of containerIds) {
-    await runtime.restart(containerId);
-  }
+  await withDeploymentRuntime(dep, async (runtime) => {
+    for (const containerId of containerIds) {
+      await runtime.restart(containerId);
+    }
+  });
 
   return dep;
 }
@@ -578,12 +562,8 @@ export async function getContainerInfo(
   if (!dep.containerId) {
     throw new ForbiddenError("Deployment has no container");
   }
-  const { runtime } = await resolveDeploymentRuntimeForRead(dep);
-  try {
-    return await runtime.getContainerInfo(dep.containerId);
-  } finally {
-    void Promise.resolve(runtime.dispose?.()).catch(() => {});
-  }
+  const containerId = dep.containerId;
+  return withDeploymentRuntime(dep, (runtime) => runtime.getContainerInfo(containerId));
 }
 
 /**
@@ -607,12 +587,8 @@ export async function getContainerUsage(
   if (!dep.containerId) {
     throw new ForbiddenError("Deployment has no container");
   }
-  const { runtime } = await resolveDeploymentRuntimeForRead(dep);
-  try {
-    return await runtime.getUsage(dep.containerId);
-  } finally {
-    void Promise.resolve(runtime.dispose?.()).catch(() => {});
-  }
+  const containerId = dep.containerId;
+  return withDeploymentRuntime(dep, (runtime) => runtime.getUsage(containerId));
 }
 
 export async function getBuildLogs(

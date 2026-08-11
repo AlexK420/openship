@@ -30,7 +30,7 @@ import { upgradeWebSocket } from "../../lib/ws";
 import { repos } from "@repo/db";
 import type { ShellSession } from "@repo/adapters";
 import type { TerminalExitReason } from "@repo/db";
-import { resolveDeploymentRuntime } from "../../lib/deployment-runtime";
+import { disposeRuntime, resolveDeploymentRuntime } from "../../lib/deployment-runtime";
 import { safeErrorMessage } from "@repo/core";
 import { getRequestContext } from "../../lib/request-context";
 import { resolveActiveOrganizationId } from "../../middleware/active-organization";
@@ -186,6 +186,7 @@ async function resolveServiceForOrg(
   }
 
   if (!runtime.supports("serviceShell") || !runtime.openServiceShell) {
+    disposeRuntime(runtime);
     return {
       ok: false,
       code: "not_supported",
@@ -204,6 +205,7 @@ async function resolveServiceForOrg(
     tracked: await containerIdForService(dep, service),
   });
   if (!containerId) {
+    disposeRuntime(runtime);
     return {
       ok: false,
       code: "not_deployed",
@@ -211,6 +213,9 @@ async function resolveServiceForOrg(
     };
   }
 
+  // On the ok path the CALLER owns `runtime`: the WS handshake hands it to the
+  // session (which disposes it when the session ends), and `issueTicket` — which
+  // only wants the validation — releases it straight away.
   return { ok: true, containerId, runtime };
 }
 
@@ -232,6 +237,10 @@ export async function issueTicket(c: Context) {
   // Org-scoped + permission-gated — out-of-org / non-admin services 404
   // indistinguishably from missing.
   const result = await resolveServiceForOrg(serviceId, ctx.organizationId, ctx.userId);
+  // This endpoint deliberately uses none of the runtime it just resolved (the WS
+  // open path re-resolves and owns it), so release the transport immediately —
+  // otherwise merely OPENING the terminal drawer leaked a bridge per ticket.
+  if (result.ok) disposeRuntime(result.runtime);
   if (!result.ok && (result.code === "server_not_found" || result.code === "not_deployed")) {
     return c.json({ error: result.message }, 404);
   }
@@ -403,6 +412,12 @@ function buildHandlers(ctx: HandshakeCtx) {
 
       // RESUME path
       if (ctx.resumeToken) {
+        // A resume reattaches to the PARKED session's existing shell, so the
+        // runtime this handshake just resolved is never used — release it here
+        // rather than at teardown, which would otherwise dispose this unused
+        // handle and leave the one actually carrying the shell (owned by the
+        // session) stranded.
+        disposeRuntime(ctx.runtime);
         const existing = getServiceSessionByResumeToken(
           ctx.resumeToken,
           ctx.userId,
@@ -472,6 +487,10 @@ function buildHandlers(ctx: HandshakeCtx) {
           message: safeErrorMessage(err),
         });
         safeWsClose(ws, 1011, code);
+        // The shell never opened, so no session takes ownership of the runtime
+        // below — release it here or a terminal that fails to attach leaks its
+        // transport (the likeliest case being an unreachable host).
+        disposeRuntime(ctx.runtime);
         return;
       }
 
@@ -496,6 +515,9 @@ function buildHandlers(ctx: HandshakeCtx) {
         userId: ctx.userId,
         serviceId: ctx.serviceId,
         shell,
+        // Handed over: the session outlives this connection (park/resume), so it
+        // is the only thing that knows when this transport is finished with.
+        runtime: ctx.runtime,
         onTimeout: (_sid, reason) => {
           sendControl(ws, {
             type: "error",

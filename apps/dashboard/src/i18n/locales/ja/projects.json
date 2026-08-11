@@ -8,6 +8,7 @@
   },
   "status": {
     "live": "稼働中",
+    "paused": "一時停止中",
     "attention": "要対応",
     "queued": "待機中",
     "building": "ビルド中",
@@ -156,7 +157,7 @@
     "subtextOther": "このプロジェクトにはまだ稼働中のデプロイがありません。ソースを確認して、もう一度お試しください。",
     "deployNow": "今すぐデプロイ",
     "connectSource": "ソースを接続",
-    "settings": "設定",
+    "settings": "デプロイ設定",
     "attemptsTitle": "デプロイ試行",
     "attemptsDescription": "このプロジェクトのすべてのビルド — クリックして開きます",
     "sourceTitle": "ソース",

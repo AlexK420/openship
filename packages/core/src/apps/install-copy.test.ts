@@ -72,6 +72,42 @@ describe("authored install copy is additive (no schemaVersion bump)", () => {
   });
 });
 
+describe("inline service build context is additive (no schemaVersion bump)", () => {
+  it("accepts a built service (build instead of image) at schemaVersion 1", () => {
+    const tpl = {
+      ...base,
+      services: [
+        {
+          name: "compute",
+          build: {
+            dockerfile: "FROM alpine:3.20\nARG TOKEN\nENTRYPOINT [\"/bin/sh\"]\n",
+            files: [{ path: "run.sh", content: "echo {{config:TOKEN}}" }],
+          },
+        },
+      ],
+      schemaVersion: 1,
+    };
+    expect(isValidAppTemplate(tpl)).toBe(true);
+    expect(parseAppTemplate(tpl)).toEqual({ ok: true });
+  });
+});
+
+describe("bundled catalog carries a real inline-build app", () => {
+  it("Neon self-hosts: its compute node is a built service (build, no image)", () => {
+    const neon = getAppTemplate("neon");
+    expect(neon).toBeDefined();
+    expect(neon!.kind).toBe("template");
+    expect(neon!.hosting).toBe("experimental");
+    const compute = (neon!.services ?? []).find((s) => s.name === "compute");
+    expect(compute).toBeDefined();
+    expect(compute!.image).toBeUndefined();
+    expect(compute!.build?.dockerfile).toContain("compute-node-v16");
+    // The build context ships compute.sh, COPY'd under the service subdir.
+    expect(compute!.build?.files?.some((f) => f.path === "compute.sh")).toBe(true);
+    expect(compute!.build?.dockerfile).toContain("COPY compute/compute.sh");
+  });
+});
+
 describe("connection output `kind` is additive (no schemaVersion bump)", () => {
   it("accepts a url-kind output", () => {
     const tpl = {

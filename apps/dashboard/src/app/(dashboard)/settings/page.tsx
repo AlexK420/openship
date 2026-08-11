@@ -36,6 +36,8 @@ import { InstanceInfo } from "./_components/InstanceInfo";
 import { UntrackedEdgeRoutes } from "./_components/UntrackedEdgeRoutes";
 import { LanguageSetting } from "./_components/LanguageSetting";
 import { PreferencesSetting } from "./_components/PreferencesSetting";
+import { ProductViewSetting } from "./_components/ProductViewSetting";
+import { MailModeSetting } from "./_components/MailModeSetting";
 import { UpdatesTab } from "./_components/UpdatesTab";
 import { InfrastructureTab } from "./_components/InfrastructureTab";
 import { TeamTab } from "./_components/TeamTab";
@@ -67,15 +69,27 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
-  const { selfHosted, deployMode } = usePlatform();
+  const { selfHosted, deployMode, productView } = usePlatform();
   const { refresh } = useCloud();
   const { showToast } = useToast();
   const { t } = useI18n();
   const searchParams = useSearchParams();
   const { activeTab } = useSettingsTabs();
 
+  /**
+   * Openship Mail drops the cards that only a deploy platform has a use for —
+   * GitHub, build preferences, clone credentials. An operator running this box as
+   * a mail server has no repository in the picture.
+   *
+   * Presentation only, like the rail: Settings → General → "Full platform" brings
+   * every card straight back, and nothing hidden here is load-bearing for mail.
+   * Webmail installs from a published image (the `webmail` catalog app), so a
+   * mail-only box needs no stored git credential to deploy or update it.
+   */
+  const mailOnly = productView === "mail";
+
   // Build preferences: only self-hosted — SaaS manages builds.
-  const showBuildPreferences = selfHosted;
+  const showBuildPreferences = selfHosted && !mailOnly;
   // Deploy defaults: only meaningful where the picker exists (desktop / self-hosted)
   const showDeployDefaults = selfHosted;
 
@@ -117,7 +131,7 @@ function SettingsPageInner() {
         <div className="space-y-6 min-w-0">
           {activeTab === "general" && (
             <>
-              <GitHubConnection />
+              {!mailOnly && <GitHubConnection />}
               {/* Deploy Defaults + Routing hidden for now — advanced/rarely-needed,
                   reduces general-settings noise. The edge defaults to loopback-port
                   and both keep a per-project override; re-enable by uncommenting. */}
@@ -125,6 +139,9 @@ function SettingsPageInner() {
               {showBuildPreferences && <BuildPreferences />}
               {/* {showBuildPreferences && <RoutePreferences />} */}
               <LanguageSetting />
+              {/* Per-user shell: full platform vs Openship Mail's mail-only rail.
+                  Renders nothing on the SaaS. */}
+              <ProductViewSetting />
               <PreferencesSetting />
             </>
           )}
@@ -132,7 +149,7 @@ function SettingsPageInner() {
           {activeTab === "tokens" && (
             <>
               <PersonalAccessTokens />
-              <CloneCredentials />
+              {!mailOnly && <CloneCredentials />}
             </>
           )}
 
@@ -167,6 +184,9 @@ function SettingsPageInner() {
           {activeTab === "instance" && (
             <>
               <InstanceInfo />
+              {/* Instance-wide default product mode (Openship Mail vs the full
+                  platform). Owner-gated inside; self-hosted only. */}
+              <MailModeSetting />
               {/* Updates to this install — not on the SaaS, where the managed
                   cloud has nothing for the user to update. */}
               {(selfHosted || deployMode === "desktop") && <UpdatesTab />}

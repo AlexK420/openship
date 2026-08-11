@@ -228,6 +228,10 @@ vi.mock("../../../src/modules/backups/restore.sse", () => ({
 }));
 
 vi.mock("../../../src/lib/deployment-runtime", () => ({
+  // The orchestrator releases the runtime it resolved when the run ends; these
+  // stubs hold no transport, so the release is a no-op here.
+  disposeRuntime: () => {},
+  disposePlatform: () => {},
   resolveDeploymentPlatform: async () => ({ platform: { runtime: { name: "docker" } } }),
   resolveTargetPlatform: async () => ({ runtime: { name: "bare" } }),
 }));

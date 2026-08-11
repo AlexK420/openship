@@ -8,6 +8,8 @@ import DropdownMenu from "@/components/ui/DropdownMenu";
 import DomainSettings from "./DomainSettings";
 import BuildSummary from "./BuildSummary";
 import { CloudWaitlistModal } from "./CloudWaitlistModal";
+import { LocalDeployComingSoonModal } from "@/components/LocalDeployComingSoonModal";
+import { useLocalDeployGate } from "@/hooks/useLocalDeployGate";
 import DnsRecordsModal from "@/components/domains/DnsRecordsModal";
 import { useCloneStrategyGate } from "./CloneStrategyNudge";
 import { serviceDisplayHost } from "@/utils/route-display";
@@ -154,6 +156,8 @@ const Sidebar: React.FC = () => {
   const { t } = useI18n();
   const { requireCloud } = useCloud();
   const { baseDomain, selfHosted, deployMode } = usePlatform();
+  // Desktop mode: the workload can't run on this machine yet (builds still can).
+  const localDeployGate = useLocalDeployGate();
   const { showModal, hideModal } = useModal();
   const { showToast } = useToast();
   const router = useRouter();
@@ -281,6 +285,30 @@ const Sidebar: React.FC = () => {
       return;
     }
 
+    // TODO: temporary desktop gate (useLocalDeployGate). Desktop mode controls
+    // remote servers; the workload can't run on this machine yet. Scoped to NEW
+    // projects on purpose — a project that already lives locally stays fully
+    // redeployable, so nobody is stranded mid-work. Building locally is
+    // untouched; only the deploy destination is gated.
+    if (
+      !config.projectId &&
+      localDeployGate.blocks({ deployTarget: config.deployTarget, serverId: config.serverId })
+    ) {
+      let modalId = "";
+      modalId = showModal({
+        customContent: (
+          <LocalDeployComingSoonModal
+            onClose={() => hideModal(modalId)}
+            onServerAdded={(server) =>
+              updateConfig({ deployTarget: "server", serverId: server.id })
+            }
+          />
+        ),
+        maxWidth: "460px",
+      });
+      return;
+    }
+
     if (config.deployTarget === "cloud") {
       if (!(await requireCloud("cloud-deploy-target"))) return;
     }
@@ -376,7 +404,7 @@ const Sidebar: React.FC = () => {
     }
 
     await continueDeploy(buildStrategyOverride ? { buildStrategy: buildStrategyOverride } : undefined);
-  }, [baseDomain, canConnectCloud, cloneGate.preference, config.buildStrategy, config.deployTarget, config.owner, config.projectId, config.serverId, config.publicEndpoints, config.services, continueDeploy, hideModal, isServices, requireCloud, selfHosted, showModal, showToast, updateConfig, t]);
+  }, [baseDomain, canConnectCloud, cloneGate.preference, config.buildStrategy, config.deployTarget, config.owner, config.projectId, config.serverId, config.publicEndpoints, config.services, continueDeploy, hideModal, isServices, localDeployGate, requireCloud, selfHosted, showModal, showToast, updateConfig, t]);
 
   // Edit mode (opened from the project Runtime page with ?mode=config): the
   // finish button SAVES the config to the project and returns — no deploy, no

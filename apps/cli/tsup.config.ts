@@ -77,11 +77,17 @@ export default defineConfig([
     // "./index.js"` that loads the sibling polyglot bundle (Node strips its
     // sh shebang on import). No CJS shim needed here — the wrapper bundles
     // nothing.
+    //
+    // `./node-bootstrap.js` (Bundle 3) is external for a second, stronger reason:
+    // node-entry.js is the ONE file that has to parse on the old Node it is
+    // diagnosing. Inlining the recovery code would put that whole import chain
+    // inside the gate, so one modern-syntax dependency anywhere in it would break
+    // the gate with the same SyntaxError the gate exists to replace.
     esbuildPlugins: [
       {
         name: "keep-index-external",
         setup(build) {
-          build.onResolve({ filter: /^\.\/index\.js$/ }, (args) => ({
+          build.onResolve({ filter: /^\.\/(index|node-bootstrap)\.js$/ }, (args) => ({
             path: args.path,
             external: true,
           }));
@@ -91,5 +97,20 @@ export default defineConfig([
     banner: {
       js: "#!/usr/bin/env node",
     },
+  },
+
+  // ── Bundle 3: dist/node-bootstrap.js — old-Node recovery ────────────────
+  // Imported (never executed) by node-entry.js when the runtime is below the
+  // floor: reuse a vendored Node, or offer to fetch one via the same
+  // ensureNodeRuntime() `openship update` calls. Its own bundle so the gate can
+  // load it with `await import()` in a try/catch — see the note above.
+  //
+  // Must stay dependency-free: the whole point is that it parses and runs on the
+  // old Node being recovered. node-runtime → cache → paths is node-builtins-only
+  // today, and node-entry-gate.test.ts fails if a third-party import creeps in.
+  {
+    entry: { "node-bootstrap": "src/node-bootstrap.ts" },
+    format: ["esm"],
+    clean: false,
   },
 ]);

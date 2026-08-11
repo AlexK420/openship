@@ -32,6 +32,7 @@ vi.mock("node:path", async () => {
 const { NginxProvider } = await import("./nginx");
 const { OPENRESTY_DEFAULT_PATHS } = await import("./openresty-lua");
 type CommandExecutor = import("../types").CommandExecutor;
+type RootChecked = import("../system/privilege").RootChecked;
 
 const DOMAIN = "app.example.com";
 const SITES = "/var/lib/openship/edge/sites-enabled";
@@ -103,7 +104,7 @@ function setup(opts: { certOnDisk?: boolean; certbotOutput?: string } = {}) {
     exists: async (p: string) => files.has(p),
     mkdir: async () => {},
     rm: async (p: string) => { files.delete(p); },
-  } as unknown as CommandExecutor;
+  } as unknown as RootChecked;
 
   return {
     nginx: new NginxProvider({ paths: PATHS, executor }),

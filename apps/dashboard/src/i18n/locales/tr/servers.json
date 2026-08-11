@@ -112,7 +112,20 @@
     "running": "Çalışıyor",
     "upToDate": "Güncel",
     "notInstalled": "Kurulu değil",
-    "installEdge": "Edge kur"
+    "installEdge": "Edge kur",
+    "edgeAbsentImpactOne": "Bu sunucuda {n} proje dağıtılmış durumda ama trafiği yönlendiren bir şey yok.",
+    "edgeAbsentImpactMany": "Bu sunucuda {n} proje dağıtılmış durumda ama trafiği yönlendiren bir şey yok."
+  },
+  "modules": {
+    "title": "Modül güncellemeleri mevcut",
+    "checkFailedTitle": "Modül güncelleme denetimi başarısız",
+    "needsConfirmation": "onay gerekiyor",
+    "update": "Güncelle",
+    "updating": "Güncelleniyor…",
+    "confirmTitle": "{module} güncellensin mi?",
+    "confirmIntro": "Bu güncelleme onayınızı gerektiren değişiklikler içeriyor:",
+    "cancel": "İptal",
+    "updateFailed": "{module} güncellemesi başarısız"
   },
   "tabsNav": {
     "servers": "Sunucular",
@@ -157,6 +170,10 @@
     "testConnection": "Bağlantıyı Test Et",
     "saveChanges": "Değişiklikleri Kaydet",
     "saveAndContinue": "Kaydet ve Kuruluma Devam Et",
+    "modalTitle": "Sunucunuzu ekleyin",
+    "modalSubtitle": "SSH üzerinden bağlanın. Kurulumu daha sonra tamamlayabilirsiniz.",
+    "saveServer": "Sunucuyu kaydet",
+    "savingServer": "Kaydediliyor…",
     "toastIpRequired": "Sunucu IP adresi gereklidir",
     "toastPasswordSwitchRequired": "Şifre kimlik doğrulamasına geçerken şifre gereklidir",
     "toastKeyPathSwitchRequired": "SSH anahtarı kimlik doğrulamasına geçerken anahtar yolu gereklidir",

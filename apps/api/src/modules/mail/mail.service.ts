@@ -20,12 +20,19 @@ import {
   installDocker,
   installContainerEdge,
   ensureEdge,
+  envOps,
   foreignProxyOnEdge,
   ensureContainerMail,
+  isRemoteConnectionError,
   MAIL_CONTAINER,
   MAIL_PORTS,
+  opScript,
+  resolveEnvironment,
 } from "@repo/adapters";
 import {
+  HOST_AMAVIS_CONF_CANDIDATES,
+  HOST_AMAVIS_CONF_PROBE,
+  forgetMailEngine,
   mailConfigFile,
   mailEngineCommand,
   mailUnitActionCommand,
@@ -72,20 +79,57 @@ async function resolveAmavis(exec: CommandExecutor): Promise<{
 }> {
   const { flavor } = await requireMailEngine(exec);
   const run = (cmd: string) => mailEngineCommand(flavor, cmd);
-  const detect =
-    "if command -v amavisd >/dev/null 2>&1; then echo amavisd; " +
-    "elif command -v amavisd-new >/dev/null 2>&1; then echo amavisd-new; " +
-    "else echo MISSING; fi";
+  // One exec, two measured facts, each on its own `key=` line. Keyed rather than
+  // positional because `docker exec` can prepend noise — which is what the old parser's
+  // "take the last line" was working around, and what made a second fact unaddable.
+  const detect = [
+    `for b in amavisd amavisd-new; do command -v "$b" >/dev/null 2>&1 && { echo "bin=$b"; break; }; done`,
+    // Only the legacy flavor needs it: inside our own image the path is the bind mount's
+    // engine end, which is a fact about the image rather than about the box.
+    ...(flavor === "host" ? [HOST_AMAVIS_CONF_PROBE] : []),
+  ].join("; ");
   const probe = await exec.exec(run(`sh -c ${sq(detect)}`));
-  const bin = probe.trim().split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
-  if (!bin || bin === "MISSING") {
+  const bin = probeValue(probe, "bin");
+  if (!bin) {
     throw new Error(
       flavor === "container"
         ? "Neither `amavisd` nor `amavisd-new` is on PATH inside the mail engine container."
         : "Neither `amavisd` nor `amavisd-new` is on PATH on this mail server.",
     );
   }
-  return { flavor, bin, run, conf: mailConfigFile(flavor, "amavisUserConf") };
+  return { flavor, bin, run, conf: amavisConf(flavor, probe) };
+}
+
+/** First `key=` line's value, or "" — see the keyed probe in `resolveAmavis`. */
+function probeValue(raw: string, key: string): string {
+  const hit = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith(`${key}=`));
+  return hit ? hit.slice(key.length + 1).trim() : "";
+}
+
+/**
+ * Where to edit amavis's config, refusing rather than guessing.
+ *
+ * On a legacy box this is the probed location; on the container flavor it is the two ends
+ * of the bind mount, which no probe can tell us (the write end only exists on the host).
+ * The refusal names the paths we looked in, because the fix is an operator telling us
+ * where their iRedMail put it — not something we can derive.
+ */
+function amavisConf(
+  flavor: MailEngineFlavor,
+  probe: string,
+): { write: string; engine: string } {
+  if (flavor !== "host") return mailConfigFile(flavor, "amavisUserConf");
+  const found = probeValue(probe, "conf");
+  if (found) return { write: found, engine: found };
+  throw new Error(
+    `Could not find amavis's configuration on this mail server. Looked for ` +
+      `${HOST_AMAVIS_CONF_CANDIDATES.map((c) => c.path).join(", ")}. Openship will not ` +
+      `write DKIM directives to a path amavis doesn't read — that signs nothing and ` +
+      `reports success.`,
+  );
 }
 
 /**
@@ -211,7 +255,13 @@ export async function stepCheckPort25(
     stepId,
     success: true,
     message: "Port 25 may be blocked by ISP",
-    warning: "Port 25 appears blocked. Mail delivery may be affected. You can continue, but some providers block outbound SMTP.",
+    // Name the remedy, not just the symptom: a blocked :25 is the case split
+    // delivery exists for — receiving still works on this box, only the send hop
+    // moves to a provider (Sending tab → outbound relay).
+    warning:
+      "Port 25 appears blocked, so this server may not be able to deliver mail directly. " +
+      "You can continue - receiving is unaffected, and after install you can route sending " +
+      "through an SMTP provider from the Sending tab.",
   };
 }
 
@@ -252,10 +302,14 @@ export async function stepEnsureComponents(
     log(stepId, "info", `Ensuring ${name}...`);
     const r = await install(exec, sysLog);
     if (!r.success) {
+      // The installer's own error, verbatim — it already names the component and
+      // carries the cause (apt's `E:` line, the version floor, the daemon's refusal).
+      // Prefixing it produced "Docker install failed: Docker install failed" and put
+      // the one actionable line nowhere at all (#491).
       return {
         stepId,
         success: false,
-        message: `${name} install failed: ${r.error ?? "unknown error"}`,
+        message: r.error ?? `${name} install failed`,
       };
     }
     log(stepId, "info", `${name} ready${r.version ? ` (${r.version})` : ""}`);
@@ -350,12 +404,20 @@ export async function stepEnsureReverseProxy(
 /**
  * Step 4: Open the inbound mail ports on the host firewall.
  *
- * The engine now runs `--network host`, and unlike a bridge port-publish Docker
- * does NOT poke the firewall for a host-networked container — so a box with ufw
- * enabled would silently accept no mail on :25/:587/:993. The old outbound-:25
- * probe (step 3) only proves egress; this opens ingress. Best-effort across ufw
- * and raw iptables so it works whether or not ufw is the front-end, and a no-op
- * when neither is active.
+ * The engine runs `--network host`, and unlike a bridge port-publish Docker does NOT
+ * poke the firewall for a host-networked container — so a box with a firewall up would
+ * silently accept no mail on :25/:587/:993. The outbound-:25 probe (step 3) only proves
+ * egress; this opens ingress.
+ *
+ * Which firewall this box runs comes from the resolver, not from a `ufw status` probe of
+ * our own. That probe had two failure modes it could not see: a firewalld host reports no
+ * ufw and fell into the raw-`iptables` arm, whose rules firewalld discards at its next
+ * reload — mail worked until something reloaded the ruleset; and a host with no firewall
+ * at all got INPUT ACCEPT rules for eight ports that nothing was filtering.
+ *
+ * Never fatal. The step reports what it did or didn't do and moves on: a missing rule
+ * shows up as mail not arriving, which is recoverable, whereas halting the wizard here
+ * leaves a half-installed mail server behind.
  */
 export async function stepOpenMailFirewall(
   exec: CommandExecutor,
@@ -363,28 +425,100 @@ export async function stepOpenMailFirewall(
   log: StepLogger,
 ): Promise<StepResult> {
   const stepId = 4;
-  log(stepId, "info", `Opening inbound mail ports: ${MAIL_PORTS.join(", ")}...`);
 
-  const ufwActive = (
-    await exec.exec("ufw status 2>/dev/null | head -1 || true").catch(() => "")
-  ).includes("Status: active");
+  const profile = await resolveEnvironment(exec);
+  const ops = envOps(profile);
+  const manager = ops.firewallManager();
 
+  if (!manager.supported) {
+    // Two different observations, and only one of them is good news. `none` means we looked
+    // and nothing is filtering. `unknown` means we could not look — and reporting that as
+    // "no firewall to open" is the shape of the original bug: a step that did nothing,
+    // said it succeeded, and left mail silently unreachable. It gets a warning the wizard
+    // surfaces, because a missing rule is invisible until someone sends mail.
+    log(stepId, profile.firewall === "unknown" ? "warn" : "info", manager.reason);
+    if (profile.firewall === "unknown") {
+      return {
+        stepId,
+        success: true,
+        message: "Could not tell which firewall this host runs — the inbound mail ports were left alone",
+        warning:
+          `${manager.reason} If this box does filter, open ${MAIL_PORTS.join(", ")}/tcp yourself ` +
+          `or mail will not arrive.`,
+      };
+    }
+    return { stepId, success: true, message: "No firewall to open on this host" };
+  }
+
+  // Every rule up front, so a refusal is reported once and never silently dropped: it is a
+  // statement about the host, not about a port, so it refuses all eight. Building them
+  // inline while printing them let a refusal fall out of a `flatMap` and produce a
+  // "run these yourself" block with nothing in it.
+  const rules: Array<{ port: number; script: string }> = [];
   for (const port of MAIL_PORTS) {
-    if (ufwActive) {
-      await exec.exec(`ufw allow ${port}/tcp 2>/dev/null || true`).catch(() => {});
-    } else {
-      // Idempotent: check-then-insert so a re-run doesn't stack duplicate rules.
-      await exec
-        .exec(
-          `iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || ` +
-            `iptables -I INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || true`,
-        )
-        .catch(() => {});
+    const op = ops.firewallAllow({ cidrs: [], port, proto: "tcp" });
+    if (!op.supported) {
+      log(stepId, "warn", op.reason);
+      return {
+        stepId,
+        success: true,
+        message: "Inbound mail ports were not opened",
+        warning: op.reason,
+      };
+    }
+    rules.push({ port, script: opScript(op.value) });
+  }
+
+  // The same gate `openship up` applies before touching a host firewall. A rule that
+  // lives only in the running ruleset disappears at the next reboot, and one surface
+  // adding it while the other refuses is how the same box got two answers.
+  if (!ops.firewallPersists()) {
+    const script = rules.map(({ script: s }) => s).join("\n");
+    log(
+      stepId,
+      "warn",
+      `This host filters with ${profile.firewall}, whose rules live in the running ruleset ` +
+        `only — Openship won't add one that quietly disappears at the next reboot. Run these ` +
+        `yourself, wherever this box restores its ruleset from:\n${script}`,
+    );
+    return {
+      stepId,
+      success: true,
+      message: `Left the ${profile.firewall} ruleset alone — the inbound mail ports still need a rule`,
+      warning: `Inbound mail ports (${MAIL_PORTS.join(", ")}) were not opened.`,
+    };
+  }
+
+  log(stepId, "info", `Opening inbound mail ports on ${profile.firewall}: ${MAIL_PORTS.join(", ")}...`);
+
+  // One exec per port so a single rejected port is reported as itself rather than
+  // collapsing the whole step. No check-then-insert guard any more: we only get here for
+  // ufw and firewalld, both of which are idempotent about a rule they already hold — the
+  // duplicate-stacking that guard existed for was a raw-iptables property.
+  const failed: string[] = [];
+  for (const { port, script } of rules) {
+    try {
+      await exec.exec(script);
+    } catch (err) {
+      // A dropped connection is not a firewall verdict, and retrying it seven more times
+      // just delays the real error.
+      if (isRemoteConnectionError(err)) throw err;
+      failed.push(`${port} (${errMsg(err)})`);
     }
   }
 
-  log(stepId, "info", ufwActive ? "Opened via ufw" : "Opened via iptables (or firewall inactive)");
-  return { stepId, success: true, message: "Inbound mail ports opened" };
+  if (failed.length > 0) {
+    log(stepId, "warn", `Some mail ports could not be opened: ${failed.join("; ")}`);
+    return {
+      stepId,
+      success: true,
+      message: `Opened the inbound mail ports via ${profile.firewall}, except ${failed.length} of ${MAIL_PORTS.length}`,
+      warning: `Still closed: ${failed.join("; ")}`,
+    };
+  }
+
+  log(stepId, "info", `Opened ${MAIL_PORTS.length} inbound mail ports via ${profile.firewall}`);
+  return { stepId, success: true, message: `Inbound mail ports opened via ${profile.firewall}` };
 }
 
 /** Random URL-safe secret. iRedMail's installer treats these as opaque strings. */
@@ -483,6 +617,14 @@ export async function stepDeployEngine(
   } catch (err) {
     return { stepId, success: false, message: `Mail engine deploy failed: ${errMsg(err)}` };
   }
+
+  // We just changed the box's mail topology under a POOLED executor. Drop any
+  // memoized probe so the health gate below — and the DKIM step next — re-detect
+  // the engine that now exists, instead of trusting a "none" a status poll cached
+  // before this container was up. `resolveMailEngine` no longer retains a "none",
+  // but a mutation must still invalidate at its own boundary (belt-and-suspenders
+  // against a stale positive from a prior engine, and the honest contract).
+  forgetMailEngine(exec);
 
   // Health-gate on the daemons the container actually reports (via supervisorctl),
   // so a container that starts but whose Postfix/Dovecot never come up is a failure
@@ -857,9 +999,9 @@ export async function stepRequestSSL(
   }
   log(stepId, "info", `Requesting SSL certificate for ${mailDomain}...`);
 
-  // Dynamic import to match webmail-project.service.ts — deployment-runtime pulls in
-  // the platform/runtime graph, and the mail module is imported from it.
-  const { resolveTargetPlatform } = await import("../../lib/deployment-runtime");
+  // Dynamic import: deployment-runtime pulls in the platform/runtime graph, and
+  // the mail module is imported from it — a static import would be a cycle.
+  const { resolveTargetPlatform, disposePlatform } = await import("../../lib/deployment-runtime");
 
   try {
     const platform = await resolveTargetPlatform(
@@ -868,6 +1010,11 @@ export async function stepRequestSSL(
       target.serverId,
       target.organizationId,
     );
+    // A no-op today — "bare" resolves a BareRuntime, which holds no transport. Kept
+    // so this stays correct if the mode ever becomes "docker": that would bind a
+    // Docker-over-SSH bridge per cert issuance. Only `.ssl` is used below, and it
+    // drives certbot through the pooled SSH executor, which dispose doesn't touch.
+    disposePlatform(platform);
     const result = await platform.ssl.provisionCert(mailDomain, {
       onLog: (line) => log(stepId, "info", line),
     });

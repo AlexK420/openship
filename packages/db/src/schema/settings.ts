@@ -45,6 +45,24 @@ export const instanceSettings = pgTable("instance_settings", {
    */
   authMode: text("auth_mode").notNull().default("none"),
 
+  /**
+   * Which PRODUCT this instance presents itself as:
+   *   "platform" → the full deploy platform (default)
+   *   "mail"     → Openship Mail: the dashboard's left rail becomes the mail
+   *                control plane and the platform nav (Projects, Apps,
+   *                Deployments, Library) is hidden.
+   *
+   * Nullable ON PURPOSE: null means "no instance override, use OPENSHIP_PRODUCT".
+   * A notNull default would make the env var permanently unreachable, since the
+   * row exists on every instance. Resolved by lib/product-mode.ts — never read
+   * directly, so the CLOUD_MODE rule stays in one place.
+   *
+   * This is presentation scope, NOT authorization: mail mode hides nav entries
+   * and never gates a route (webmail deploys through the normal project
+   * pipeline, so the platform endpoints must stay live).
+   */
+  productMode: text("product_mode"),
+
   // ── Defaults ───────────────────────────────────────────────────────────────
 
   /** Default build mode for new users on this instance */

@@ -319,7 +319,7 @@ export interface RuntimeAdapter {
    * touch. Best-effort + idempotent. Optional (docker only). */
   joinServiceGroupContainers?(
     slug: string,
-    members: Array<{ containerId: string; alias: string }>,
+    members: Array<{ containerId: string; aliases: string[] }>,
   ): Promise<void>;
 
   // ── Rollback primitives ──────────────────────────────────────────────
@@ -508,6 +508,23 @@ export interface MultiServiceDeployConfig {
   /** Service names this service depends on (compose `depends_on`). Used for
    *  readiness ordering on runtimes with no native healthcheck. */
   dependsOn?: string[];
+  /**
+   * Namespaces this container SHARES instead of getting its own, already resolved
+   * to values Docker takes verbatim (`container:<id>`, `none`).
+   *
+   * Resolution happens in the API, not here: a compose `service:<name>` has to
+   * become the sibling's LIVE container id, and the deploy loop is the layer that
+   * knows which siblings came up in this deployment (and refuses the dependent
+   * when one didn't). The runtime's job is to apply these and suppress what they
+   * make impossible — see `deployServiceWorkload`. Absent = its own namespaces,
+   * which is every service that doesn't ask otherwise.
+   */
+  namespaces?: {
+    /** `HostConfig.NetworkMode`. Set ⇒ no port publish, no network join, no alias. */
+    network?: string;
+    /** `HostConfig.PidMode`. Costs the container nothing else. */
+    pid?: string;
+  };
 }
 
 export interface MultiServiceDeployResult {

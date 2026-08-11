@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/db", () => ({ repos: {} }));
 
-import { NginxProvider, EDGE_HOST_PATHS, type CommandExecutor } from "@repo/adapters";
+import { NginxProvider, EDGE_HOST_PATHS, type RootChecked } from "@repo/adapters";
 import { reconcileProjectRoutes } from "../../src/lib/route-apply.service";
 
 /**
@@ -21,7 +21,7 @@ const SITES = EDGE_HOST_PATHS.sitesDir;
 
 /** In-memory executor: file ops hit a Map, `-V` detection throws so the provider
  *  keeps its configured paths, and the reload script is a no-op success. */
-function fakeExecutor(files: Map<string, string>): CommandExecutor {
+function fakeExecutor(files: Map<string, string>): RootChecked {
   return {
     exec: async (command: string) => {
       if (/\s-V\b|command -v|which\s/.test(command)) throw new Error("no openresty in test");
@@ -44,7 +44,7 @@ function fakeExecutor(files: Map<string, string>): CommandExecutor {
     exists: async (p: string) => files.has(p),
     mkdir: async () => {},
     rm: async (p: string) => void files.delete(p),
-  } as unknown as CommandExecutor;
+  } as unknown as RootChecked;
 }
 
 const project = (proxy?: unknown) => ({

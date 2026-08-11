@@ -26,6 +26,17 @@ r.get(
   ctrl.catalogEntry,
 );
 r.get(
+  "/catalog/:id/host-fit",
+  {
+    tag: "project:list",
+    mcp: {
+      description:
+        "Check whether a destination meets an app's declared minimum resources, before installing. Query: deployTarget, serverId.",
+    },
+  },
+  ctrl.hostFit,
+);
+r.get(
   "/custom",
   { tag: "project:list", mcp: { description: "List this org's custom (user-uploaded, unverified) apps." } },
   ctrl.listCustom,

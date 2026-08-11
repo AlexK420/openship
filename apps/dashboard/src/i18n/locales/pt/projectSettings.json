@@ -34,6 +34,28 @@
       "project": "Projeto",
       "hostedOn": "Alojado em"
     },
+    "projectMenu": {
+      "rename": "Renomear projeto",
+      "copyId": "Copiar ID do projeto",
+      "idCopied": "ID do projeto copiado",
+      "copyFailed": "Não foi possível copiar para a área de transferência",
+      "pause": "Pausar projeto",
+      "resume": "Retomar projeto",
+      "delete": "Excluir projeto"
+    },
+    "rename": {
+      "title": "Renomear projeto",
+      "description": "Altera o nome exibido. Nada é reimplantado.",
+      "label": "Nome do projeto",
+      "placeholder": "Meu projeto",
+      "identityNote": "O projeto mantém a identidade “{slug}” — sua URL, os nomes dos contêineres e os volumes não mudam. Para alterar a URL, edite o domínio em “Domínios e rotas”.",
+      "save": "Salvar",
+      "cancel": "Cancelar",
+      "toast": {
+        "renamed": "Renomeado para {name}",
+        "failed": "Falha ao renomear o projeto"
+      }
+    },
     "statusActive": "Ativo",
     "statusDisabled": "Desativado",
     "hostedCloud": "Openship Cloud",

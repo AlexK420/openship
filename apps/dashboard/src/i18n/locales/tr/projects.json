@@ -8,6 +8,7 @@
   },
   "status": {
     "live": "Yayında",
+    "paused": "Duraklatıldı",
     "attention": "İşlem Gerekiyor",
     "queued": "Sıraya Alındı",
     "building": "Derleniyor",
@@ -156,7 +157,7 @@
     "subtextOther": "Bu projenin henüz canlı bir dağıtımı yok. Kaynağı inceleyip tekrar deneyin.",
     "deployNow": "Şimdi dağıt",
     "connectSource": "Bir kaynak bağla",
-    "settings": "Ayarlar",
+    "settings": "Dağıtım ayarları",
     "detailsTitle": "Detaylar",
     "detailsDescription": "Bu projenin neyi ve nereye dağıttığı",
     "type": "Tür",

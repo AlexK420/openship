@@ -8,6 +8,7 @@
   },
   "status": {
     "live": "Ativo",
+    "paused": "Pausado",
     "attention": "Ação Necessária",
     "queued": "Em fila",
     "building": "A construir",
@@ -156,7 +157,7 @@
     "subtextOther": "Este projeto ainda não tem uma implementação ativa. Reveja a fonte e tente novamente.",
     "deployNow": "Implementar agora",
     "connectSource": "Ligar uma fonte",
-    "settings": "Definições",
+    "settings": "Definições de implementação",
     "attemptsTitle": "Tentativas de implementação",
     "attemptsDescription": "Todas as construções deste projeto — clique numa para a abrir",
     "sourceTitle": "Fonte",

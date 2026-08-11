@@ -1,6 +1,11 @@
 /**
  * Retention prune — runs daily, applies each policy's retention rules.
  *
+ * Source-agnostic: a project/service policy and a mail-server policy differ only
+ * in which column scopes the run list and where the owning org is read from. Mail
+ * used to be skipped outright, which meant the one source that backs up entire
+ * maildirs was also the one with no ceiling.
+ *
  * Two retention dimensions, evaluated independently per policy:
  *   - `retainCount` — keep at most N most-recent succeeded runs.
  *   - `retainDays`  — drop succeeded runs older than N days.
@@ -23,6 +28,7 @@
 import { repos, type BackupPolicy, type BackupRun } from "@repo/db";
 import { resolveDestination } from "@repo/adapters";
 import { toAdapterRow } from "../backup-destinations/hydrate-server";
+import { policyOrganizationId } from "./backup.service";
 import { safeErrorMessage } from "@repo/core";
 
 export async function runRetentionSweep(): Promise<{
@@ -66,40 +72,60 @@ type PruneOutcome = { dropped: number; skipped: string | null };
 const PRUNE_PAGE_SIZE = 500;
 
 export async function prunePolicy(policy: BackupPolicy): Promise<PruneOutcome> {
-  const retainCount = policy.retainCount;
+  // Non-positive retention is not a tighter window, it's a loaded gun:
+  // `retainCount: -1` puts every run outside the keep-set and deletes the lot.
+  // Nothing validates the number on the way in, so it's normalized here, where
+  // the deletes happen. Zero already behaved as unset; negatives now do too.
+  const retainCount =
+    policy.retainCount && policy.retainCount > 0 ? policy.retainCount : null;
+  const retainDays = policy.retainDays && policy.retainDays > 0 ? policy.retainDays : null;
   // Both null now means "keep everything", asked for deliberately: omitting
   // retention yields `DEFAULT_RETAIN_COUNT` from the column default, and
   // migration 0096 backfilled the rows written before it. There is no fallback
   // here on purpose — one would override the explicit choice.
-  if (!retainCount && !policy.retainDays) {
+  if (!retainCount && !retainDays) {
     return { dropped: 0, skipped: "retention set to unlimited" };
   }
 
-  // Mail-server policies aren't project-scoped; their runs list by project,
-  // so retention pruning for them is a follow-up. Skip cleanly for now.
-  if (!policy.projectId) {
-    return { dropped: 0, skipped: "mail-server policy — retention not implemented" };
-  }
-
   const destinationId = policy.destinationId;
-  const project = await repos.project.findById(policy.projectId);
-  if (!project) {
-    return { dropped: 0, skipped: "project soft-deleted" };
+
+  // Both backup sources page the same run table and delete through the same
+  // destination adapter; they differ only in which column scopes the page and
+  // where the owning org is read from. Mail used to bail out here — its runs
+  // grew without a ceiling on a source whose whole point is message data, which
+  // is the largest thing openship backs up.
+  const scope = policy.projectId
+    ? ({ projectId: policy.projectId } as const)
+    : policy.mailServerId
+      ? ({ mailServerId: policy.mailServerId } as const)
+      : null;
+  if (!scope) {
+    return { dropped: 0, skipped: "policy has neither a project nor a mail server" };
+  }
+  const organizationId = await policyOrganizationId(policy);
+  if (!organizationId) {
+    // The source row is gone, so the org that owns the runs is unknowable and
+    // the paged read can't even be issued. Named, not silent — these artifacts
+    // are now unprunable and someone has to go delete them by hand.
+    return {
+      dropped: 0,
+      skipped: policy.projectId ? "project soft-deleted" : "mail server row is gone",
+    };
   }
 
-  // Page through every run for this project. The 1000-run cap was a
+  // Page through every run for this source. The 1000-run cap was a
   // silent data leak: projects past it never had older runs pruned and
   // accumulated forever. The page-then-filter pattern below has the
   // same memory footprint as the old code in practice (candidates are
   // a subset of total) but never silently truncates.
   // Candidates = THIS policy's succeeded, unlocked runs. Filtering by policyId
-  // (not just project+destination) keeps two policies sharing a destination from
+  // (not just source+destination) keeps two policies sharing a destination from
   // co-mingling their retention windows.
   const now = new Date();
   const candidates: BackupRun[] = [];
   for (let offset = 0; ; offset += PRUNE_PAGE_SIZE) {
-    const page = await repos.backupRun.listByOrganization(project.organizationId, {
-      projectId: policy.projectId,
+    const page = await repos.backupRun.listByOrganization(organizationId, {
+      ...scope,
       limit: PRUNE_PAGE_SIZE,
       offset,
     });
@@ -115,8 +141,8 @@ export async function prunePolicy(policy: BackupPolicy): Promise<PruneOutcome> {
     if (page.length < PRUNE_PAGE_SIZE) break;
   }
 
-  const cutoffDate = policy.retainDays
-    ? new Date(Date.now() - policy.retainDays * 24 * 60 * 60 * 1000)
+  const cutoffDate = retainDays
+    ? new Date(Date.now() - retainDays * 24 * 60 * 60 * 1000)
     : null;
 
   // Apply retention PER SERVICE. A project-default policy fans out to N services

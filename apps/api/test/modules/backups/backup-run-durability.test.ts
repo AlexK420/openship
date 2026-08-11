@@ -236,6 +236,10 @@ vi.mock("../../../src/lib/job-runner", () => ({
 }));
 
 vi.mock("../../../src/lib/deployment-runtime", () => ({
+  // The orchestrator releases the runtime it resolved when the run ends; these
+  // stubs hold no transport, so the release is a no-op here.
+  disposeRuntime: () => {},
+  disposePlatform: () => {},
   resolveDeploymentPlatform: async () => ({ platform: { runtime: { name: "bare" } } }),
   resolveTargetPlatform: async () => ({ runtime: { name: "bare" } }),
 }));

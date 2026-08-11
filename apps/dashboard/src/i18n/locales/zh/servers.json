@@ -113,7 +113,20 @@
     "running": "运行中",
     "upToDate": "最新",
     "notInstalled": "未安装",
-    "installEdge": "安装边缘"
+    "installEdge": "安装边缘",
+    "edgeAbsentImpactOne": "这台服务器上有 {n} 个项目，但没有任何组件为其转发流量。",
+    "edgeAbsentImpactMany": "这台服务器上有 {n} 个项目，但没有任何组件为其转发流量。"
+  },
+  "modules": {
+    "title": "有可用的模块更新",
+    "checkFailedTitle": "模块更新检查失败",
+    "needsConfirmation": "需要确认",
+    "update": "更新",
+    "updating": "正在更新…",
+    "confirmTitle": "要更新 {module} 吗？",
+    "confirmIntro": "此更新包含需要你确认的变更：",
+    "cancel": "取消",
+    "updateFailed": "{module} 更新失败"
   },
   "form": {
     "sshConnection": "SSH 连接",
@@ -146,6 +159,10 @@
     "testConnection": "测试连接",
     "saveChanges": "保存更改",
     "saveAndContinue": "保存并继续设置",
+    "modalTitle": "添加你的服务器",
+    "modalSubtitle": "通过 SSH 连接。你可以稍后完成设置。",
+    "saveServer": "保存服务器",
+    "savingServer": "正在保存…",
     "toastIpRequired": "服务器 IP 地址为必填项",
     "toastPasswordSwitchRequired": "切换到密码验证时必须填写密码",
     "toastKeyPathSwitchRequired": "切换到 SSH 密钥验证时必须填写密钥路径",

@@ -278,7 +278,7 @@ export const PROJECT_ROOTED: ReadonlySet<CheckedResourceType> = new Set([
 
 /**
  * Cloud fallback for the org lookup in `assert`: when a project-rooted resource
- * has no local row, it may live on the SaaS. Return the request-scope org IFF
+ * has no local row, it may live on the SaaS. Return the caller's scope org IFF
  * that org has a cloud link to proxy through; otherwise null (→ 404, IDOR-safe).
  *
  * The role check in `checkPermission` then runs against this org: owner/admin/
@@ -287,12 +287,11 @@ export const PROJECT_ROOTED: ReadonlySet<CheckedResourceType> = new Set([
  * remains the authoritative per-project gate; a bogus id still 404s once proxied.
  */
 async function resolveCloudFallbackOrg(
-  c: Context,
   resourceType: CheckedResourceType,
+  scopeOrg: string | null,
 ): Promise<string | null> {
   if (env.CLOUD_MODE) return null; // the SaaS IS canonical — no upstream to fall back to
   if (!PROJECT_ROOTED.has(resourceType)) return null;
-  const scopeOrg = resolveRequestScopeOrg(c);
   if (!scopeOrg) return null;
   const ownerUserId = await resolveOrgCloudUserId(scopeOrg).catch(() => null);
   return ownerUserId ? scopeOrg : null;
@@ -460,21 +459,24 @@ function permitsAction(permissions: readonly Permission[], action: Permission): 
 }
 
 /**
- * Resolve the org an authz check for `input` runs against: the request-scope org
- * for list scope / org-singletons (resourceId "*"), else the resource's OWN org
- * (with the cloud-project fallback — a project with no local row may be a CLOUD
- * project canonical on the SaaS). Shared by `assert` + `checkPermissionOnResource`
- * so use-time and mint-time org resolution can never drift.
+ * Resolve the org an authz check for `input` runs against: `scopeOrg` for the arms
+ * that have no resource to resolve (list scope / org-singletons at resourceId "*"),
+ * else the resource's OWN org — with the cloud-project fallback, since a project
+ * with no local row may be a CLOUD project canonical on the SaaS.
+ *
+ * `scopeOrg` is supplied by the caller, and the difference between the two callers
+ * is the point: `assert` ESTABLISHES request scope (from `X-Organization-Id`), while
+ * `checkPermissionOnResource` runs afterwards and CONSUMES the scope `assert`
+ * already resolved (`ctx.organizationId`). Everything downstream of that one choice
+ * is shared, so use-time and mint-time org resolution can never drift.
  */
 async function resolveInputOrg(
-  ctx: RequestContext,
   input: PermissionInput,
+  scopeOrg: string | null,
 ): Promise<string | null> {
-  if (input.scope === "list" || input.resourceId === "*") {
-    return resolveRequestScopeOrg(ctx.hono);
-  }
+  if (input.scope === "list" || input.resourceId === "*") return scopeOrg;
   const resource = await resolveResourceOrg(input.resourceType, input.resourceId);
-  return resource?.orgId ?? (await resolveCloudFallbackOrg(ctx.hono, input.resourceType));
+  return resource?.orgId ?? (await resolveCloudFallbackOrg(input.resourceType, scopeOrg));
 }
 
 /**
@@ -499,12 +501,30 @@ function permissionOpts(ctx: RequestContext) {
  * verifying the granted resource belongs to that org — so a grant naming another
  * org's resource id would be accepted at mint (privilege escalation, SaaS audit).
  * This makes mint-time acceptance consistent with `assert`'s use-time check.
+ *
+ * The arms with no resource to resolve — list scope and org-singletons
+ * (`resourceId: "*"`) — take their authority from the caller's ROLE in an org, so
+ * WHICH org is the whole decision. It is `ctx.organizationId`, never the raw
+ * `X-Organization-Id` header, for two reasons:
+ *
+ *   - Every caller runs AFTER `assert` (via routePermission) has resolved the
+ *     request's authoritative org and rebound ctx to it, and then reads its actual
+ *     DATA from `ctx.organizationId`. Re-deriving from the header would gate on one
+ *     org what the handler goes on to do in another — e.g. `canRunJob` on
+ *     `/projects/:id/…` checked `{job,"*",write}` against the header while the
+ *     project resolved to a different org.
+ *   - A mint path writes the binding to `ctx.organizationId` (MCP consent picks the
+ *     org explicitly — see `mintContextFor`), so a caller-chosen header could name a
+ *     different org: a member of the target org gets a `billing`/`audit` grant
+ *     validated against an org they happen to own. GHSA-qv27-39pc-qw9f finding 1.
+ *
+ * Consequence: this never touches `ctx.hono`, so it also holds for a background ctx.
  */
 export async function checkPermissionOnResource(
   ctx: RequestContext,
   input: PermissionInput,
 ): Promise<boolean> {
-  const organizationId = await resolveInputOrg(ctx, input);
+  const organizationId = await resolveInputOrg(input, ctx.organizationId);
   if (!organizationId) return false;
   return checkPermission(ctx.userId, organizationId, input, permissionOpts(ctx));
 }
@@ -535,11 +555,13 @@ export async function checkPermissionOnResource(
 export async function assert(ctx: RequestContext, input: PermissionInput): Promise<void> {
   const c = ctx.hono;
 
-  // Resolve the resource's OWN org (list/singleton → request scope) + gate on
-  // role. Shared with checkPermissionOnResource so mint-time acceptance and
-  // use-time enforcement can't drift. On deny we throw NotFoundError (not 403)
-  // so out-of-permission resources don't leak existence — the IDOR-safe pattern.
-  const organizationId = await resolveInputOrg(ctx, input);
+  // Resolve the resource's OWN org + gate on role. This is where request scope is
+  // ESTABLISHED, so the list/singleton arms read the header here (and only here) —
+  // every later check in the request consumes the org this rebinds ctx to. Shared
+  // with checkPermissionOnResource so mint-time acceptance and use-time enforcement
+  // can't drift. On deny we throw NotFoundError (not 403) so out-of-permission
+  // resources don't leak existence — the IDOR-safe pattern.
+  const organizationId = await resolveInputOrg(input, resolveRequestScopeOrg(c));
   if (!organizationId) {
     throw new NotFoundError(input.resourceType, input.resourceId);
   }

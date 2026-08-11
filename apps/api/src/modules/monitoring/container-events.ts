@@ -220,7 +220,7 @@ async function connect(sub: Subscription): Promise<void> {
       organizationId: sub.organizationId,
     });
     if (sub.closed) {
-      await disposeRuntime(runtime, sub.key);
+      await closeTransport(runtime, sub.key);
       return;
     }
     if (!runtime.supports("containerEvents") || !runtime.watchContainerEvents) {
@@ -230,7 +230,7 @@ async function connect(sub: Subscription): Promise<void> {
       // `resolveDeploymentRuntimeForRead` pins `runtimeMode: "docker"` (a bare
       // project's sidecars are still containers), and the Docker runtime declares
       // the capability. This is the guard for a future non-Docker read runtime.
-      await disposeRuntime(runtime, sub.key);
+      await closeTransport(runtime, sub.key);
       sub.closed = true;
       SUBS.delete(sub.key);
       return;
@@ -369,7 +369,7 @@ async function releaseTransport(sub: Subscription): Promise<void> {
   }
   const runtime = sub.runtime;
   sub.runtime = null;
-  await disposeRuntime(runtime, sub.key);
+  await closeTransport(runtime, sub.key);
   if (sub.retained && sub.serverId) {
     sub.retained = false;
     sshManager.release(sub.serverId);
@@ -390,7 +390,15 @@ async function teardown(sub: Subscription, reason: string): Promise<void> {
   console.log(`[container-events] ${sub.key} unsubscribed (${reason})`);
 }
 
-async function disposeRuntime(runtime: RuntimeAdapter | null, key: string): Promise<void> {
+/**
+ * Deliberately NOT `deployment-runtime`'s exported `disposeRuntime`, which is
+ * fire-and-forget and silent. Here the teardown has to be AWAITED — the pooled SSH
+ * release is the next statement at every call site, and releasing while the bridge
+ * is still closing hands the pool a half-dead connection — and a failure has to name
+ * the subscription, because this runs on a reconnect loop where a transport that
+ * never closes is otherwise invisible. Same name for both was the confusing part.
+ */
+async function closeTransport(runtime: RuntimeAdapter | null, key: string): Promise<void> {
   try {
     await runtime?.dispose?.();
   } catch (err) {

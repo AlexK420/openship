@@ -9,7 +9,7 @@ import type { Service } from "@/lib/api/services";
 import { ApiError, getApiErrorMessage } from "@/lib/api/client";
 import { settingsApi } from "@/lib/api/settings";
 import type { BuildMode } from "@/lib/api/settings";
-import { STACKS, getBuildImage, type StackDefinition, type StackId } from "@repo/core";
+import { STACKS, getBuildImage, type DeployTarget, type StackDefinition, type StackId } from "@repo/core";
 import type { BuildStrategy, DeploymentConfig, DeploymentModeSnapshot, MonorepoAppConfig, MonorepoWorkspaceConfig, PublicEndpoint } from "./types";
 import {
   DEFAULT_CONFIG,
@@ -706,7 +706,13 @@ export function useDeploymentConfig() {
         singleAppCandidate: preparedContext.singleAppCandidate,
         monorepoApps: preparedContext.monorepoApps,
         monorepoWorkspace: preparedContext.monorepoWorkspace,
-        routingConfig: response.routing ?? undefined,
+        // Same hydration rule as readiness/framework below: an EXISTING project keeps its
+        // SAVED rules, so re-opening "Edit build config" and saving cannot silently replace
+        // an operator's redirects/headers with whatever the repo's vercel.json happens to
+        // say. A brand-new deploy honours the fresh scan, which is the seeding case.
+        routingConfig: projectId
+          ? (project?.routingConfig ?? response.routing ?? undefined)
+          : (response.routing ?? undefined),
         // Readiness gate. Same hydration rule as framework/runtimeMode: an
         // EXISTING project keeps its SAVED value so a config-save can't silently
         // clear a gate the operator turned on; a brand-new deploy honours what
@@ -1074,7 +1080,14 @@ export function useDeploymentConfig() {
     async (
       projectId: string,
       context?: { branch?: string },
-    ): Promise<{ success: boolean; error?: string; errorType?: string }> => {
+    ): Promise<{
+      success: boolean;
+      error?: string;
+      errorType?: string;
+      /** The target this project already had, or `null` if it has none yet. The page
+       *  gates its target seeders on this: pinned when saved, seeded when not. */
+      savedTarget?: DeployTarget | null;
+    }> => {
       try {
         const res = await projectsApi.getInfo(projectId);
         const project: PersistedProject = res?.data?.project ?? res?.project ?? null;
@@ -1101,6 +1114,16 @@ export function useDeploymentConfig() {
         const branch =
           typeof project.gitBranch === "string" ? project.gitBranch : (context?.branch ?? "");
 
+        // Re-validated rather than trusted: an older API build omits the field entirely,
+        // and anything but the three members means "no saved target", which is the same
+        // answer the server sends for a project bound to nothing that never deployed.
+        const rawTarget = project.deployTarget;
+        const savedTarget: DeployTarget | null =
+          rawTarget === "cloud" || rawTarget === "server" || rawTarget === "local"
+            ? rawTarget
+            : null;
+        const savedServerId = typeof project.serverId === "string" ? project.serverId : null;
+
         setConfig((prev) => {
           // Guard: don't let an EMPTY service-row fetch collapse an already-loaded
           // multi-service config to single-app. The DeploymentProvider is shared
@@ -1113,7 +1136,17 @@ export function useDeploymentConfig() {
             (prev.projectType === "services" || prev.projectType === "monorepo") &&
             ((prev.services?.length ?? 0) > 0 || (prev.monorepoApps?.length ?? 0) > 0);
           if (serviceRows.length === 0 && prevHoldsThisMultiProject) {
-            return { ...prev, projectId, envVars: envVars.length ? envVars : prev.envVars };
+            return {
+              ...prev,
+              projectId,
+              envVars: envVars.length ? envVars : prev.envVars,
+              ...(savedTarget
+                ? {
+                    deployTarget: savedTarget,
+                    serverId: savedTarget === "server" ? (savedServerId ?? undefined) : undefined,
+                  }
+                : null),
+            };
           }
 
           return {
@@ -1136,10 +1169,22 @@ export function useDeploymentConfig() {
             // git source (the deploy guards treat this like local/upload).
             isApp: Boolean((project as { isApp?: boolean }).isApp),
             appTemplateId: (project as { appTemplateId?: string }).appTemplateId,
+            // Where this project already runs. Server-resolved (one rule, shared with
+            // the project cards) and applied AFTER the buildPreparedConfig spread so it
+            // wins — that core reseeds stack defaults and would otherwise leave
+            // DEFAULT_CONFIG's "cloud" standing. The page's target seeders are gated on
+            // this having landed; before it existed they were gated on a comment that
+            // claimed it, and a saved project's deploy went out addressed to "cloud".
+            ...(savedTarget
+              ? {
+                  deployTarget: savedTarget,
+                  serverId: savedTarget === "server" ? (savedServerId ?? undefined) : undefined,
+                }
+              : null),
           };
         });
 
-        return { success: true };
+        return { success: true, savedTarget };
       } catch (err) {
         return {
           success: false,

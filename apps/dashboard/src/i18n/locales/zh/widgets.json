@@ -72,7 +72,7 @@
       "serverLabel": "服务器",
       "loadingServers": "正在加载服务器……",
       "noServerConnected": "未连接服务器",
-      "connectServerFirst": "请先连接一台服务器，然后返回继续设置。",
+      "connectServerFirst": "无需离开此页面，立即添加一台服务器。",
       "addServer": "添加服务器",
       "selectServer": "选择服务器……",
       "addNewServer": "添加新服务器……"

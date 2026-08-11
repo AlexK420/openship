@@ -196,6 +196,23 @@ const envSchema = z.object({
    *   - "desktop"           → Bare runtime, no routing/SSL (desktop app)
    */
   DEPLOY_MODE: z.enum(["docker", "bare", "cloud", "desktop"]).default("docker"),
+  /**
+   * Which PRODUCT this instance presents itself as — the INSTANCE DEFAULT, which
+   * `instance_settings.product_mode` may override (so an operator can flip it
+   * from the dashboard without editing env and restarting).
+   *
+   *   - "platform" (default) → the full deploy platform
+   *   - "mail"               → Openship Mail: the dashboard's left rail becomes
+   *                            the mail control plane, the platform nav is hidden
+   *
+   * Orthogonal to DEPLOY_MODE: mail mode says what the UI presents, DEPLOY_MODE
+   * says how workloads run. Mail mode still needs the full deploy runtime, since
+   * the mail installer and webmail both ride it.
+   *
+   * Always read through resolveProductMode() (lib/product-mode.ts), never
+   * directly — that resolver owns the settings-override and CLOUD_MODE rules.
+   */
+  OPENSHIP_PRODUCT: z.enum(["platform", "mail"]).default("platform"),
 
   /* ---------- Auth (Better Auth) ---------- */
   BETTER_AUTH_SECRET: z.string().default(DEFAULT_BETTER_AUTH_SECRET),

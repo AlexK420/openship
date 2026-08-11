@@ -115,10 +115,6 @@
     "noServers": "サーバーはまだ構成されていません - デプロイピッカーから追加してください。",
     "clearDefault": "デフォルトをクリア（毎回尋ねる）",
     "targets": {
-      "local": {
-        "label": "このマシン",
-        "desc": "ローカルの Docker / ランタイム"
-      },
       "server": {
         "label": "自分のサーバー",
         "desc": "構成済みの SSH サーバー"
@@ -130,8 +126,7 @@
     },
     "labelFor": {
       "yourServer": "自分のサーバー",
-      "cloud": "Openship Cloud",
-      "local": "このマシン"
+      "cloud": "Openship Cloud"
     },
     "toast": {
       "pickServer": "まずサーバーを選択してください",

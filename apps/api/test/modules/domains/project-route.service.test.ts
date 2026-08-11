@@ -21,9 +21,15 @@ vi.mock("@repo/db", () => ({
 // is THE shared answer for "where does this deployment serve files from" (the live
 // vhost and the output probe both call it) — stubbing it here would let the two
 // drift silently, which is the thing sharing it prevents.
+// Adapts the flat `resolveRuntime` stub to the platform shape the re-apply now
+// resolves (and releases): `{ platform: { routing, runtime }, effectiveTarget, serverId }`.
 vi.mock("../../../src/lib/deployment-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/lib/deployment-runtime")>()),
-  resolveDeploymentRuntime: resolveRuntime,
+  disposePlatform: () => {},
+  resolveDeploymentPlatform: async (...args: unknown[]) => {
+    const flat = (await resolveRuntime(...args)) as Record<string, unknown>;
+    return { platform: flat, effectiveTarget: flat.effectiveTarget, serverId: flat.serverId };
+  },
 }));
 
 vi.mock("../../../src/lib/route-apply.service", () => ({
@@ -234,6 +240,91 @@ describe("reapplyProjectLiveRoutes static (path-targeted) routes", () => {
         hostname: "sadsa.opsh.io",
         isCustomDomain: false,
         staticRoot: "/var/lib/openship/releases/site-42/dist",
+      },
+    ]);
+  });
+
+  // A lone static site is not a 1-static + 1-server monorepo, so `planCompositeRoute`
+  // returned null and `compileVercelRouting` was never reached — the whole vercel.json
+  // routing block was silently ignored for the commonest project shape there is.
+  it("applies vercel.json routing to a single-service project", async () => {
+    listByProject.mockResolvedValue([domain("/")]);
+    findDeployment.mockResolvedValue(deployment({ staticServeOutputDir: "dist" }));
+
+    await reapplyProjectLiveRoutes(
+      {
+        ...staticProject,
+        routingConfig: {
+          redirects: [{ source: "/blog/:path*", destination: "/news/:path*", permanent: true }],
+          headers: [{ source: "/api/(.*)", headers: [{ key: "Cache-Control", value: "no-store" }] }],
+          cleanUrls: true,
+          trailingSlash: false,
+        },
+      },
+      [],
+    );
+
+    expect(reconcile.mock.calls[0][1].registers).toEqual([
+      {
+        hostname: "sadsa.opsh.io",
+        isCustomDomain: false,
+        redirects: [
+          {
+            path: "/blog/",
+            exact: false,
+            statusCode: 308,
+            destination: "/news/$1",
+            pattern: "/blog/(.*)",
+          },
+        ],
+        headerRules: [{ path: "/api/", headers: [{ key: "Cache-Control", value: "no-store" }] }],
+        cleanUrls: true,
+        trailingSlash: false,
+        staticRoot: "/var/lib/openship/releases/site-42/dist",
+      },
+    ]);
+  });
+
+  it("emits no routing fields when the project has no vercel.json", async () => {
+    listByProject.mockResolvedValue([domain("/")]);
+    findDeployment.mockResolvedValue(deployment({ staticServeOutputDir: "dist" }));
+
+    await reapplyProjectLiveRoutes(staticProject, []);
+
+    expect(Object.keys(reconcile.mock.calls[0][1].registers[0])).toEqual([
+      "hostname",
+      "isCustomDomain",
+      "staticRoot",
+    ]);
+  });
+
+  // Which upstream a path rewrite belongs to is a topology question this per-domain
+  // path can't answer, so it leaves those to the composite path rather than guessing
+  // the frontend. A full-URL rewrite needs no backend and still compiles.
+  it("compiles an external rewrite but leaves backend-bound ones to the composite path", async () => {
+    listByProject.mockResolvedValue([domain("/")]);
+    findDeployment.mockResolvedValue(deployment({ staticServeOutputDir: "dist" }));
+
+    await reapplyProjectLiveRoutes(
+      {
+        ...staticProject,
+        routingConfig: {
+          rewrites: [
+            { source: "/ext/:p*", destination: "https://api.example.com/v2/:p*" },
+            { source: "/api/(.*)", destination: "/api/index.js" },
+          ],
+        },
+      },
+      [],
+    );
+
+    expect(reconcile.mock.calls[0][1].registers[0].proxyLocations).toEqual([
+      {
+        pathPrefix: "/ext/",
+        external: true,
+        targetUrl: "https://api.example.com",
+        pattern: "/ext/(.*)",
+        upstreamPath: "/v2/$1",
       },
     ]);
   });

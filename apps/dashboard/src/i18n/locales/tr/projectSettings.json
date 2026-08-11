@@ -75,8 +75,8 @@
     "firstLoginPassword": "Parola",
     "destinationTitle": "Nereye kurulacak",
     "destinationHint": "Bu uygulamanın çalışacağı sunucuyu veya bulutu seçin.",
-    "destLocal": "Bu bilgisayar",
-    "destLocalDesc": "Burada, bu Openship sunucusunda çalıştırın.",
+    "descMore": "Daha fazla",
+    "descLess": "Daha az",
     "statusInstalling": "Yükleniyor",
     "statusLive": "Yayında",
     "statusCancelled": "İptal edildi",
@@ -102,8 +102,11 @@
         "gmail": "Gmail",
         "fastmail": "Fastmail"
       },
-      "sesNote": "Amazon SES yalnızca e-posta gönderir — IMAP'i e-postalarınızın saklandığı ve okunduğu yere yönlendirin.",
-      "sesSelfHostCta": "Posta kutunuz yok mu? Şimdi kendiniz barındırın ve giden e-postaları SES üzerinden iletin →",
+      "sendOnlyNote": "{provider} yalnızca e-posta gönderir — üzerinde posta kutusu tutmaz. IMAP'i e-postalarınızın gerçekten saklandığı yere yönlendirmeniz gerekir.",
+      "sendOnlyNoInbox": "Henüz posta kutunuz yok mu? Burada bir posta sunucusu kurun, sonra gönderimi {provider} üzerinden iletin →",
+      "imapOnOurServer": "Posta kutuları {host} adresinden okunuyor — bu örneğin kendi posta sunucusu. Yalnızca gönderim {provider} üzerinden gidiyor.",
+      "relayNote": "Bu örnek zaten bir posta sunucusu çalıştırıyor. Posta kutuları onun üzerindeyse, gönderimi onun Teslim → Gönderim sekmesinden iletin: IMAP yerelde kalır, yalnızca gönderim {provider} üzerinden gider — alan adı veya adres bazında — ve kendi webmail'i çalışmaya devam eder.",
+      "relayCta": "Bunun yerine aktarmayı yapılandır →",
       "hostname": "Webmail adresi",
       "hostnameHint": "Kullanıcıların e-postalarını okumak için açtığı herkese açık URL, örn. mail.example.com.",
       "imapHost": "IMAP sunucusu",
@@ -125,6 +128,28 @@
       "status": "Durum",
       "project": "Proje",
       "hostedOn": "Barındığı Yer"
+    },
+    "projectMenu": {
+      "rename": "Projeyi yeniden adlandır",
+      "copyId": "Proje kimliğini kopyala",
+      "idCopied": "Proje kimliği kopyalandı",
+      "copyFailed": "Panoya kopyalanamadı",
+      "pause": "Projeyi duraklat",
+      "resume": "Projeyi sürdür",
+      "delete": "Projeyi sil"
+    },
+    "rename": {
+      "title": "Projeyi yeniden adlandır",
+      "description": "Yalnızca görünen adı değiştirir. Hiçbir şey yeniden dağıtılmaz.",
+      "label": "Proje adı",
+      "placeholder": "Projem",
+      "identityNote": "Proje “{slug}” kimliğini korur — URL'si, kapsayıcı adları ve birimleri değişmez. URL'yi değiştirmek için “Alan Adları ve Rotalar” bölümünden alan adını düzenleyin.",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "toast": {
+        "renamed": "{name} olarak yeniden adlandırıldı",
+        "failed": "Proje yeniden adlandırılamadı"
+      }
     },
     "statusActive": "Aktif",
     "statusDisabled": "Pasif",

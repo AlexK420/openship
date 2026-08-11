@@ -31,6 +31,7 @@
 
 import { repos } from "@repo/db";
 import type { Deployment } from "@repo/db";
+import { compileVercelRouting } from "@repo/adapters";
 import * as sessionManager from "../deployments/session-manager";
 // Leaf import, not the ./compose barrel — this needs one pure predicate over
 // `project.framework`, not the whole compose pipeline in the graph.
@@ -53,7 +54,9 @@ export type PendingActionKind =
   /** A certificate that errored or expired. */
   | "ssl_error"
   /** Advisory: the app doesn't appear to be listening where routing points. */
-  | "port_advisory";
+  | "port_advisory"
+  /** Advisory: vercel.json rules the proxy could not reproduce, so they aren't live. */
+  | "routing_rules_dropped";
 
 export interface PendingActionResolution {
   /** Human label — also the natural thing for an agent to echo before acting. */
@@ -381,6 +384,45 @@ function buildPortAdvisories(dep: Deployment, isCompose: boolean): PendingAction
     }));
 }
 
+/**
+ * Advisory: `vercel.json` rules the proxy cannot reproduce.
+ *
+ * RECOMPUTED from the stored config rather than persisted at deploy time.
+ * `compileVercelRouting` is pure, so re-running it here costs nothing, needs no
+ * column, can never go stale against an edited config, and reports before the first
+ * deploy. Until now `compiled.skipped` was read by NOTHING anywhere in the codebase —
+ * a redirect we couldn't translate simply never existed, with no warning.
+ *
+ * The sentinel backend suppresses "no backend to proxy to" for a rewrite to a path: on
+ * a single-service project that request already reaches the app via `location /`, and
+ * on a composite one the deploy path supplies the real backend. Reporting it would be
+ * noise in both. What survives is the topology-independent set — an unsupported source,
+ * an unsafe destination, an unresolvable wildcard, a dropped header — all of which mean
+ * the user wrote a rule that genuinely is not live.
+ */
+function buildRoutingRulesDropped(project: ProjectRow): PendingAction | null {
+  if (!project.routingConfig) return null;
+  const { skipped } = compileVercelRouting(project.routingConfig, {
+    backendTargetUrl: "http://openship-backend.invalid",
+  });
+  if (skipped.length === 0) return null;
+  return {
+    id: `routing_rules_dropped:${project.id}:${skipped.length}`,
+    kind: "routing_rules_dropped",
+    severity: "advisory",
+    title: `${skipped.length} routing rule${skipped.length === 1 ? "" : "s"} could not be applied`,
+    message:
+      `These ${skipped.length === 1 ? "rule" : "rules"} from the project's routing config ` +
+      `${skipped.length === 1 ? "is" : "are"} NOT live — the proxy could not reproduce ` +
+      `${skipped.length === 1 ? "it" : "them"} faithfully, so ${skipped.length === 1 ? "it was" : "they were"} ` +
+      `dropped rather than served wrongly: ${skipped.join("; ")}. Fix the rule in vercel.json ` +
+      `(or the Routing tab) and redeploy.`,
+    details: { skipped },
+    // No server-side fix: the config itself has to change.
+    resolveWith: [],
+  };
+}
+
 // ─── Entry points ───────────────────────────────────────────────────────────
 
 type ProjectRow = NonNullable<Awaited<ReturnType<typeof repos.project.findById>>>;
@@ -423,6 +465,9 @@ export function collectPendingActions(input: {
   }
 
   actions.push(...buildDomainActions(domains));
+  // Config-side, independent of any deployment — a rule can be wrong before the first.
+  const dropped = buildRoutingRulesDropped(project);
+  if (dropped) actions.push(dropped);
   return actions.sort(bySeverity);
 }
 

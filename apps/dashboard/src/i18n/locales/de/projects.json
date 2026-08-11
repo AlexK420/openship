@@ -8,6 +8,7 @@
   },
   "status": {
     "live": "Live",
+    "paused": "Angehalten",
     "attention": "Aktion erforderlich",
     "queued": "In Warteschlange",
     "building": "Wird erstellt",
@@ -156,7 +157,7 @@
     "subtextOther": "Dieses Projekt hat noch keine aktive Bereitstellung. Überprüfe die Quelle und versuche es erneut.",
     "deployNow": "Jetzt bereitstellen",
     "connectSource": "Quelle verbinden",
-    "settings": "Einstellungen",
+    "settings": "Deployment-Einstellungen",
     "attemptsTitle": "Bereitstellungsversuche",
     "attemptsDescription": "Jeder Build für dieses Projekt — klicke einen an, um ihn zu öffnen",
     "sourceTitle": "Quelle",

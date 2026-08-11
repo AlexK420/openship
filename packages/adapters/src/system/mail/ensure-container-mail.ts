@@ -155,16 +155,50 @@ function mountArg(m: MailMount): string {
   return `-v ${sq(`${m.host}:${m.container}:${opts}`)}`;
 }
 
+/**
+ * An env-file record is LINE-DELIMITED, so the line break — not the shell — is
+ * the injection character here. A value containing CR/LF closes its own record
+ * and everything after it becomes further `KEY=VALUE` records, which docker
+ * feeds to the container verbatim.
+ *
+ * That matters because these values include an operator-supplied password, and
+ * the engine runs `--network host --cap-add NET_ADMIN` with host bind mounts.
+ * Two concrete escalations an injected record buys:
+ *   - `BASH_FUNC_<name>%%=() { … }` — bash imports exported functions from the
+ *     environment, so this SHADOWS a real binary the entrypoint calls (psql, nc,
+ *     perl) and runs as root inside the container. Docker's own parser only
+ *     rejects an empty key or whitespace IN the key, so `%%` sails through.
+ *   - shadowing a legitimate key: duplicates are last-wins, and `...opts.secrets`
+ *     is spread last, so an injected record overrides FIRST_DOMAIN /
+ *     OPENSHIP_MAIL_DB_* (repoint the first-boot DB client, or reach the
+ *     superuser SQL load that templates FIRST_DOMAIN in).
+ *
+ * So: validate the record shape and FAIL CLOSED. Rejecting beats sanitizing —
+ * silently rewriting a password would produce an install whose stored credential
+ * doesn't match the one the operator typed.
+ */
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** Write a root-only env-file the launcher passes via `--env-file`. */
 async function writeEnvFile(
   executor: CommandExecutor,
   path: string,
   env: Record<string, string>,
 ): Promise<void> {
+  for (const [k, v] of Object.entries(env)) {
+    if (!ENV_KEY_RE.test(k)) {
+      throw new Error(`Refusing to write env-file: invalid variable name ${JSON.stringify(k)}.`);
+    }
+    if (/[\r\n]/.test(v)) {
+      throw new Error(
+        `Refusing to write env-file: value for ${k} spans multiple lines, which would inject additional environment records.`,
+      );
+    }
+  }
   const body =
     Object.entries(env)
-      // Values may contain anything; keep them one-per-line and unquoted — docker's
-      // env-file parser takes the whole rest of the line verbatim as the value.
+      // Values are single-line and unquoted — docker's env-file parser takes the
+      // whole rest of the line verbatim as the value.
       .map(([k, v]) => `${k}=${v}`)
       .join("\n") + "\n";
   await executor.writeFile(path, body);

@@ -16,6 +16,7 @@ import {
   reconcileServerModule,
   readManifest,
   ourEdgeContainerRunning,
+  isHostChannelUnavailableError,
   type CommandExecutor,
   type ReconcileResult,
 } from "@repo/adapters";
@@ -97,6 +98,20 @@ export interface ServerModuleView {
   note?: string;
 }
 
+/**
+ * Let the host channel's own diagnosis through a best-effort catch.
+ *
+ * Every exec on a container→host channel that is firewalled (#490) or was never
+ * provisioned (#509) refuses with the classified remedy from @repo/core attached.
+ * Swallowing that into "the probe said no" reported the box as having no native
+ * modules at all — an answer that names no cause and points an operator at
+ * reinstalling OpenResty instead of at the channel.
+ */
+function rethrowIfHostUnavailable(err: unknown): null {
+  if (isHostChannelUnavailableError(err)) throw err;
+  return null;
+}
+
 async function probeVersion(executor: CommandExecutor, def: ModuleDef): Promise<string | null> {
   try {
     return def.parseVersion(await executor.exec(def.versionCommand)) ?? null;
@@ -113,7 +128,13 @@ async function detectModule(
   executor: CommandExecutor,
   def: ModuleDef,
 ): Promise<ServerModuleView | null> {
-  const present = await executor.exec(def.presenceProbe).then(() => true).catch(() => false);
+  const present = await executor
+    .exec(def.presenceProbe)
+    .then(() => true)
+    .catch((err: unknown) => {
+      rethrowIfHostUnavailable(err);
+      return false;
+    });
   if (!present) return null;
 
   const installedVersion = await probeVersion(executor, def);
@@ -149,7 +170,13 @@ async function detectModule(
     seed: def.seed,
   });
 
-  const behind = dry.appliedSteps.length > 0 || dry.pendingConsent.length > 0;
+  // A dry run that FAILED is not "nothing to do". The runner already classified why
+  // (manifest unreadable, a catalog serial below the box's high-water, a malformed
+  // version) and only the step counts were read — so every one of those rendered as an
+  // up-to-date row and the diagnosis was thrown away. `note` is the field the
+  // no-catalog branch above already reports through, and `dry.error` goes in verbatim:
+  // the runner's words, not a second set.
+  const behind = dry.ok && (dry.appliedSteps.length > 0 || dry.pendingConsent.length > 0);
   return {
     module: def.name,
     installed: true,
@@ -160,6 +187,7 @@ async function detectModule(
     pendingConsent: dry.pendingConsent,
     autoPending: dry.appliedSteps,
     catalogAvailable: true,
+    ...(dry.ok ? {} : { note: `update check failed: ${dry.error ?? "unknown error"}` }),
   };
 }
 
@@ -184,7 +212,9 @@ function upsertView(server: Server, view: ServerModuleView): Promise<void> {
   });
 }
 
-/** Scan every known module on a server, caching the results. Best-effort. */
+/** Scan every known module on a server, caching the results. Best-effort per module —
+ *  except a host channel that can't be reached, which propagates so the caller reports
+ *  the cause instead of an empty, cause-less "no modules here". */
 export async function scanServer(server: Server): Promise<ServerModuleView[]> {
   const views: ServerModuleView[] = [];
   await sshManager.withExecutor(server.id, async (executor) => {
@@ -198,7 +228,7 @@ export async function scanServer(server: Server): Promise<ServerModuleView[]> {
         await repos.serverModuleStatus.remove(server.id, name).catch(() => {});
         continue;
       }
-      const view = await detectModule(executor, def).catch(() => null);
+      const view = await detectModule(executor, def).catch(rethrowIfHostUnavailable);
       if (view) {
         views.push(view);
         await upsertView(server, view).catch(() => {});

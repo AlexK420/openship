@@ -113,7 +113,20 @@
     "running": "En cours d’exécution",
     "upToDate": "À jour",
     "notInstalled": "Non installé",
-    "installEdge": "Installer edge"
+    "installEdge": "Installer edge",
+    "edgeAbsentImpactOne": "{n} projet est déployé ici et rien n'y achemine le trafic.",
+    "edgeAbsentImpactMany": "{n} projets sont déployés ici et rien n'y achemine le trafic."
+  },
+  "modules": {
+    "title": "Mises à jour de modules disponibles",
+    "checkFailedTitle": "Échec de la vérification des mises à jour de modules",
+    "needsConfirmation": "confirmation requise",
+    "update": "Mettre à jour",
+    "updating": "Mise à jour…",
+    "confirmTitle": "Mettre à jour {module} ?",
+    "confirmIntro": "Cette mise à jour contient des changements qui nécessitent votre accord :",
+    "cancel": "Annuler",
+    "updateFailed": "Échec de la mise à jour de {module}"
   },
   "form": {
     "sshConnection": "Connexion SSH",
@@ -146,6 +159,10 @@
     "testConnection": "Tester la connexion",
     "saveChanges": "Enregistrer les modifications",
     "saveAndContinue": "Enregistrer et passer à la configuration",
+    "modalTitle": "Ajouter votre serveur",
+    "modalSubtitle": "Connectez-vous via SSH. Vous pouvez terminer la configuration plus tard.",
+    "saveServer": "Enregistrer le serveur",
+    "savingServer": "Enregistrement…",
     "toastIpRequired": "L'adresse IP du serveur est requise",
     "toastPasswordSwitchRequired": "Le mot de passe est requis pour passer à l'authentification par mot de passe",
     "toastKeyPathSwitchRequired": "Le chemin de la clé est requis pour passer à l'authentification par clé SSH",

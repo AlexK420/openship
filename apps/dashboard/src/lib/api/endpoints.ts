@@ -74,6 +74,7 @@ export const endpoints = {
   apps: {
     catalog: "apps/catalog",
     catalogEntry: (id: string) => `apps/catalog/${id}`,
+    catalogHostFit: (id: string) => `apps/catalog/${id}/host-fit`,
     install: "apps",
     custom: "apps/custom",
     customEntry: (appId: string) => `apps/custom/${appId}`,

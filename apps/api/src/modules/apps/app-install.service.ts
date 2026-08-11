@@ -14,20 +14,30 @@ import {
   getAppEndpoints,
   declaredServiceRoutes,
   defaultAppRouteLabel,
+  fitsCapacity,
+  hasMinResources,
   normalizeCustomHostname,
   isValidCustomHostname,
   resolveServiceHostnameLabel,
   slugify,
   ConflictError,
+  UNKNOWN_CAPACITY,
   type AppConfigField,
+  type AppMinResources,
   type AppTemplate,
+  type HostCapacity,
+  type ResourceFit,
   type TemplateServiceSpec,
+  type TemplateServiceBuild,
 } from "@repo/core";
 import { getRuntimeCatalog, getTemplateForOrg, listOrgCustomApps } from "./catalog-source";
 import { repos } from "@repo/db";
+import { env } from "../../config";
 import type { RequestContext } from "../../lib/request-context";
+import { isLocalHostRow } from "../../lib/box-org";
 import { parseServicePort } from "../../lib/deployable-service";
 import { requireCloud } from "../../lib/cloud/require-cloud";
+import { getTrustedHostCapacity } from "../../lib/host-capacity";
 import { createProject } from "../projects/project-crud.service";
 import { createService, updateService, setServiceEnvVars } from "../services/service.service";
 
@@ -64,10 +74,15 @@ function signHs256Jwt(secret: string, role: string): string {
  * Catalog for the Create-App UI. Only operator-supplied config fields are
  * returned as form inputs — `generate:"secret"` fields are filled server-side and
  * never surfaced.
+ *
+ * `unlisted` apps are dropped here and only here: they stay installable by id and
+ * their wizard still resolves (`catalogEntry` → `getTemplateForOrg`), they just
+ * don't get a card. That's how webmail rides along under Openship Mail instead of
+ * sitting beside it as a second, near-identical tile.
  */
 export async function getAppCatalog(ctx: RequestContext) {
   const custom = await listOrgCustomApps(ctx.organizationId);
-  return [...getRuntimeCatalog(), ...custom].map((t) => ({
+  return [...getRuntimeCatalog(), ...custom].filter((t) => !t.unlisted).map((t) => ({
     id: t.id,
     name: t.name,
     description: t.description,
@@ -80,6 +95,11 @@ export async function getAppCatalog(ctx: RequestContext) {
     management: getAppManagement(t),
     // Verified trust mark (official open-source image + reviewed pipeline).
     verified: !!t.verified,
+    // Hosting model for the catalog badge + wizard notice (self-hosted default).
+    hosting: t.hosting ?? "self-hosted",
+    // What the app needs from the machine — the wizard shows it against the
+    // chosen destination's real capacity, and deploy preflight enforces it.
+    minResources: t.minResources,
     // A per-org user-uploaded app — always unverified; dashboard shows the warning.
     custom: !!t.custom,
     // Not installable this version → dashboard dims it + blocks the click.
@@ -103,6 +123,71 @@ export async function getAppCatalog(ctx: RequestContext) {
         required: f.required ?? false,
       })),
   }));
+}
+
+/** One app's declared minimum vs. what a chosen destination actually has. */
+export interface AppHostFitView {
+  /** What the app says it needs. Null when it declares nothing (most apps). */
+  minResources: AppMinResources | null;
+  /** What the machine reported. `source: "unknown"` = we couldn't ask, which is
+   *  never a refusal — see `fitsCapacity`. */
+  capacity: HostCapacity;
+  fit: ResourceFit;
+}
+
+/**
+ * Match an app's declared `minResources` against a destination BEFORE anything is
+ * created, so the install wizard can say "PostHog wants 8 GB; this server has 4"
+ * next to the picker instead of letting the operator find out from a failed
+ * deploy.
+ *
+ * ADVISORY ONLY. The gate is deploy preflight's `host-capacity` check, reading the
+ * same declaration through the same `fitsCapacity` verdict on the same probed
+ * numbers — so the notice and the refusal cannot disagree. Same split as the
+ * free-domain cloud requirement: the wizard pre-checks, the API enforces.
+ */
+export async function getAppHostFit(
+  ctx: RequestContext,
+  templateId: string,
+  /** The destination as the wizard has it: cloud, or a server row (none = this box,
+   *  which is what an unbound project derives). "This machine" is NOT taken from
+   *  here — see below. */
+  target: { deployTarget?: string; serverId?: string },
+): Promise<AppHostFitView> {
+  const template = await getTemplateForOrg(ctx.organizationId, templateId);
+  const minResources = template?.minResources ?? null;
+  const unchecked: AppHostFitView = {
+    minResources,
+    capacity: { ...UNKNOWN_CAPACITY },
+    fit: { ok: true },
+  };
+
+  // Nothing declared → nothing to match. Cloud is sized from the tier table, not
+  // from host hardware, so there is no machine to compare against either.
+  if (!hasMinResources(minResources) || target.deployTarget === "cloud") return unchecked;
+
+  // A serverId off a query string is read ORG-SCOPED, and an id this org doesn't
+  // own reports "unknown" rather than probing another tenant's box.
+  //
+  // Whether the destination is THIS machine is then DERIVED from that row, never
+  // read off the query: `isLocalTarget` is what makes a `source: "local"` probe —
+  // the API host's own `os.*` — trusted, so a caller claiming it for a remote
+  // server would have matched the app against the orchestrator's RAM and reported
+  // a shortfall about the wrong machine. `isLocalHostRow` is the same test the
+  // deploy path uses, so the notice and the refusal describe one box.
+  let isLocalTarget = !target.serverId && !env.CLOUD_MODE;
+  if (target.serverId) {
+    const server = await repos.server
+      .getInOrganization(target.serverId, ctx.organizationId)
+      .catch(() => null);
+    if (!server) return unchecked;
+    isLocalTarget = await isLocalHostRow(server);
+  }
+
+  const capacity = await getTrustedHostCapacity(target.serverId, ctx.organizationId, {
+    isLocalTarget,
+  });
+  return { minResources, capacity, fit: fitsCapacity(minResources, capacity) };
 }
 
 /**
@@ -272,6 +357,42 @@ export function planInstallRouting(
   return plan;
 }
 
+/**
+ * One plan entry as an `updateService` patch.
+ *
+ * Exists because the array is not optional. A patch carrying only `domainType` loses to
+ * the stored `publicEndpoints`, which is how a corrected custom domain came back as the
+ * old free route — so every writer has to send the FULL array, and a rule that every
+ * writer has to remember belongs in one place instead. Both the install path and the
+ * webmail re-apply path spelled this out separately.
+ */
+export function serviceRoutingPatch(routing: {
+  exposed: boolean;
+  publicEndpoints: PlannedEndpoint[];
+}): {
+  exposed: boolean;
+  publicEndpoints: PlannedEndpoint[];
+  domainType?: "free" | "custom";
+  domain?: null;
+  customDomain?: null;
+} {
+  const primary = routing.publicEndpoints[0];
+  return {
+    exposed: routing.exposed,
+    publicEndpoints: routing.publicEndpoints,
+    ...(primary
+      ? // The scalar column mirrors entry[0] — the template's primary route.
+        { domainType: primary.domainType }
+      : // An empty plan is a DECISION, not an absence — the webmail proxy variant's
+        // deliberate no-hostname. Omitting the scalars made it unsayable: for an
+        // existing row `mergeServiceRoutingPatch` resolves an absent `domainType`
+        // from `stored`, so `"custom"` survived, and `customDomain` then resolved
+        // from `stored` too. The array cleared while the row kept the hostname it
+        // was redeployed to drop — alive in its derived domain row.
+        { domainType: "free" as const, domain: null, customDomain: null }),
+  };
+}
+
 export type InstallAppResult =
   | { kind: "flow"; flowHref: string }
   | { kind: "template"; projectId: string; slug: string };
@@ -413,6 +534,20 @@ export async function installApp(
     filesByService.set(f.service, list);
   }
 
+  // Resolve a service's inline build context, if any — `{{config:KEY}}` is
+  // inlined in the Dockerfile and every context file's content (the same
+  // generated-key surface as env/files). Carried onto `advanced.build`; the
+  // deploy pipeline materializes it and builds on the host.
+  const resolveBuild = (b: TemplateServiceBuild | undefined) =>
+    b
+      ? {
+          dockerfile: inlineConfig(b.dockerfile),
+          ...(b.files?.length
+            ? { files: b.files.map((f) => ({ path: f.path, content: inlineConfig(f.content) })) }
+            : {}),
+        }
+      : undefined;
+
   // `secretEnv` declares which of a service's env keys are secrets — stored
   // encrypted, never written as plaintext compose env. Wired here (the field was
   // previously inert): a listed key sourced from `environment` is re-routed into
@@ -445,15 +580,7 @@ export async function installApp(
       // No `routes` in the request = no decision expressed; leave the draft's
       // stored routing alone rather than silently unrouting it.
       if ((input.routes ?? []).length > 0) {
-        await updateService(ctx, project.id, existingRow.id, {
-          exposed: routing.exposed,
-          // Always the FULL array: a scalar-only patch loses to the stored array,
-          // which is how a corrected custom domain came back as the old free route.
-          publicEndpoints: routing.publicEndpoints,
-          ...(routing.publicEndpoints[0]
-            ? { domainType: routing.publicEndpoints[0].domainType }
-            : {}),
-        });
+        await updateService(ctx, project.id, existingRow.id, serviceRoutingPatch(routing));
       }
       continue;
     }
@@ -487,6 +614,7 @@ export async function installApp(
         ...(filesByService.get(svc.name)?.length
           ? { files: filesByService.get(svc.name) }
           : {}),
+        ...(svc.build ? { build: resolveBuild(svc.build) } : {}),
       },
       // Routing is exactly what the operator chose — never the template's
       // `exposed` flag turned into a hostname.

@@ -43,8 +43,8 @@ export function withPinnedEdgeImage(config: InstallerConfig = {}): InstallerConf
 
 /**
  * apps/edge/ holds the edge's Dockerfile; the image it produces is published as
- * `openship-edge`. Same image↔directory rename exception the mail engine has, encoded
- * identically in .github/workflows/docker-images.yml — keep the two in step.
+ * `openship-edge`. The image→Dockerfile map lives in
+ * .github/workflows/docker-images.yml — keep the two in step.
  */
 const EDGE_DOCKERFILE = join("apps", "edge", "Dockerfile");
 

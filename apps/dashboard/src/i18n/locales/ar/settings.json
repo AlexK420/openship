@@ -115,10 +115,6 @@
     "noServers": "لا توجد خوادم مهيّأة بعد - أضف واحدًا من منتقي النشر.",
     "clearDefault": "مسح الافتراضي (اسأل في كل مرة)",
     "targets": {
-      "local": {
-        "label": "هذا الجهاز",
-        "desc": "Docker / بيئة تشغيل محلية"
-      },
       "server": {
         "label": "خادمي",
         "desc": "خادم SSH مهيّأ"
@@ -130,8 +126,7 @@
     },
     "labelFor": {
       "yourServer": "خادمك",
-      "cloud": "Openship Cloud",
-      "local": "هذا الجهاز"
+      "cloud": "Openship Cloud"
     },
     "toast": {
       "pickServer": "اختر خادمًا أولًا",

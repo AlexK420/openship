@@ -13,7 +13,7 @@ import { repos } from "@repo/db";
 import type { RouteRuleSpec } from "@repo/core";
 import { safeErrorMessage } from "@repo/core";
 import { postEdgeMgmt } from "../../lib/project-analytics";
-import { resolveDeploymentRuntime } from "../../lib/deployment-runtime";
+import { withDeploymentPlatform } from "../../lib/deployment-runtime";
 
 /** One host's rules in the shape `rules_guard.lua` reads (longest prefix wins). */
 export type HostRuleEntry = { pathPrefix: string | null; spec: RouteRuleSpec };
@@ -120,9 +120,12 @@ export async function resolveProjectPushTarget(
   if (!project.activeDeploymentId) return { serverId: null }; // not deployed → local default
   const deployment = await repos.deployment.findById(project.activeDeploymentId);
   if (!deployment) return { serverId: null };
-  const { effectiveTarget, serverId } = await resolveDeploymentRuntime(deployment);
-  if (effectiveTarget === "cloud") return null;
-  return { serverId: serverId ?? null };
+  // Wrapped even though only the TARGET is wanted: resolving a platform for a
+  // remote server binds a Docker-over-SSH bridge before this function ever looks
+  // at the answer, so asking "which host?" was leaking a listener per rule push.
+  return withDeploymentPlatform(deployment, async ({ effectiveTarget, serverId }) =>
+    effectiveTarget === "cloud" ? null : { serverId: serverId ?? null },
+  );
 }
 
 /** Push after a rule mutation (resolves the target itself). Best-effort. */

@@ -487,14 +487,33 @@ export function storedPublicEndpointsNeedCloud(
  * single-route services). Returns [] when the service isn't exposed or has no
  * routable port. This is the ONE place the service→routes rule lives, so the
  * deploy loop and the route builder agree.
+ *
+ * Deploy-side callers pass `opts.projectSlug`; that preserves an EXPOSED
+ * service's PRIMARY free route even before an explicit slug is persisted, by
+ * synthesizing its default `<project>-<service>` label (via the same
+ * `resolveServiceHostnameLabel` the route/vhost builder uses) and handing it to
+ * the primary as its free-domain fallback. So the four deploy-side consumers —
+ * the route/vhost builder, the DeployConfig endpoints, and the {{publicUrl}}
+ * token — all agree an exposed service is ALWAYS routed, instead of one of them
+ * silently dropping a not-yet-slugged free primary (which shipped a running but
+ * unrouted compose service). Persistence/merge and cloud-gate callers pass no
+ * slug and keep stored semantics (an empty free slug still drops), so an expose
+ * toggle never reads as introducing a route.
  */
 export function resolveServicePublicEndpoints(
   service: Pick<
     Service,
     "exposed" | "exposedPort" | "ports" | "domain" | "customDomain" | "domainType" | "publicEndpoints"
-  >,
+  > & { name?: string | null; kind?: string | null },
+  opts?: { projectSlug?: string },
 ): StoredPublicEndpoint[] {
   if (!service.exposed) return [];
+
+  const primaryFreeDomainFallback =
+    opts?.projectSlug && service.name
+      ? resolveServiceHostnameLabel(opts.projectSlug, service.name, undefined, serviceKind(service))
+      : undefined;
+  const normalizeOpts = primaryFreeDomainFallback ? { primaryFreeDomainFallback } : undefined;
 
   if (service.publicEndpoints && service.publicEndpoints.length > 0) {
     return normalizeStoredPublicEndpoints(
@@ -504,24 +523,30 @@ export function resolveServicePublicEndpoints(
         customDomain: endpoint.customDomain,
         domainType: endpoint.domainType,
       })),
+      normalizeOpts,
     );
   }
 
   const port = resolveServicePort(service);
   if (port === null) return [];
 
-  return normalizeStoredPublicEndpoints([
-    {
-      port,
-      domain: service.domain,
-      customDomain: service.customDomain,
-      domainType: service.domainType === "custom" ? "custom" : "free",
-    },
-  ]);
+  return normalizeStoredPublicEndpoints(
+    [
+      {
+        port,
+        domain: service.domain,
+        customDomain: service.customDomain,
+        domainType: service.domainType === "custom" ? "custom" : "free",
+      },
+    ],
+    normalizeOpts,
+  );
 }
 
 /** The routing keys a create/update payload may carry. A key that is `undefined`
- *  was NOT sent and inherits from the stored row. */
+ *  was NOT sent and inherits from the stored row; an explicit `null` on `domain`
+ *  or `customDomain` is a CLEAR. The two are not interchangeable — that is how a
+ *  caller says "this row has no hostname" about a row that used to have one. */
 export interface ServiceRoutingPatch {
   exposed?: boolean | null;
   exposedPort?: string | null;
@@ -562,6 +587,28 @@ function routeIdentity(route: ServicePublicEndpoint): string {
   return route.domainType === "custom" ? `custom:${route.customDomain}` : `free:${route.domain}`;
 }
 
+/** The scalar routing columns for a route set whose primary is `primary`.
+ *
+ *  entry[0] mirrors the scalars, so any branch that resolves a route set has to
+ *  project them from it rather than resolve them a second time — otherwise the
+ *  returned object contradicts itself (array says one hostname, columns say
+ *  another) and the last writer wins by accident. `normalizeRoutingFields`
+ *  (@repo/db) applies the same projection at the persistence layer; it is the
+ *  SoT for what is STORED, this is the SoT for what a merge RESOLVES. */
+function primaryScalars(primary: ServicePublicEndpoint): {
+  exposedPort: string;
+  domain: string | null;
+  customDomain: string | null;
+  domainType: "free" | "custom";
+} {
+  return {
+    exposedPort: String(primary.port),
+    domain: primary.domainType === "free" ? primary.domain ?? null : null,
+    customDomain: primary.domainType === "custom" ? primary.customDomain ?? null : null,
+    domainType: primary.domainType,
+  };
+}
+
 /** The service's route set as CONFIGURED — deliberately not gated on `exposed`
  *  (unlike resolveServicePublicEndpoints), so re-exposing a paused multi-route
  *  service doesn't lose its siblings. */
@@ -599,7 +646,12 @@ function storedServiceRoutes(stored?: StoredServiceRouting | null): ServicePubli
  * The rule, applied identically on create (`stored: null`) and update:
  *
  *   • explicit `publicEndpoints` wins outright — that is how the whole set is
- *     edited (`[]` clears the extras).
+ *     edited (`[]` clears the extras). `[]` alone does NOT unroute the row: one
+ *     route lives in the scalar columns, so an emptied array plus stale scalars
+ *     is still one live route. Clearing the scalars is a separate, explicit act —
+ *     see the null rule below.
+ *   • a `domain`/`customDomain` of `null` is a CLEAR, distinct from absent. This
+ *     is the only way to unroute an existing row.
  *   • `exposed` is a GATE and nothing else: it decides whether the set is SERVED,
  *     never what the set is. Unexposing therefore pauses routing and keeps every
  *     route (see normalizeRoutingFields for why that's inert).
@@ -640,18 +692,37 @@ export function mergeServiceRoutingPatch(opts: {
   const exposed = patch.exposed ?? stored?.exposed ?? false;
   const exposedPort = patch.exposedPort ?? stored?.exposedPort ?? null;
   const domainType = (patch.domainType ?? stored?.domainType) === "custom" ? "custom" : "free";
-  const domain = domainType === "free" ? patch.domain ?? stored?.domain ?? null : null;
+  // `!== undefined`, not `??`: an explicit null is a CLEAR, and conflating it with
+  // "not sent" made "this row has no hostname" unsayable — the caller's null fell
+  // back to `stored`, so a row redeployed to drop its hostname kept it in the
+  // column (and alive in the derived domain row). `namesDomain` below already
+  // tests these three fields with `!== undefined`; resolving them with `??`
+  // disagreed with that test about what "named" means.
+  const domain =
+    domainType === "free"
+      ? (patch.domain !== undefined ? patch.domain : stored?.domain ?? null)
+      : null;
   const customDomain =
-    domainType === "custom" ? patch.customDomain ?? stored?.customDomain ?? null : null;
+    domainType === "custom"
+      ? (patch.customDomain !== undefined ? patch.customDomain : stored?.customDomain ?? null)
+      : null;
 
   const scalars = { exposed, exposedPort, domain, customDomain, domainType } as const;
 
   if (patch.publicEndpoints !== undefined) {
+    const routes = (patch.publicEndpoints ?? [])
+      .map((endpoint) => normalizeServiceRoute(endpoint))
+      .filter((route): route is ServicePublicEndpoint => route !== null);
+    // An explicit array wins outright, so the scalars are PROJECTED from its
+    // primary — not resolved a second time from the patch/stored chain, which
+    // returned an object disagreeing with its own array (a re-install correcting
+    // a hostname left the old one in the columns). Empty array ⇒ nothing to
+    // project from, so the merged scalars stand and an explicit null clears.
+    const primary = routes[0];
     return {
       ...scalars,
-      publicEndpoints: (patch.publicEndpoints ?? [])
-        .map((endpoint) => normalizeServiceRoute(endpoint))
-        .filter((route): route is ServicePublicEndpoint => route !== null),
+      ...(primary ? primaryScalars(primary) : {}),
+      publicEndpoints: routes,
     };
   }
 
@@ -726,13 +797,9 @@ export function mergeServiceRoutingPatch(opts: {
     };
   }
 
-  const primary = deduped[0];
   return {
     exposed,
-    exposedPort: String(primary.port),
-    domain: primary.domainType === "free" ? primary.domain ?? null : null,
-    customDomain: primary.domainType === "custom" ? primary.customDomain ?? null : null,
-    domainType: primary.domainType,
+    ...primaryScalars(deduped[0]),
     publicEndpoints: deduped,
   };
 }
@@ -757,7 +824,9 @@ export function resolveServiceEndpointUrls(
   service: Service,
 ): Array<{ port: number; url: string }> {
   const urls: Array<{ port: number; url: string }> = [];
-  for (const endpoint of resolveServicePublicEndpoints(service)) {
+  for (const endpoint of resolveServicePublicEndpoints(service, {
+    projectSlug: project.slug ?? project.name,
+  })) {
     if (endpoint.port === undefined) continue;
     if (endpoint.domainType === "custom") {
       if (endpoint.customDomain)
@@ -773,6 +842,46 @@ export function resolveServiceEndpointUrls(
     if (slug) urls.push({ port: endpoint.port, url: `https://${slug}.${getRoutingBaseDomain()}` });
   }
   return urls;
+}
+
+/**
+ * The public hostname a service's PRIMARY (scalar) route resolves to, with the
+ * default `<project>-<service>` free subdomain SYNTHESIZED when no slug is chosen.
+ *
+ * The ONE synthesis site deploy PREFLIGHT uses, so its cloud-gate
+ * (composeServicesNeedCloud) and its per-service domain check (checkComposeServiceDomains)
+ * classify the SAME hostname instead of hand-copying the derivation — the drift that
+ * 403'd a CONNECTED org's compose deploy with CLOUD_REQUIRED_MANAGED_COMPOSE_DOMAINS
+ * (#427 follow-up). Classification is by hostname truth (isCloudManagedHostname), never
+ * a bare `domainType` string: only a subdomain of the real Cloud domain routes behind
+ * the Cloud edge.
+ *
+ * Intentionally NOT resolveServicePublicEndpoints: that drops a free route whose slug
+ * isn't set yet. Preflight sees pre-sync compose input (empty `domain`) and must gate
+ * the default hostname the route builder (resolveServiceEndpointHostname) will register
+ * once the slug is persisted. Scalar-only, matching today's per-service check — extra
+ * multi-route publicEndpoints aren't individually preflighted.
+ */
+export function resolveServiceRouteHostname(
+  service: {
+    name: string;
+    exposed?: boolean | null;
+    domain?: string | null;
+    customDomain?: string | null;
+    kind?: "compose" | "monorepo" | string | null;
+  },
+  projectSlug: string | undefined,
+): { hostname: string; isCustom: boolean; label: string | null } | null {
+  if (!service.exposed) return null;
+  const custom = service.customDomain?.trim();
+  if (custom) return { hostname: normalizeCustomHostname(custom), isCustom: true, label: null };
+  const label = resolveServiceHostnameLabel(
+    projectSlug || "project",
+    service.name,
+    service.domain ?? undefined,
+    serviceKind(service),
+  );
+  return { hostname: `${label}.${getRoutingBaseDomain()}`, isCustom: false, label };
 }
 
 /**

@@ -43,7 +43,10 @@ const {
   syncProjectRouteState: vi.fn(),
 }));
 
-vi.mock("@repo/db", () => ({
+// Partial, not a replacement: the graph reaches `lib/auth`, which reads `schema` and
+// `getDriver()` at module scope. Only `repos` is under test.
+vi.mock("@repo/db", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   repos,
 }));
 

@@ -400,8 +400,11 @@ export const project = pgTable(
      * Unlike a `deployTarget` column (which we deliberately do NOT add — see
      * cloudWorkspaceId above), this doesn't duplicate a source of truth: the
      * effective target is DERIVED — `cloudWorkspaceId ? "cloud" : serverId ?
-     * "server" : "local"`. ON DELETE SET NULL so removing a server unbinds its
-     * projects rather than cascade-deleting them.
+     * "server" : "local"`. That derivation lives in ONE function,
+     * `deriveProjectDeployTarget` in @repo/core, so this rule has a single
+     * implementation to change; read surfaces reach it through
+     * `projectService.resolveProjectDeployTarget`. ON DELETE SET NULL so removing a
+     * server unbinds its projects rather than cascade-deleting them.
      */
     serverId: text("server_id").references(() => servers.id, { onDelete: "set null" }),
 

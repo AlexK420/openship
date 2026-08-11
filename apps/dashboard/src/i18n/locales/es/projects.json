@@ -8,6 +8,7 @@
   },
   "status": {
     "live": "En vivo",
+    "paused": "Pausado",
     "attention": "Acción requerida",
     "queued": "En cola",
     "building": "Compilando",
@@ -156,7 +157,7 @@
     "subtextOther": "Este proyecto aún no tiene un despliegue en vivo. Revisa el origen e inténtalo de nuevo.",
     "deployNow": "Desplegar ahora",
     "connectSource": "Conectar un origen",
-    "settings": "Configuración",
+    "settings": "Configuración del despliegue",
     "attemptsTitle": "Intentos de despliegue",
     "attemptsDescription": "Cada compilación de este proyecto — haz clic en una para abrirla",
     "sourceTitle": "Origen",

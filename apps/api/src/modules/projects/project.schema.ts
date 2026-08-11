@@ -53,6 +53,21 @@ export const CloudResourceTierEnum = (opts?: { description?: string }) =>
   );
 
 /**
+ * Reject any path whose segments include `..`, on either separator.
+ *
+ * `rootDirectory` is joined onto the build-context dir, interpolated into a
+ * generated Dockerfile `WORKDIR`, and used as the root of the archive uploaded
+ * to a cloud workspace, so a traversing value reads outside the repo
+ * (GHSA-443m-7g52-94w8). The adapters normalizers are the real defense — not
+ * every route that accepts this field is tbValidator-wired — so this is a
+ * boundary check, not the fix.
+ *
+ * Deliberately only forbids traversal instead of whitelisting characters:
+ * directory names with spaces are legal and were already accepted.
+ */
+export const NO_TRAVERSAL_PATTERN = "^(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).*$";
+
+/**
  * Validator block for "this row is a source-built monorepo sub-app."
  *
  * Same field set lives in three places - the DB `service` row (nullable
@@ -68,7 +83,9 @@ export const CloudResourceTierEnum = (opts?: { description?: string }) =>
  * payload is explicitly a new monorepo sub-app.
  */
 export const MonorepoSubAppFieldsSchema = {
-  rootDirectory: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  rootDirectory: Type.Optional(
+    Type.String({ minLength: 1, maxLength: 200, pattern: NO_TRAVERSAL_PATTERN }),
+  ),
   installCommand: Type.Optional(Type.String({ maxLength: 1000 })),
   buildCommand: Type.Optional(Type.String({ maxLength: 1000 })),
   startCommand: Type.Optional(Type.String({ maxLength: 1000 })),
@@ -130,7 +147,7 @@ const MonorepoAppSchema = Type.Object({
   // requires it so preflight rejects empty paths instead of silently
   // falling back to repo root.
   ...MonorepoSubAppFieldsSchema,
-  rootDirectory: Type.String({ minLength: 1, maxLength: 200 }),
+  rootDirectory: Type.String({ minLength: 1, maxLength: 200, pattern: NO_TRAVERSAL_PATTERN }),
   port: Type.Optional(Type.Number({ minimum: 1, maximum: 65535 })),
   enabled: Type.Optional(Type.Boolean({ default: true })),
   exposed: Type.Optional(Type.Boolean({ default: true })),
@@ -339,7 +356,7 @@ export const CreateProjectBody = Type.Object({
    * from `null`/absent, where the stack's defaults apply).
    */
   volumes: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 50 })),
-  rootDirectory: Type.Optional(Type.String({ maxLength: 200 })),
+  rootDirectory: Type.Optional(Type.String({ maxLength: 200, pattern: NO_TRAVERSAL_PATTERN })),
   /**
    * Where the compose file lives when it is NOT at the auto-detected root —
    * the file itself (`deploy/stack.yml`) or the directory holding it
@@ -586,7 +603,7 @@ export const SetOptionsBody = Type.Object(
     volumes: Type.Optional(
       Type.Union([Type.Array(Type.String({ maxLength: 500 }), { maxItems: 50 }), Type.Null()]),
     ),
-    rootDirectory: Type.Optional(Type.String()),
+    rootDirectory: Type.Optional(Type.String({ pattern: NO_TRAVERSAL_PATTERN })),
     /** Compose file location; `null` clears it and restores root detection. */
     composePath: Type.Optional(Type.Union([Type.String({ maxLength: 300 }), Type.Null()])),
     startCommand: Type.Optional(Type.String()),

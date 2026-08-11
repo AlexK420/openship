@@ -62,7 +62,7 @@ export interface SettingsTab {
 }
 
 export function useSettingsTabs(): { tabs: SettingsTab[]; activeTab: SettingsTabId } {
-  const { selfHosted, deployMode } = usePlatform();
+  const { selfHosted, deployMode, productView } = usePlatform();
   const { t } = useI18n();
   const searchParams = useSearchParams();
   const raw = (searchParams.get("tab") ?? "general") as SettingsTabId;
@@ -76,7 +76,18 @@ export function useSettingsTabs(): { tabs: SettingsTab[]; activeTab: SettingsTab
     { id: "team", label: t.settings.sidebar.tabs.team, icon: Users, visible: true },
     { id: "notifications", label: t.settings.sidebar.tabs.notifications, icon: Bell, visible: true },
     // Instance SMTP transport — self-hosted only (the SaaS uses its own mailer).
-    { id: "email", label: t.settings.sidebar.tabs.email, icon: Mail, visible: selfHosted, requiresRole: "admin" },
+    // In Openship Mail it sits next to a whole rail of mail-server surfaces, where
+    // "Email" would read as the mail server's own config; "System sender" says
+    // what it actually is (where invites and alerts are sent FROM).
+    {
+      id: "email",
+      label: productView === "mail"
+        ? t.settings.sidebar.tabs.systemSender
+        : t.settings.sidebar.tabs.email,
+      icon: Mail,
+      visible: selfHosted,
+      requiresRole: "admin",
+    },
     // DNS provider credentials — one org-wide record that lets Openship write a
     // domain's records. Every mode: the cloud target automates its CNAME + TXT
     // exactly like a self-hosted box automates its A record.

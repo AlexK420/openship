@@ -179,3 +179,108 @@ describe("ensureContainerMail swap", () => {
     expect(cmds.some((c) => c.startsWith("docker pull"))).toBe(false);
   });
 });
+
+/**
+ * Env-file record injection (GHSA-x2xg-5h5f-j5m9, second-order).
+ *
+ * The advisory's original sink — `export K='V'` into a file that `iRedMail.sh`
+ * SOURCED as root — is gone. But an env-file is LINE-delimited, so the newline,
+ * not the shell metacharacter, is the injection character here. The operator
+ * supplies `adminPassword`, and it lands in this file verbatim.
+ *
+ * Why an extra record is not cosmetic: the engine runs `--network host
+ * --cap-add NET_ADMIN` with host bind mounts (incl. `/etc/letsencrypt`), and bash
+ * imports exported FUNCTIONS from the environment — so a
+ * `BASH_FUNC_<name>%%=() { … }` record shadows a real binary the entrypoint
+ * calls and runs as root inside the container. Docker's own env-file parser only
+ * rejects an empty key or whitespace in the key, so `%%` passes it. Duplicate
+ * keys are also last-wins, so an injected record can shadow FIRST_DOMAIN (which
+ * the image templates into SQL run as the postgres superuser).
+ *
+ * So the writer must fail closed on anything that isn't a single clean record.
+ */
+function envWriteExecutor() {
+  const streamExec = vi.fn(async (_cmd: string) => ({ code: 0, output: "" }));
+  const exec = vi.fn(async (cmd: string) => {
+    if (cmd.includes(STATE_PROBE)) return "";
+    if (cmd.includes("docker version")) return "27.0.0\n";
+    if (cmd.includes("docker image inspect")) return "sha256:abc\n";
+    if (cmd.includes("/proc/net/tcp")) return PROC_LISTENING;
+    return "";
+  });
+  const writeFile = vi.fn(async (_path: string, _content: string) => {});
+  return { executor: { exec, streamExec, writeFile } as never, writeFile, streamExec };
+}
+
+describe("engine env-file cannot be injected with extra records", () => {
+  it("refuses a secret value containing a newline, and never writes it", async () => {
+    setDefaultMailImage("ghcr.io/x/openship-mail:pinned");
+    const { executor, writeFile, streamExec } = envWriteExecutor();
+
+    await expect(
+      ensureContainerMail(executor, {
+        domain: "example.com",
+        secrets: {
+          DOMAIN_ADMIN_PASSWD_PLAIN:
+            "aaaaaaaaaaaa\nBASH_FUNC_psql%%=() { echo pwned; }",
+        },
+        onLog: () => {},
+      }),
+    ).rejects.toThrow(/multiple lines/i);
+
+    // Fail closed: nothing containing the payload reached the box, and the
+    // container was never launched with a poisoned env-file.
+    for (const [, content] of writeFile.mock.calls) {
+      expect(String(content)).not.toContain("BASH_FUNC");
+    }
+    expect(
+      streamExec.mock.calls.some(([c]) => String(c).includes("docker run")),
+    ).toBe(false);
+  });
+
+  it("refuses a carriage return too (CR alone still ends a record)", async () => {
+    setDefaultMailImage("ghcr.io/x/openship-mail:pinned");
+    const { executor } = envWriteExecutor();
+    await expect(
+      ensureContainerMail(executor, {
+        domain: "example.com",
+        secrets: { DOMAIN_ADMIN_PASSWD_PLAIN: "aaaaaaaaaaaa\rFIRST_DOMAIN=evil.tld" },
+        onLog: () => {},
+      }),
+    ).rejects.toThrow(/multiple lines/i);
+  });
+
+  it("refuses a malformed variable NAME (blocks the BASH_FUNC_x%% form)", async () => {
+    setDefaultMailImage("ghcr.io/x/openship-mail:pinned");
+    const { executor } = envWriteExecutor();
+    await expect(
+      ensureContainerMail(executor, {
+        domain: "example.com",
+        secrets: { "BASH_FUNC_psql%%": "() { echo pwned; }" },
+        onLog: () => {},
+      }),
+    ).rejects.toThrow(/invalid variable name/i);
+  });
+
+  it("still writes ordinary secrets as one record per key", async () => {
+    setDefaultMailImage("ghcr.io/x/openship-mail:pinned");
+    const { executor, writeFile } = envWriteExecutor();
+
+    await ensureContainerMail(executor, {
+      domain: "example.com",
+      // A password full of shell metacharacters is FINE — only the record shape
+      // matters now, because nothing shell-parses this file.
+      secrets: { DOMAIN_ADMIN_PASSWD_PLAIN: `a'b"c$(id)\`x\`;d` },
+      onLog: () => {},
+    }).catch(() => {});
+
+    const engineEnv = writeFile.mock.calls
+      .map(([, content]) => String(content))
+      .find((c) => c.includes("DOMAIN_ADMIN_PASSWD_PLAIN="));
+    expect(engineEnv).toBeDefined();
+    expect(engineEnv).toContain(`DOMAIN_ADMIN_PASSWD_PLAIN=a'b"c$(id)\`x\`;d`);
+    // One record per key: the password line must not have spawned another.
+    const lines = (engineEnv as string).trim().split("\n");
+    expect(lines.every((l) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l))).toBe(true);
+  });
+});

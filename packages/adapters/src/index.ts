@@ -33,6 +33,7 @@ export type {
   SslResult,
   ManualCert,
   SshConfig,
+  ExecOnly,
   CommandExecutor,
   ShellOptions,
   ShellSession,
@@ -75,7 +76,7 @@ export type {
   ContainerLifecycleEvent,
 } from "./runtime/types";
 export { assertCapability, isMultiServiceRuntime } from "./runtime/types";
-export { DockerRuntime, type DockerConnectionOptions } from "./runtime/docker";
+export { DockerRuntime, buildNetworkAliases, type DockerConnectionOptions } from "./runtime/docker";
 export {
   resolveLocalDockerSocketPath,
   DEFAULT_DOCKER_SOCKET_PATH,
@@ -131,6 +132,7 @@ export {
   allocateHostPort,
   pickHostPort,
   type AllocateHostPortOptions,
+  type HostPortAllocation,
 } from "./runtime/host-port";
 export { type RuntimeMode, type CreateRuntimeOptions, createRuntime } from "./runtime/index";
 export { resolveDockerfileCandidates } from "./runtime/docker-paths";
@@ -142,6 +144,8 @@ export { NginxProvider, type NginxProviderOptions, type RateLimitConfig } from "
 export {
   compileVercelRouting,
   sourceToLocation,
+  sourceToPattern,
+  type SourcePattern,
   type CompiledRouting,
   type CompiledRedirect,
   type CompiledHeaderRule,
@@ -297,16 +301,39 @@ export type { SetupState, SetupStateStore, ComponentState } from "./system/state
 export { FileStateStore } from "./system/state";
 
 export type {
+  DistroFamily,
   EnvironmentProfile,
   LinuxDistro,
   SystemArch,
+  SystemFirewall,
+  SystemLibc,
   SystemOs,
   SystemPackageManager,
+  SystemSelinux,
   SystemServiceManager,
 } from "./system/environment";
-export { resolveEnvironment } from "./system/environment";
+export {
+  ENVIRONMENT_PROFILE_TTL_MS,
+  invalidateEnvironment,
+  resolveEnvironment,
+} from "./system/environment";
+export type {
+  EnvOps,
+  HostCommands,
+  HostFacts,
+  Op,
+  PackageVariants,
+  ReleaseArch,
+} from "./system/environment-ops";
+export { envOps, HOST_STATE_DIR, opScript } from "./system/environment-ops";
+export {
+  invalidateLocalEnvironment,
+  resolveLocalEnvironmentSync,
+} from "./system/environment-local";
 export { elevatedExecutor, elevateCommand } from "./system/elevated-executor";
-export { systemCatalog } from "./system/catalog";
+export type { Privileged, RootChecked } from "./system/privilege";
+export { privilegedExecutor, rootChecked, rootOrDegrade } from "./system/privilege";
+export { systemCatalog, MIN_DOCKER_VERSION } from "./system/catalog";
 // Native-module versioning + migration framework (verify → reconcile).
 export {
   resolveVerifiedCatalog,
@@ -332,8 +359,17 @@ export {
   isRuntimeNotFoundError,
   isSshDisconnectedError,
   SshDisconnectedError,
+  HostChannelUnavailableError,
+  isHostChannelUnavailableError,
 } from "./system/errors";
-export { probeTcp, probeHttp, waitForReady } from "./system/reachability";
+export {
+  probeTcp,
+  probeTcpDetailed,
+  probeHttp,
+  waitForReady,
+  type TcpProbeFailure,
+  type TcpProbeResult,
+} from "./system/reachability";
 export {
   parseListeningPorts,
   probePortListeningOnce,
@@ -355,7 +391,19 @@ export {
 } from "./system/port-scan";
 export { probeStaticOutput, type OutputProbeResult } from "./system/output-exists";
 
-export { LocalExecutor, SshExecutor, SystemSshExecutor, createExecutor, createHostExecutor, hostControlDisabled } from "./system/executor";
+export {
+  LocalExecutor,
+  SshExecutor,
+  SystemSshExecutor,
+  createExecutor,
+  createHostExecutor,
+  unavailableExecutor,
+  hostControlDisabled,
+  hostChannelHealth,
+  containerBridgeCidr,
+  type HostChannelHealth,
+  type HostChannelCode,
+} from "./system/executor";
 export { DockerEdgeExecutor } from "./system/docker-edge-executor";
 export {
   edgeContainerExecutor,
@@ -446,7 +494,14 @@ export {
 
 // ─── Platform (top-level entry point) ────────────────────────────────────────
 export type { PlatformTarget, PlatformConfig, Platform } from "./platform";
-export { createPlatform, initPlatform, getPlatform, resetPlatform } from "./platform";
+export {
+  createPlatform,
+  initPlatform,
+  getPlatform,
+  peekPlatform,
+  resetPlatform,
+  sharedMountExecutor,
+} from "./platform";
 
 // ─── Oblien SDK (re-export for single source of truth) ───────────────────────
 export { Oblien } from "oblien";

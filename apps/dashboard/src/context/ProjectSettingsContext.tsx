@@ -66,6 +66,8 @@ interface BasicProjectData {
   hasMultipleServices?: boolean;
   serviceCount?: number;
   activeDeploymentId?: string | null;
+  /** Operator switch, derived server-side from `disabled_at` (enrichProject). */
+  enabled?: boolean;
   deployTarget?: "cloud" | "server" | "local";
   cloudWorkspaceId?: string | null;
   deletedAt?: string | null;

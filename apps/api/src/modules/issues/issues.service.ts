@@ -310,6 +310,7 @@ const PENDING_TAB: Record<PendingActionKind, string> = {
   routing_unsynced: "domains",
   domain_unverified: "domains",
   ssl_error: "domains",
+  routing_rules_dropped: "domains",
 };
 
 const DOMAIN_KINDS = new Set<PendingActionKind>(["domain_unverified", "ssl_error"]);

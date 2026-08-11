@@ -389,8 +389,13 @@ export function buildServiceRouteDomains(opts: {
   // One route per public endpoint (a multi-port service — e.g. Convex's API
   // 3210 + HTTP actions 3211 — gets one hostname each). Falls back to the
   // single primary route synthesized from the scalar columns for pre-migration
-  // / single-route services. See resolveServicePublicEndpoints.
-  const endpoints = resolveServicePublicEndpoints(service);
+  // / single-route services. Passing projectSlug keeps an exposed service's
+  // primary free route alive with its default `<project>-<service>` label even
+  // before a slug is persisted, so an exposed service is never silently
+  // unrouted. See resolveServicePublicEndpoints.
+  const endpoints = resolveServicePublicEndpoints(service, {
+    projectSlug: project.slug ?? project.name,
+  });
   const planned: PlannedRouteDomain[] = [];
   const seen = new Set<string>();
 

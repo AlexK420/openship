@@ -34,6 +34,28 @@
       "project": "プロジェクト",
       "hostedOn": "ホスト先"
     },
+    "projectMenu": {
+      "rename": "プロジェクト名を変更",
+      "copyId": "プロジェクト ID をコピー",
+      "idCopied": "プロジェクト ID をコピーしました",
+      "copyFailed": "クリップボードにコピーできませんでした",
+      "pause": "プロジェクトを一時停止",
+      "resume": "プロジェクトを再開",
+      "delete": "プロジェクトを削除"
+    },
+    "rename": {
+      "title": "プロジェクト名を変更",
+      "description": "表示名だけを変更します。再デプロイは行われません。",
+      "label": "プロジェクト名",
+      "placeholder": "マイプロジェクト",
+      "identityNote": "プロジェクトの識別子「{slug}」は変わりません — URL、コンテナ名、ボリュームはそのままです。URL を変更するには「ドメインとルート」でドメインを編集してください。",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "toast": {
+        "renamed": "{name} に変更しました",
+        "failed": "プロジェクト名の変更に失敗しました"
+      }
+    },
     "statusActive": "有効",
     "statusDisabled": "無効",
     "hostedCloud": "Openship Cloud",

@@ -14,6 +14,7 @@
     "auto-deploy",
     "rollback-redeploy",
     "logs-monitoring",
+    "the-edge",
     "jobs",
     "backups-restore",
     "custom-servers",

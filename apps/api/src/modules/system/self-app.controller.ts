@@ -18,7 +18,7 @@
 
 import type { Context } from "hono";
 import type { ImportedSite, ManualCert } from "@repo/adapters";
-import { repos, db, schema, eq } from "@repo/db";
+import { repos } from "@repo/db";
 import { SYSTEM, safeErrorMessage } from "@repo/core";
 import { sshManager } from "../../lib/ssh-manager";
 import { env } from "../../config";
@@ -59,13 +59,7 @@ const APP_TEMPLATE_ID = "openship";
  * Query the admin row directly to avoid that. Returns null on a box with no admin.
  */
 export async function foundingAdminId(): Promise<string | null> {
-  const [admin] = await db
-    .select({ id: schema.user.id })
-    .from(schema.user)
-    .where(eq(schema.user.autoProvisioned, false))
-    .orderBy(schema.user.createdAt)
-    .limit(1);
-  return admin?.id ?? null;
+  return (await repos.user.findFoundingAdmin())?.id ?? null;
 }
 
 async function resolveOrg(): Promise<{ userId: string; organizationId: string }> {
@@ -297,7 +291,7 @@ export async function selfRegister(c: Context) {
         dashPort,
         {
           onLog: (message, level) => appendSetupLog(session.id, "edge", message, level),
-          onStep: (step, status) => updateComponentProgress(session.id, step, status),
+          onStep: (step, status, detail) => updateComponentProgress(session.id, step, status, detail),
         },
         // No cert step: the row above is `domainType: "free"`, so both the
         // provisioner and manageDomainSsl skip issuance (tlsIssuedElsewhere) —
@@ -397,7 +391,7 @@ export async function selfRegister(c: Context) {
       {
         backoffs: [15_000, 45_000], // shorter than the boot hook so the spinner resolves
         onLog: (message, level) => appendSetupLog(session.id, "edge", message, level),
-        onStep: (step, status) => updateComponentProgress(session.id, step, status),
+        onStep: (step, status, detail) => updateComponentProgress(session.id, step, status, detail),
       },
       {
         edgeTakeover: body.edgeTakeover === true,

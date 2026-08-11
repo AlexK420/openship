@@ -115,10 +115,6 @@
     "noServers": "Noch keine Server konfiguriert – füge einen über den Deploy-Picker hinzu.",
     "clearDefault": "Standard zurücksetzen (jedes Mal fragen)",
     "targets": {
-      "local": {
-        "label": "Dieser Rechner",
-        "desc": "Lokales Docker / Laufzeitumgebung"
-      },
       "server": {
         "label": "Mein Server",
         "desc": "Ein konfigurierter SSH-Server"
@@ -130,8 +126,7 @@
     },
     "labelFor": {
       "yourServer": "dein Server",
-      "cloud": "Openship Cloud",
-      "local": "Dieser Rechner"
+      "cloud": "Openship Cloud"
     },
     "toast": {
       "pickServer": "Wähle zuerst einen Server aus",

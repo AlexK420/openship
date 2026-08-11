@@ -26,10 +26,7 @@ import type { BuildSessionState } from "./session-manager";
 import { failureStatusFor } from "./blocking-errors";
 import { sanitizeStorableStrings, sliceWithoutSplittingPair } from "./build-log-sanitize";
 import { detectAndStoreFavicon } from "../../lib/favicon-detector";
-import {
-  markWebmailInstalled,
-  mailServerIdFromWebmailSlug,
-} from "../mail/webmail/webmail-project.service";
+import { onWebmailDeployed } from "../mail/webmail/webmail-install.service";
 
 /**
  * The "your domains didn't route" line for a deploy that otherwise succeeded.
@@ -699,14 +696,8 @@ export async function onSuccess(
     void detectAndStoreFavicon(project.id, result.url);
   }
 
-  // Webmail: flip mail-state `installed=true` so the /emails Open-webmail
-  // CTA can finally surface. Slug is the only carrier of mailServerId
-  // through the generic lifecycle - preserved by `ensureWebmailProject`.
-  // For cloud deploys we also pass `result.url` so the success hook can
-  // register an OpenResty proxy on the mail VPS pointing mail.<install>
-  // → opsh.io (when that's the chosen hostname).
-  if (project.framework === "webmail") {
-    const mailServerId = mailServerIdFromWebmailSlug(project.slug);
-    if (mailServerId) void markWebmailInstalled(mailServerId, project.organizationId, result.url);
-  }
+  // Webmail on Openship Cloud, routed on the mail server's own `mail.<domain>`:
+  // the mail VPS proxies that hostname to the cloud URL, which can only be
+  // registered once the URL exists. Returns immediately for every other deploy.
+  void onWebmailDeployed(project, result.url);
 }

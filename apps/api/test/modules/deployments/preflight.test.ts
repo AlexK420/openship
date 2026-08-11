@@ -41,6 +41,7 @@ vi.mock("../../../src/lib/dns-resolver", () => ({
 }));
 
 import { runPreflightChecks } from "../../../src/modules/deployments/preflight";
+import { isCloudConnectedForOrg } from "../../../src/lib/cloud/session";
 
 describe("runPreflightChecks", () => {
   beforeEach(() => {
@@ -421,8 +422,11 @@ describe("runPreflightChecks", () => {
       // The opposite guard: a real free subdomain routes under the actual Cloud
       // domain, so a NOT-connected deploy must fail with a real CLOUD_REQUIRED
       // code — not silently pass. Proves the isolation fixes narrowed the gate,
-      // they didn't remove it.
-      preflightFn.mockResolvedValue(null); // SaaS bridge returns no data == not connected
+      // they didn't remove it. Connectivity is owned by the single runtime-row
+      // authority (checkCloudRuntime): with no cloud data AND the org owner not
+      // connected, that row emits CLOUD_REQUIRED_MANAGED_COMPOSE_DOMAINS.
+      preflightFn.mockResolvedValue(null); // SaaS bridge returns no data
+      vi.mocked(isCloudConnectedForOrg).mockResolvedValueOnce(false); // genuinely not connected
 
       const result = await runPreflightChecks(
         {
@@ -468,6 +472,59 @@ describe("runPreflightChecks", () => {
           (c) => c.code === "CLOUD_REQUIRED_MANAGED_COMPOSE_DOMAINS",
         ),
       ).toBe(true);
+    });
+
+    it("does NOT false-fail a CONNECTED org's compose deploy on a service that inherits the default *.opsh.io subdomain", async () => {
+      // The reported bug: an exposed service with NO explicit `domain` inherits
+      // the synthesized `<project>-<service>.opsh.io` subdomain. The gate that
+      // decides whether to consult Cloud used to read the raw (empty) domain and
+      // answer "no Cloud needed" — never fetching preflight — while the
+      // per-service check synthesized the same hostname and hard-failed
+      // CLOUD_REQUIRED_MANAGED_COMPOSE_DOMAINS. With the gate and check on one
+      // hostname truth, a connected org fetches preflight (runtime ok) and passes.
+      const result = await runPreflightChecks(
+        {
+          repoUrl: "",
+          localPath: "/srv/my-stack",
+          branch: "main",
+          framework: "docker-compose",
+          buildImage: null,
+          installCommand: null,
+          buildCommand: null,
+          startCommand: null,
+          port: 3000,
+          hasBuild: true,
+          hasServer: true,
+          deployTarget: "server",
+          organizationId: "org-1",
+        } as any,
+        {
+          ctx: { userId: "user-1", organizationId: "org-1" } as any,
+          buildStrategy: "local",
+          multiService: true,
+          composeServices: [
+            {
+              kind: "compose",
+              name: "api",
+              build: ".",
+              dockerfile: "Dockerfile",
+              ports: ["3000:3000"],
+              dependsOn: [],
+              environment: {},
+              volumes: [],
+              exposed: true,
+              // no `domain` / `customDomain` → default synthesized subdomain
+            },
+          ],
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.checks.some((c) => (c.code ?? "").startsWith("CLOUD_REQUIRED"))).toBe(false);
+      const runtime = result.checks.find((c) => c.id === "runtime");
+      expect(runtime?.status).toBe("pass");
+      // The gate must actually consult Cloud for a synthesized *.opsh.io service.
+      expect(preflightFn.mock.calls.length).toBeGreaterThan(0);
     });
   });
 });

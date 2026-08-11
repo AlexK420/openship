@@ -170,6 +170,14 @@ the global package with bun or npm. If that step errors, it prints the exact com
 it and run it yourself. Then restart with `openship up`.
 </Callout>
 
+<Callout title="The update stopped, naming POSTGRES_PASSWORD or BETTER_AUTH_SECRET" type="error">
+A Compose install keeps its generated secrets only in `~/.openship/compose/.env`. If an update can't read that
+file while the database volume is still present, it stops **without changing anything** rather than generating
+values that couldn't work — most often because it ran as a different user (`sudo` reads `/root/.openship`). Re-run
+as the user that owns the install, or restore the file (the previous one is kept at `.env.bak`). Full steps:
+[Troubleshooting → openship up refuses to regenerate secrets](/docs/troubleshooting#symptom-openship-up-refuses-to-regenerate-secrets).
+</Callout>
+
 <Callout title="I updated but still see the old version" type="warn">
 The running server hasn't been restarted yet. On a self-hosted server, run `openship up` again to restart on
 the new version. On the desktop app, fully quit and reopen it if it didn't relaunch on its own.

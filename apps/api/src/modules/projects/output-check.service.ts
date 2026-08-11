@@ -1,9 +1,12 @@
 import { repos } from "@repo/db";
 import { type BuildLogger } from "@repo/adapters";
 import {
-  resolveDeploymentRuntime,
+  disposePlatform,
+  resolveDeploymentPlatform,
   resolveDeploymentStaticRoot,
+  type DeploymentMeta,
   type OutputCheckResult,
+  type ResolvedDeploymentPlatform,
 } from "../../lib/deployment-runtime";
 import { assertResourceInOrg } from "../../lib/controller-helpers";
 import type { RequestContext } from "../../lib/request-context";
@@ -65,8 +68,12 @@ async function runOutputProbe(
 ): Promise<OutputCheckResult[]> {
   const containerId = deployment.containerId;
   if (!containerId) return [];
+  let resolved: ResolvedDeploymentPlatform | null = null;
   try {
-    const { runtime, routing } = await resolveDeploymentRuntime(deployment);
+    resolved = await resolveDeploymentPlatform((deployment.meta ?? {}) as DeploymentMeta, {
+      organizationId: deployment.organizationId,
+    });
+    const { runtime, routing } = resolved.platform;
     // Where this deployment SERVES from, as recorded by the deploy — the SAME
     // resolver that points the vhost, so this probe audits the exact directory the
     // edge was given rather than a second guess at it. A null root means there's
@@ -87,5 +94,7 @@ async function runOutputProbe(
     );
   } catch {
     return [];
+  } finally {
+    disposePlatform(resolved);
   }
 }

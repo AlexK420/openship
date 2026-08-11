@@ -18,18 +18,19 @@ import {
   usesManagedRouting as usesManagedRoutingFor,
 } from "../../lib/deployment-runtime";
 import {
-  resolveServiceHostnameLabel,
   normalizeCustomHostname,
   cloudRequiredCode,
   CLOUD_UNREACHABLE_CODE,
   stackExpectsBuildCommand,
+  describeResourceFit,
+  fitsCapacity,
+  hasMinResources,
 } from "@repo/core";
 import { cloudClient } from "../../lib/cloud/client";
 import { isCloudConnectedForOrg } from "../../lib/cloud/session";
 import { runCloudPreflight, type CloudPreflightData } from "../../lib/cloud-preflight";
 import { isStaticService, type DeployableService } from "../../lib/deployable-service";
 import { isFullyPinned, snapshotNeedsGitSource } from "./pinned-artifacts";
-import { serviceKind } from "./compose/project-services";
 import { relayConfigEligible, resolveClonePlan } from "./clone-plan";
 import { hasLocalGitIdentity } from "../github/github.local-auth";
 import { isPublicRepo } from "../github/github.http";
@@ -39,6 +40,7 @@ import {
   normalizeTargetPath,
   storedPublicEndpointsNeedCloud,
   isCloudManagedHostname,
+  resolveServiceRouteHostname,
 } from "../../lib/public-endpoints";
 import {
   getInstallationId,
@@ -52,6 +54,8 @@ import { canResolveServerGitCredential } from "../github/server-github.service";
 import { parseRepoUrl } from "../github/github.service";
 import { resolveRecords, lookupAddresses } from "../../lib/dns-resolver";
 import { type RequestContext } from "../../lib/request-context";
+import { getTrustedHostCapacity } from "../../lib/host-capacity";
+import { getTemplateForOrg } from "../apps/catalog-source";
 import { repos } from "@repo/db";
 
 /**
@@ -107,6 +111,10 @@ export const PREFLIGHT_ERROR_CODES = {
    *  uses at deploy time. Failing here surfaces the missing-credential
    *  modal up-front instead of letting the build pipeline fail later. */
   GITHUB_REMOTE_TOKEN_REQUIRED: "GITHUB_REMOTE_TOKEN_REQUIRED",
+  /** The target machine is measurably smaller than the app's declared
+   *  `minResources` (catalog). Only ever raised for a FIRST deploy — see
+   *  `checkHostCapacity`. */
+  HOST_RESOURCES_INSUFFICIENT: "HOST_RESOURCES_INSUFFICIENT",
 } as const;
 
 export interface PreflightResult {
@@ -148,6 +156,13 @@ export interface PreflightOptions {
    *  target (`server`). For non-App auth modes, only `local` keeps the
    *  user's broad-scope token from leaving the API process. */
   buildStrategy?: "local" | "server";
+  /** Catalog app this project is an instance of (`project.appTemplateId`), so the
+   *  app's declared host minimum can be matched against the target machine. Null
+   *  for an ordinary project — nothing is declared, nothing is checked. */
+  appTemplateId?: string | null;
+  /** True when the project has never had a live deployment. A shortfall FAILS a
+   *  first deploy and only warns afterwards — see `checkHostCapacity`. */
+  firstDeploy?: boolean;
 }
 
 /** Resolve owner/repo for the public-ness probe: prefer the already-parsed
@@ -659,83 +674,47 @@ async function checkComposeServiceDomains(
 ): Promise<PreflightCheck[]> {
   const checks: PreflightCheck[] = [];
   const seen = new Set<string>();
-  const baseDomain = getRoutingBaseDomain();
 
   for (const service of composeServices) {
-    if (!service.exposed) continue;
+    // ONE resolver drives the hostname the cloud gate (composeServicesNeedCloud)
+    // classifies and the shape/uniqueness we validate here — never a hand-copied
+    // second derivation. A custom hostname routes as a custom domain (DNS-checked),
+    // never Cloud-gated as a free subdomain (#427 follow-up). Cloud CONNECTIVITY for
+    // a free *.opsh.io subdomain is owned SOLELY by checkCloudRuntime (via the
+    // `managed-compose-domains` requirement); this check does NOT re-litigate it —
+    // doing so duplicated and contradicted the runtime row, telling a CONNECTED org
+    // to "connect your account" while the runtime row said "connected, retry".
+    const route = resolveServiceRouteHostname(service, projectSlug);
+    if (!route) continue; // not exposed → no public hostname to validate
 
-    // Classify by hostname truth, not the (possibly stale/mislabeled) domainType
-    // label: any service carrying a custom hostname routes as a custom domain and
-    // is checked by DNS — never Cloud-gated as if it were a free subdomain
-    // (#427 follow-up; mirrors storedPublicEndpointsNeedCloud's customDomain-first
-    // priority). A `domainType:"free"` row that still holds a real customDomain
-    // used to fall through to the free-subdomain branch below and 403 on a
-    // self-hosted server.
-    if (service.customDomain?.trim()) {
-      const domain = normalizeCustomHostname(service.customDomain);
-      if (seen.has(domain)) {
-        checks.push({
-          id: `service-domain-${service.name}`,
-          label: `Service domain (${service.name})`,
-          status: "fail",
-          message: `Duplicate custom domain configured: ${domain}`,
-        });
-        continue;
-      }
-      seen.add(domain);
+    if (seen.has(route.hostname)) {
+      checks.push({
+        id: `service-domain-${service.name}`,
+        label: `Service domain (${service.name})`,
+        status: "fail",
+        message: route.isCustom
+          ? `Duplicate custom domain configured: ${route.hostname}`
+          : `Duplicate service subdomain configured: ${route.label}`,
+      });
+      continue;
+    }
+    seen.add(route.hostname);
 
-      const result = await checkCustomDomain(domain, cloud, snapshot);
+    if (route.isCustom) {
+      const result = await checkCustomDomain(route.hostname, cloud, snapshot);
       checks.push({
         ...result,
         id: `service-domain-${service.name}`,
         label: `Service domain (${service.name})`,
       });
-      continue;
-    }
-
-    const subdomain = resolveServiceHostnameLabel(
-      projectSlug || "project",
-      service.name,
-      service.domain,
-      serviceKind(service),
-    );
-    const fqdn = `${subdomain}.${baseDomain}`;
-
-    // A free subdomain needs Cloud ONLY when it resolves under the real Cloud
-    // domain (*.opsh.io) — the one suffix whose edge/DNS we operate. On a box
-    // with its own HOST_DOMAIN the same slug composes to <slug>.<HOST_DOMAIN>,
-    // served by the operator's OWN edge, so it must NOT be Cloud-gated
-    // (#427 follow-up — mirrors storedPublicEndpointsNeedCloud / the runtime-level
-    // predicate, and closes the divergence where the top-level check said "no
-    // cloud needed" while this per-service check still 403'd the same route).
-    if (isCloudManagedHostname(fqdn) && !cloud) {
+    } else {
+      const result = checkSlugFormat(route.label!);
       checks.push({
+        ...result,
         id: `service-domain-${service.name}`,
         label: `Service subdomain (${service.name})`,
-        status: "fail",
-        code: PREFLIGHT_ERROR_CODES.CLOUD_REQUIRED_MANAGED_COMPOSE_DOMAINS,
-        message: `Free subdomain "${fqdn}" requires Openship Cloud. Connect your account or switch to a custom domain.`,
       });
-      continue;
     }
-
-    if (seen.has(fqdn)) {
-      checks.push({
-        id: `service-domain-${service.name}`,
-        label: `Service domain (${service.name})`,
-        status: "fail",
-        message: `Duplicate service subdomain configured: ${subdomain}`,
-      });
-      continue;
-    }
-    seen.add(fqdn);
-
-    const result = checkSlugFormat(subdomain);
-    checks.push({
-      ...result,
-      id: `service-domain-${service.name}`,
-      label: `Service subdomain (${service.name})`,
-    });
   }
 
   return checks;
@@ -764,20 +743,23 @@ async function requestCloudPreflight(
   return cloudClient({ organizationId: snapshot.organizationId }).preflight(input);
 }
 
-// #427 follow-up — preflight must decide "needs Cloud" by HOSTNAME truth, exactly
-// like the create/update write gates (assertFreeEndpointsAllowed → storedPublicEndpointsNeedCloud).
-// Only a subdomain of the real Cloud domain (*.opsh.io) actually routes through the
-// Cloud edge; a managed subdomain of the operator's OWN HOST_DOMAIN, a custom host,
-// and a stale row with an absent/wrong domainType all route on their own edge and
-// must NOT be gated. The coarse `domainType !== "custom"` predicate this replaces
-// 403'd exactly those self-hosted cases at deploy time — even though create/update
-// had already let them through.
-function composeServicesNeedCloud(services?: DeployableService[] | null): boolean {
-  return storedPublicEndpointsNeedCloud(
-    (services ?? [])
-      .filter((s) => s.exposed)
-      .map((s) => ({ domainType: s.domainType, domain: s.domain, customDomain: s.customDomain })),
-  );
+// #427 follow-up — preflight decides "needs Cloud" by HOSTNAME truth, exactly like
+// the create/update write gates: only a subdomain of the real Cloud domain
+// (*.opsh.io) routes through the Cloud edge. The gate and the per-service check
+// (checkComposeServiceDomains) resolve each service's hostname through the ONE
+// resolver (resolveServiceRouteHostname) so they can't drift — hand-copying that
+// derivation, with the gate reading raw empty `service.domain` while the check
+// SYNTHESIZED the default `<project>-<service>` subdomain, is what 403'd a CONNECTED
+// org's compose deploy (CLOUD_REQUIRED_MANAGED_COMPOSE_DOMAINS).
+function composeServicesNeedCloud(
+  services: DeployableService[] | null | undefined,
+  projectSlug: string | undefined,
+): boolean {
+  for (const service of services ?? []) {
+    const route = resolveServiceRouteHostname(service, projectSlug);
+    if (route && isCloudManagedHostname(route.hostname)) return true;
+  }
+  return false;
 }
 
 async function resolveCloudPreflight(
@@ -810,7 +792,7 @@ async function resolveCloudPreflight(
     (!opts?.multiService && !!opts?.slug && !opts?.customDomain && usesManagedRouting) ||
     (usesManagedRouting && hasManagedPublicEndpoints);
   const needsManagedComposeDomains =
-    composeServicesNeedCloud(opts?.composeServices);
+    composeServicesNeedCloud(opts?.composeServices, opts?.slug);
   const needsCloudPreflight =
     effectiveTarget === "cloud" || needsManagedProjectDomain || needsManagedComposeDomains;
   const requestInput = opts?.publicEndpoints?.length
@@ -1335,6 +1317,57 @@ async function checkCloudRuntime(
   };
 }
 
+/**
+ * Match a catalog app's declared `minResources` against the machine it is about
+ * to be installed on. Generic: any app that declares a minimum gets this, and an
+ * app that declares none (almost all of them) is never checked.
+ *
+ * Two rules keep it from being a footgun of its own:
+ *
+ *   • It FAILS a first deploy and only WARNS afterwards. Refusing a redeploy
+ *     would brick an app already running on a box that turned out to be
+ *     undersized — the operator's way out of that is a deploy, not a refusal.
+ *   • An unknown capacity never fails (`fitsCapacity`). A box we couldn't probe
+ *     means we didn't look, not that the hardware is too small.
+ *
+ * Returns null when there is nothing to check, so no cosmetic row appears on the
+ * checklist of an ordinary project.
+ */
+async function checkHostCapacity(
+  organizationId: string,
+  appTemplateId: string,
+  serverId: string | undefined,
+  isLocalTarget: boolean,
+  firstDeploy: boolean,
+): Promise<PreflightCheck | null> {
+  const template = await getTemplateForOrg(organizationId, appTemplateId).catch(() => undefined);
+  const min = template?.minResources;
+  if (!template || !hasMinResources(min)) return null;
+
+  const capacity = await getTrustedHostCapacity(serverId, organizationId, { isLocalTarget });
+  const fit = fitsCapacity(min, capacity);
+  const check: PreflightCheck = { id: "host-capacity", label: "Host capacity", status: "pass" };
+  if (fit.ok) return check;
+
+  const shortfall = describeResourceFit(fit);
+  if (firstDeploy) {
+    return {
+      ...check,
+      status: "fail",
+      code: PREFLIGHT_ERROR_CODES.HOST_RESOURCES_INSUFFICIENT,
+      message: `${template.name} needs ${shortfall}. Install it on a bigger machine, or pick a different destination.`,
+    };
+  }
+  // Written for the day warns are surfaced: today `runDeploymentPreflight` acts
+  // only on `!ok`, so every preflight warn's message is dropped. The status is
+  // what matters here — it keeps this off the failure path.
+  return {
+    ...check,
+    status: "warn",
+    message: `${template.name} needs ${shortfall}. It will deploy, but expect it to be slow or OOM-killed on this machine.`,
+  };
+}
+
 export async function runPreflightChecks(
   snapshot: DeploymentConfigSnapshot,
   opts?: PreflightOptions,
@@ -1355,7 +1388,7 @@ export async function runPreflightChecks(
   const hasManagedPublicEndpoints =
     storedPublicEndpointsNeedCloud(opts?.publicEndpoints);
   const hasManagedComposeDomains =
-    composeServicesNeedCloud(opts?.composeServices);
+    composeServicesNeedCloud(opts?.composeServices, opts?.slug);
   const cloudRequirement =
     effectiveTarget === "cloud"
       ? "cloud-runtime"
@@ -1376,6 +1409,20 @@ export async function runPreflightChecks(
       ? { id: "stack", label: "Service stack", status: "pass" }
       : checkStack(snapshot),
   ];
+
+  // Does this machine meet what the app says it needs? Cloud is sized from the
+  // tier table, not from host hardware, so there is nothing to match there (and
+  // nothing to probe — a multi-tenant control plane must not dial a tenant's box).
+  if (opts?.appTemplateId && snapshot.organizationId && effectiveTarget !== "cloud") {
+    const hostCapacity = await checkHostCapacity(
+      snapshot.organizationId,
+      opts.appTemplateId,
+      snapshot.serverId,
+      effectiveTarget === "local",
+      opts.firstDeploy ?? false,
+    );
+    if (hostCapacity) checks.push(hostCapacity);
+  }
 
   if (!hasEndpointRouting && opts?.slug && !opts?.customDomain) {
     checks.push(checkSlugFormat(opts.slug));

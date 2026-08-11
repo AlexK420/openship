@@ -50,6 +50,9 @@ vi.mock("@repo/db", () => ({
 }));
 
 vi.mock("../../src/lib/deployment-runtime", () => ({
+  // domain-ssl resolves a platform for the SSL provider only, then releases the
+  // docker transport it eagerly bound — a no-op stub here.
+  disposePlatform: () => {},
   resolveDeploymentPlatform: vi.fn(async () => ({
     platform: {
       ssl: {

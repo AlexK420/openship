@@ -41,7 +41,11 @@ describe("checkDocker", () => {
 
   // The #408 report, end to end: the daemon's own refusal reaches the component
   // message instead of being replaced by the static guess.
-  it("surfaces the daemon's refusal in the message", async () => {
+  //
+  // And the headline matches the refusal. This case used to be reported as "the daemon
+  // is not running", which is a different fault with a different fix — the operator was
+  // sent to start a daemon that a socket permission had never let us ask about.
+  it("names a socket refusal as a permission problem, not a stopped daemon", async () => {
     const status = await checkDocker(
       box([
         [...VERSION],
@@ -55,12 +59,17 @@ describe("checkDocker", () => {
     );
 
     expect(status.healthy).toBe(false);
-    expect(status.running).toBe(false);
     // Still installed, at the version we parsed — the daemon is the only unknown.
     expect(status.installed).toBe(true);
     expect(status.version).toBe("29.7.1");
-    expect(status.message).toContain("the daemon is not running");
+    expect(status.message).toContain("not allowed to use its socket");
+    expect(status.message).toContain("`docker` group");
+    // The #408 property itself: the daemon's own words, still carried.
     expect(status.message).toContain("permission denied");
+    expect(status.message).not.toContain("the daemon is not running");
+    // Unknown, not false: a refusal is equally consistent with a healthy daemon, and
+    // the point of this arm is to stop asserting things the probe didn't establish.
+    expect(status.running).toBeUndefined();
   });
 
   // The other live #408 candidate: `docker --version` is client-only and instant,
@@ -116,6 +125,12 @@ describe("checkDocker", () => {
     expect(status.message).toContain("Cannot connect to the Docker daemon");
     expect(status.message).not.toContain("Is the docker daemon running?");
     expect(status.message.split("\n")).toHaveLength(1);
+    // The other side of the permission discriminator, and the reason it is narrow: this
+    // IS a stopped daemon, so it must keep the stopped headline and the `false` that
+    // goes with it. A looser match on the word "docker" would hand this arm the
+    // group-membership remedy, which fixes nothing here.
+    expect(status.message).toContain(systemCatalog.checks.docker.notRunningMessage!);
+    expect(status.running).toBe(false);
   });
 
   it("probes for a server version, not just an exit code", () => {

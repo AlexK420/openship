@@ -19,6 +19,7 @@
 
 import {
   repos,
+  type Project,
   type Service,
   type BackupRunStatus,
   type BackupPolicy,
@@ -43,12 +44,17 @@ import {
   type BackupTrigger,
   type PayloadKind,
   type ProducerOpts,
+  type RuntimeAdapter,
   type ServiceHandle,
 } from "@repo/adapters";
 import { Readable } from "node:stream";
-import { resolveDeploymentPlatform, resolveTargetPlatform } from "../../lib/deployment-runtime";
-import { decryptEnvMap } from "../../lib/encryption";
+import {
+  disposeRuntime,
+  resolveDeploymentPlatform,
+  resolveTargetPlatform,
+} from "../../lib/deployment-runtime";
 import { notification } from "../../lib/notification-dispatcher";
+import { serviceHandleFor } from "./service-handle";
 import crypto from "node:crypto";
 import { safeErrorMessage } from "@repo/core";
 import {
@@ -245,6 +251,11 @@ export class BackupOrchestrator {
     let policy = null as Awaited<ReturnType<typeof repos.backupPolicy.findById>> | null;
     let executor: BackupExecutor | null = null;
     let serviceHandle: ServiceHandle | null = null;
+    // The runtime the BackupExecutor wraps. Held for the whole run (it shells into
+    // the container to produce the dump) and released in the `finally` — on a
+    // remote server it carries a Docker-over-SSH loopback bridge that only
+    // `dispose()` closes, so a scheduled policy would otherwise strand one per run.
+    let sourceRuntime: RuntimeAdapter | null = null;
 
     try {
       await this.transition(runId, "preparing");
@@ -316,6 +327,7 @@ export class BackupOrchestrator {
           (activeDeployment?.meta ?? {}) as Parameters<typeof resolveDeploymentPlatform>[0],
           { organizationId: destinationRow.organizationId },
         );
+        sourceRuntime = platform.platform.runtime;
         executor = resolveExecutor(platform.platform.runtime.name, platform.platform.runtime);
 
         ctx = {
@@ -502,6 +514,8 @@ export class BackupOrchestrator {
           });
         }
       }
+    } finally {
+      disposeRuntime(sourceRuntime);
     }
   }
 
@@ -718,43 +732,20 @@ export class BackupOrchestrator {
     const project = await repos.project.findById(serviceRow.projectId);
     if (!project) throw new Error(`Project ${serviceRow.projectId} not found`);
 
-    // Decrypt env vars at the boundary so producers can use them
-    // (pg_dump -U $POSTGRES_USER etc.). Two sources:
-    //   service.environment — plaintext defaults from compose
-    //   env_var rows         — encrypted per-key (user-set)
-    // Project env wins over service defaults.
-    const envFromService =
-      (serviceRow.environment as Record<string, string> | null) ?? {};
-    const envFromProjectEncrypted = await repos.project
-      .listEnvVars(serviceRow.projectId)
-      .then((vars) => {
-        const out: Record<string, string> = {};
-        for (const v of vars) out[v.key] = v.value;
-        return out;
-      })
-      .catch(() => ({}));
-    const projectEnv = decryptEnvMap(envFromProjectEncrypted);
-    const decrypted = { ...envFromService, ...projectEnv };
-
-    return {
-      id: serviceRow.id,
-      projectId: serviceRow.projectId,
-      name: serviceRow.name,
-      image: serviceRow.image,
-      env: decrypted,
-      volumes: (serviceRow.volumes as string[] | null) ?? [],
-      containerId: await this.resolveServiceContainerId(serviceRow),
+    return serviceHandleFor(serviceRow, {
       projectSlug: project.slug,
-      namespaceVolumes: serviceRow.namespaceVolumes,
-    };
+      containerId: await this.resolveServiceContainerId(project, serviceRow),
+    });
   }
 
   /** Find the live container id for a service, via the shared resolver —
    *  verified against the host, so a backup never targets a container a
    *  redeploy already replaced. */
-  private async resolveServiceContainerId(serviceRow: Service): Promise<string | null> {
-    const project = await repos.project.findById(serviceRow.projectId);
-    if (!project?.activeDeploymentId) return null;
+  private async resolveServiceContainerId(
+    project: Project,
+    serviceRow: Service,
+  ): Promise<string | null> {
+    if (!project.activeDeploymentId) return null;
     const dep = await repos.deployment.findById(project.activeDeploymentId);
     if (!dep) return null;
     return liveContainerIdForService(project, dep, serviceRow, { projectId: project.id });

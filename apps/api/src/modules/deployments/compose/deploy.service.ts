@@ -20,6 +20,9 @@ import {
   getAppPrepareSteps,
   resolveProjectVolumes,
   sanitizeProxySettings,
+  composeNamespaceDependencies,
+  composeNamespaceRef,
+  ownsNetworkEndpoint,
   UNLIMITED_RESOURCES,
   type ComposeAdvanced,
   type ProxySettings,
@@ -52,6 +55,11 @@ import { resolveEdgeTargetHost } from "../../../lib/edge-target";
 import { containerIdForService } from "../../services/service-container";
 import { isConnectionLoss } from "../../../lib/remote-state";
 import {
+  appConfigHostPath,
+  withAppConfigHost,
+  writeAppConfigFile,
+} from "./app-config-host";
+import {
   buildServiceRouteDomains,
   createTrackedSslProvider,
   ensureRouteDomainRecord,
@@ -63,7 +71,7 @@ import { resolveServiceEndpointUrls, resolveServicePublicEndpoints } from "../..
 import { ensureManagedEdgeProxy } from "../../../lib/managed-edge-proxy";
 import { ensureRoutingReady } from "../../../lib/edge-reconcile";
 import * as sessionManager from "../session-manager";
-import { isStaticService, parseServicePort } from "../../../lib/deployable-service";
+import { isStaticService, parseServicePort, serviceAliasExtras } from "../../../lib/deployable-service";
 import { computeKeepSet } from "../image-gc";
 import { auditPorts } from "../port-audit.service";
 import {
@@ -72,8 +80,12 @@ import {
   type StabilityTarget,
 } from "../stability-audit.service";
 import { resolveReadinessGate, type ResolvedReadinessGate } from "../readiness-gate";
-import type { PortCheckResult } from "../../../lib/deployment-runtime";
+import {
+  hostChannelDeployNotice,
+  type PortCheckResult,
+} from "../../../lib/deployment-runtime";
 import { resolveServicePort } from "./domain-helpers";
+import { compileProjectRoutingFields } from "../../../lib/project-routing-fields";
 import { buildCompositeRegistration, buildDomainFanoutRegistrations } from "./composite-route";
 import { newerThanRestoredRelease, serviceKind } from "./project-services";
 import { buildUpstreamUrl, resolveRouteStrategy } from "../../../lib/upstream-url";
@@ -120,7 +132,25 @@ export interface ComposeDeployResult {
   portChecks?: PortCheckResult[];
 }
 
-function topoSort(services: Service[]): Service[] {
+/**
+ * Every service that must be RUNNING before this one is created.
+ *
+ * `depends_on` is the declared half. The other half is implicit and mandatory: a
+ * service sharing a sibling's network or PID namespace resolves to that sibling's
+ * container id, and Docker resolves it at create time — so the provider existing
+ * is a hard precondition, not a preference. Folding both into one list is what
+ * lets the topological sort and the "dependency didn't come up" guard treat them
+ * identically, instead of each growing its own idea of what a dependency is.
+ */
+export function effectiveDependencies(svc: Pick<Service, "dependsOn" | "advanced">): string[] {
+  const declared = (svc.dependsOn as string[] | null) ?? [];
+  const namespaces = composeNamespaceDependencies(svc.advanced as ComposeAdvanced | null);
+  return namespaces.length === 0
+    ? declared
+    : [...declared, ...namespaces.filter((n) => !declared.includes(n))];
+}
+
+export function topoSort(services: Service[]): Service[] {
   const byName = new Map(services.map((s) => [s.name, s]));
   const sorted: Service[] = [];
   const visited = new Set<string>();
@@ -129,14 +159,18 @@ function topoSort(services: Service[]): Service[] {
   function visit(svc: Service) {
     if (visited.has(svc.name)) return;
     if (visiting.has(svc.name)) {
-      // Circular dependency - break cycle
-      sorted.push(svc);
-      visited.add(svc.name);
+      // Circular dependency — break the cycle by returning, and let this node be
+      // emitted by the frame that is ALREADY on the stack for it. Pushing it here
+      // instead emitted it twice (once now, once when that frame completed), and a
+      // duplicate in `ordered` means the deploy loop runs one service twice —
+      // second pass hits the UNIQUE(deploymentId, serviceId) index on its
+      // service_deployment row. `visiting` still holds the name, so a deeper
+      // re-entry keeps terminating here; there is no order that satisfies a cycle,
+      // but every service appears exactly once.
       return;
     }
     visiting.add(svc.name);
-    const deps = (svc.dependsOn as string[]) ?? [];
-    for (const depName of deps) {
+    for (const depName of effectiveDependencies(svc)) {
       const dep = byName.get(depName);
       if (dep) visit(dep);
     }
@@ -149,6 +183,62 @@ function topoSort(services: Service[]): Service[] {
     visit(svc);
   }
   return sorted;
+}
+
+/**
+ * Turn a service's stored namespace modes into the values Docker takes, or say why
+ * it can't be done.
+ *
+ * `service:<name>` is resolved HERE, against what this deployment actually
+ * produced, for two reasons: a reference to a service that isn't in the stack (or
+ * that didn't come up) has to fail the dependent rather than reach the daemon as
+ * an unresolvable id, and the container id is the unambiguous handle — a name
+ * would be re-resolved by the daemon later, after we've stopped watching.
+ */
+export function resolveServiceNamespaces(
+  svc: Pick<Service, "name" | "advanced">,
+  containerIdByServiceName: Map<string, string>,
+  stackServiceNames: Set<string>,
+): { namespaces?: { network?: string; pid?: string }; error?: string } {
+  const advanced = svc.advanced as ComposeAdvanced | null;
+  const namespaces: { network?: string; pid?: string } = {};
+
+  for (const [key, value, field] of [
+    ["network", advanced?.networkMode, "network_mode"],
+    ["pid", advanced?.pidMode, "pid"],
+  ] as const) {
+    const ref = composeNamespaceRef(value, field);
+    if (!ref) continue;
+    if (ref.kind === "none") {
+      namespaces[key] = "none";
+      continue;
+    }
+    if (ref.kind === "container") {
+      namespaces[key] = `container:${ref.container}`;
+      continue;
+    }
+    if (ref.service === svc.name) {
+      return { error: `${field}: service:${ref.service} refers to itself.` };
+    }
+    if (!stackServiceNames.has(ref.service)) {
+      return {
+        error:
+          `${field}: service:${ref.service} is not a service in this stack. ` +
+          `Reference one of its own services, or use container:<id>.`,
+      };
+    }
+    const containerId = containerIdByServiceName.get(ref.service);
+    if (!containerId) {
+      return {
+        error:
+          `${field}: service:${ref.service} has no running container to share, so ` +
+          `this service cannot start.`,
+      };
+    }
+    namespaces[key] = `container:${containerId}`;
+  }
+
+  return Object.keys(namespaces).length > 0 ? { namespaces } : {};
 }
 
 function resolveServicePublicPort(service: Service): number | undefined {
@@ -322,17 +412,6 @@ export async function resolvePortOnlyEnvHost(
 }
 
 /**
- * Persistent on-host root for app template config files bind-mounted into
- * service containers (Kong's `kong.yml`, Postgres init `.sql`). Sibling of the
- * other openship host state (`/var/lib/openship/ssh-keys`); overridable for
- * hosts that keep openship state elsewhere. Files land at
- * `<root>/<projectId>/<service>/<container-path>` — the executor creates parent
- * dirs — and the container-absolute path is appended verbatim so binds are
- * unique and self-describing.
- */
-const APP_CONFIG_HOST_ROOT = process.env.OPENSHIP_APP_CONFIG_DIR || "/var/lib/openship/app-config";
-
-/**
  * Wall-clock ceiling for the whole advisory port audit of a stack.
  *
  * The audit is always-on (it's the source of the dashboard's "is that the right
@@ -342,17 +421,6 @@ const APP_CONFIG_HOST_ROOT = process.env.OPENSHIP_APP_CONFIG_DIR || "/var/lib/op
  * past the budget, degrade to no hint, never to a stalled deploy.
  */
 const PORT_AUDIT_BUDGET_MS = 8000;
-
-function appConfigHostPath(projectId: string, serviceName: string, containerPath: string): string {
-  const safeSvc = serviceName.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const rel = containerPath.replace(/^\/+/, "");
-  // Reject `..` traversal: `rel` is a template-supplied path written on the HOST
-  // (and bind-mounted), so a crafted `../../etc/...` must not escape the root.
-  if (rel.split("/").some((seg) => seg === "..")) {
-    throw new Error(`Unsafe app-config path (directory traversal): ${containerPath}`);
-  }
-  return `${APP_CONFIG_HOST_ROOT}/${projectId}/${safeSvc}/${rel}`;
-}
 
 /** A service's public endpoints as DeployConfig entries (free slug resolved via
  *  the hostname-label default, custom hostname passed through). */
@@ -366,7 +434,9 @@ function serviceDeployPublicEndpoints(
     customDomain?: string;
     domainType: "free" | "custom";
   }> = [];
-  for (const endpoint of resolveServicePublicEndpoints(service)) {
+  for (const endpoint of resolveServicePublicEndpoints(service, {
+    projectSlug: project.slug ?? project.name,
+  })) {
     if (endpoint.port === undefined) continue;
     if (endpoint.domainType === "custom") {
       out.push({ port: endpoint.port, customDomain: endpoint.customDomain, domainType: "custom" });
@@ -457,16 +527,6 @@ function resolveServiceResources(
   };
 }
 
-/** Normalized custom alias(es) for a compose service, drawn from
- *  `service.advanced.alias`. Returns undefined when unset or when it collapses
- *  to the service's own name (the default alias already covers that). */
-function aliasExtras(service: Service): string[] | undefined {
-  const raw = (service.advanced as ComposeAdvanced | null | undefined)?.alias;
-  if (!raw) return undefined;
-  const alias = normalizeServiceLabel(raw);
-  if (!alias || alias === normalizeServiceLabel(service.name)) return undefined;
-  return [alias];
-}
 
 function createServiceRuntimeConfig(opts: {
   project: Project;
@@ -475,10 +535,13 @@ function createServiceRuntimeConfig(opts: {
   image: string;
   environment: Record<string, string>;
   resources?: ResourceConfig;
+  /** Docker-ready shared namespaces (`container:<id>` / `none`), pre-resolved. */
+  namespaces?: { network?: string; pid?: string };
   /** Previous deployment's workspace id (cloud) — reuse to keep the disk. */
   previousWorkspaceId?: string;
 }): MultiServiceDeployConfig {
-  const { project, dep, service, image, environment, resources, previousWorkspaceId } = opts;
+  const { project, dep, service, image, environment, resources, namespaces, previousWorkspaceId } =
+    opts;
   // Monorepo sub-apps store their long-running process in `startCommand`;
   // compose services in `command`. The DB invariant is that compose rows
   // never have `startCommand` set, so a single `??` chain covers both:
@@ -511,8 +574,9 @@ function createServiceRuntimeConfig(opts: {
     // Operator-chosen east-west alias (service.advanced.alias) resolving
     // alongside the default service name. Normalized here; skipped when it
     // collapses to the service name (no extra alias needed).
-    extraAliases: aliasExtras(service),
+    extraAliases: serviceAliasExtras(service),
     resources,
+    ...(namespaces && { namespaces }),
     expose: service.exposed,
     publicPort: resolveServicePublicPort(service),
     publicSlug: resolveServicePublicSlug(project, service),
@@ -672,6 +736,11 @@ export async function deployComposeServices(
      *  onto the Docker host so they can be bind-mounted read-only into the
      *  service. Null on cloud (no host bind-mount) → file services are skipped. */
     executor?: CommandExecutor | null;
+    /** The deploy target is the machine this process runs on (`platform.localHost`).
+     *  Host-path writes then go through the host channel instead of `executor`,
+     *  which for a plain local target is a LocalExecutor — the CONTAINER's own
+     *  filesystem on a Compose install. */
+    localHost?: boolean;
   },
 ): Promise<ComposeDeployResult> {
   const services = await repos.service.listByProject(project.id);
@@ -698,6 +767,15 @@ export async function deployComposeServices(
   const ordered = topoSort(enabled);
 
   logger.step("deploy", "running", `Deploying ${ordered.length} services...`);
+
+  // Say ONCE, up front, that this box can't drive its host (#509). Every host
+  // touchpoint below absorbs the refusal on its own terms — the port scan reports
+  // "couldn't read occupancy" (and only under loopback-port routing), the routing
+  // preflight logs "deploy continues" — so without this the operator's first legible
+  // symptom is a service that dies later over a config file that never landed.
+  const hostNotice = hostChannelDeployNotice(opts?.executor);
+  if (hostNotice) logger.log(`${hostNotice}\n`, "warn");
+
   logger.log("Preparing shared service group for project services...\n");
 
   const group = await runtime.ensureServiceGroup({
@@ -866,6 +944,29 @@ export async function deployComposeServices(
   // routeOptions at all.
   const proxySettings = sanitizeProxySettings(project.routingConfig?.proxy);
 
+  // Compiled ONCE per deploy, for the same reason `proxySettings` is: it is a property of
+  // the project, so every registration below wants the identical object. The static loop
+  // recompiled it per route, per service.
+  const routingFields = compileProjectRoutingFields(project.routingConfig);
+
+  // Everything a per-service registration carries that belongs to the PROJECT rather than
+  // to one upstream. Assembled HERE for the same reason `proxySettings` is, and it is what
+  // finally gives a PROXIED compose service its vercel.json rules: the static branch below
+  // spreads `routingFields` onto its own registerRoute call, and the composite path compiles
+  // its own, but a containerized service routes through `runDeployPipeline` — which only
+  // ever saw webhook + proxy here, so a redirect declared for the project applied on every
+  // deploy mode EXCEPT this one.
+  //
+  // Safe against the composite: `registerRoute` is last-writer-wins per hostname and the
+  // composite registers AFTER this loop, so a composite domain still ends up with the
+  // topology-aware compile (the one that resolves `/api/` to the real backend) rather than
+  // the backend-free subset here.
+  const serviceRouteOptions: RouteRegistrationOptions = {
+    ...opts?.routeOptions,
+    ...(proxySettings ? { proxy: proxySettings } : {}),
+    ...routingFields,
+  };
+
   let routeContext: ServiceRouteContext | undefined;
   if (opts?.routing && opts.ssl && typeof opts.usesManagedRouting === "boolean") {
     // Reuses the map built above (needsDomainMap covers this branch).
@@ -875,14 +976,10 @@ export async function deployComposeServices(
       usesManagedRouting: opts.usesManagedRouting,
       organizationId: dep.organizationId,
       serverId: opts.serverId,
-      ...(opts.routeOptions || proxySettings
-        ? {
-            routeOptions: {
-              ...opts.routeOptions,
-              ...(proxySettings ? { proxy: proxySettings } : {}),
-            },
-          }
-        : {}),
+      // Omitted entirely when there is nothing to carry, so a project with no webhook, no
+      // proxy tunables and no vercel.json keeps passing `undefined` rather than an empty
+      // object into the pipeline.
+      ...(Object.keys(serviceRouteOptions).length ? { routeOptions: serviceRouteOptions } : {}),
       domainByHostname,
       ...(proxySettings ? { proxy: proxySettings } : {}),
     };
@@ -912,6 +1009,30 @@ export async function deployComposeServices(
   let firstPublicUrl: string | undefined;
   const seenRouteDomains = new Set<string>();
   const unavailableServiceNames = new Set<string>();
+  /**
+   * serviceName → the container id currently backing it, for resolving a sibling's
+   * `network_mode: service:<name>` / `pid: service:<name>`. Filled as each service
+   * settles — both the ones this deploy created and the ones it carried forward,
+   * since a namespace provider left running is just as valid a target. The topo
+   * sort guarantees a provider is visited before its dependents, so a miss here
+   * means the provider genuinely has no container, not that we asked too early.
+   */
+  const containerIdByServiceName = new Map<string, string>();
+  /**
+   * Services this pass REPLACED the container of, rather than carrying forward.
+   * Read only to decide whether a namespace dependent may still be carried — see
+   * the carry-forward guard in the loop.
+   */
+  const recreatedServiceNames = new Set<string>();
+  /**
+   * Names in THIS stack — the boundary a `service:` reference may not cross.
+   *
+   * Every service, not just the enabled ones: a reference to a DISABLED sibling is
+   * in-stack but unsatisfiable, and it should say so ("no running container to
+   * share") rather than claim the service doesn't exist, which would send the
+   * operator looking for a typo they didn't make.
+   */
+  const stackServiceNames = new Set(services.map((s) => s.name));
   // Services whose container STARTED but whose outcome we couldn't confirm
   // because the connection dropped mid-deploy. Not counted as failed — the
   // deploy resolves to `reconciling` and reconciliation reads the true state.
@@ -990,12 +1111,33 @@ export async function deployComposeServices(
     // the de-listed reaper won't kill it) and out of `unavailableServiceNames`
     // (so dependents aren't blocked). The liveness check below still redeploys
     // it if its container turns out to be gone.
+    //
+    // Unless its NAMESPACE PROVIDER was just recreated. A container joined to
+    // another's netns is bound to that specific container, so when the provider is
+    // replaced the dependent keeps a handle on a destroyed namespace — it loses
+    // networking entirely while still reporting `running`, so the liveness check
+    // below waves it through and the deploy calls it "unchanged - kept running".
+    // That is #533's exact failure (a sidecar silently off its tunnel) arriving
+    // through the partial-deploy path, so the dependent is recreated too. Safe to
+    // read here: topoSort visits providers first, so the answer is already known.
+    const providerRecreated = composeNamespaceDependencies(
+      svc.advanced as ComposeAdvanced | null,
+    ).some((name) => recreatedServiceNames.has(name));
     const carried =
-      (opts?.targetServiceIds && !opts.targetServiceIds.has(svc.id)) ||
-      isExternalUnchanged(svc) ||
-      isNewerThanRelease(svc)
+      !providerRecreated &&
+      ((opts?.targetServiceIds && !opts.targetServiceIds.has(svc.id)) ||
+        isExternalUnchanged(svc) ||
+        isNewerThanRelease(svc))
         ? previousByServiceId.get(svc.id)
         : undefined;
+    if (providerRecreated) {
+      logger.log(
+        `Service "${svc.name}" shares a namespace with a service that was just recreated — ` +
+          `recreating it too so it isn't left attached to a destroyed namespace.\n`,
+        "info",
+        { serviceName: svc.name },
+      );
+    }
     if (carried?.containerId) {
       // Only carry a service forward if its container is ACTUALLY running.
       // A prior rollback / partial deploy / external `docker rm` could have
@@ -1011,8 +1153,20 @@ export async function deployComposeServices(
       if (alive) {
         // A network reconnect may have re-assigned the container's IP, so
         // prefer the live values over the stored row when we have them.
-        const carriedIp = live?.ip ?? carried.ip ?? null;
-        const carriedHostPort = live?.hostPort ?? carried.hostPort ?? null;
+        //
+        // An inspect that ANSWERED is authoritative about whether the container
+        // publishes anything at all: no binding → CLEAR the row rather than carry
+        // a port nothing listens on, which is what left migrated workloads routed
+        // at a dead 127.0.0.1:<port> (#506). Which port it is stays the carried
+        // (pinned) value — docker's first-binding is ambiguous once the operator
+        // has declared extra ports. `live === undefined | null` = couldn't ask, so
+        // the row stays as the last-known value.
+        const carriedIp = live ? (live.ip ?? null) : (carried.ip ?? null);
+        const carriedHostPort = live
+          ? live.hostPort === undefined
+            ? null
+            : (carried.hostPort ?? live.hostPort)
+          : (carried.hostPort ?? null);
         await repos.service.upsertServiceDeployment({
           deploymentId: dep.id,
           serviceId: svc.id,
@@ -1044,6 +1198,9 @@ export async function deployComposeServices(
           ip: carriedIp ?? undefined,
           hostPort: carriedHostPort ?? undefined,
         });
+        // A carried-forward container is a valid namespace provider — it's running,
+        // which is the only thing a dependent needs from it.
+        containerIdByServiceName.set(svc.name, carried.containerId);
         successful += 1;
         sessionManager.broadcastServiceStatus(dep.id, {
           serviceName: svc.name,
@@ -1075,7 +1232,9 @@ export async function deployComposeServices(
       continue;
     }
 
-    const blockedDependencies = ((svc.dependsOn as string[]) ?? []).filter((dependency) =>
+    // Includes the namespace provider: a service whose netns/pidns host failed is
+    // not "degraded", it cannot be created at all.
+    const blockedDependencies = effectiveDependencies(svc).filter((dependency) =>
       unavailableServiceNames.has(dependency),
     );
     if (blockedDependencies.length > 0) {
@@ -1247,6 +1406,11 @@ export async function deployComposeServices(
                 route.hostname,
                 routeContext.domainByHostname.get(routeKey),
               ),
+              // registerRoute REPLACES the vhost, so omitting these would not leave the
+              // project's vercel.json rules alone — it would delete whatever a live
+              // re-apply installed. This is also the only place a plain static deploy
+              // ever gets cleanUrls/trailingSlash, so without it the flags never applied.
+              ...routingFields,
               ...(routeContext.proxy ? { proxy: routeContext.proxy } : {}),
             })
             .catch((err) => {
@@ -1282,6 +1446,10 @@ export async function deployComposeServices(
     logger.log(`Deploying service "${svc.name}" (${image})...\n`, "info", {
       serviceName: svc.name,
     });
+    // Past every skip path: this service's container is about to be replaced
+    // (deployServiceWorkload removes the same-named one first), so any dependent
+    // sharing its namespace must be recreated rather than carried.
+    recreatedServiceNames.add(svc.name);
 
     // Broadcast per-service "deploying" status to SSE subscribers
     sessionManager.broadcastServiceStatus(dep.id, {
@@ -1304,6 +1472,47 @@ export async function deployComposeServices(
       );
     }
 
+    // Shared namespaces, resolved against what this deployment actually produced.
+    // Skipped entirely on a runtime that can't honor them — the warn-and-drop above
+    // already told the operator, and resolving a reference we're about to discard
+    // would only manufacture a failure (a "provider has no container" error on
+    // cloud, where no container exists by design).
+    const namespacesUnsupported =
+      runtime.unsupportedComposeKeys.has("networkMode") ||
+      runtime.unsupportedComposeKeys.has("pidMode");
+    const resolvedNamespaces = namespacesUnsupported
+      ? {}
+      : resolveServiceNamespaces(svc, containerIdByServiceName, stackServiceNames);
+    if (resolvedNamespaces.error) {
+      // A namespace it can't get is fatal for THIS service, not the stack: same
+      // shape as a blocked dependency, so dependents of this one are held back too.
+      const message = resolvedNamespaces.error;
+      logger.log(`Service "${svc.name}" skipped: ${message}\n`, "warn", { serviceName: svc.name });
+      sessionManager.broadcastServiceStatus(dep.id, {
+        serviceName: svc.name,
+        serviceId: svc.id,
+        status: "failed",
+        error: message,
+      });
+      await repos.service.createServiceDeployment({
+        deploymentId: dep.id,
+        serviceId: svc.id,
+        serviceName: svc.name,
+        status: "failure",
+        imageRef: image ?? null,
+      });
+      results.push({ serviceId: svc.id, serviceName: svc.name, status: "failed", error: message });
+      unavailableServiceNames.add(svc.name);
+      continue;
+    }
+    // Its ports and domains are inert the moment it has no endpoint of its own —
+    // whether because another container owns the interfaces or because there are
+    // none (`network_mode: none`). Traffic has to be published and routed on the
+    // PROVIDER. Derived from the RESOLVED mode, the same value the runtime keys its
+    // own suppression on, so the two can't disagree about which services are
+    // routable (see ownsNetworkEndpoint).
+    const hasNoRoutableAddress = !ownsNetworkEndpoint(resolvedNamespaces.namespaces?.network);
+
     const serviceRuntimeConfig = createServiceRuntimeConfig({
       project,
       dep,
@@ -1311,6 +1520,7 @@ export async function deployComposeServices(
       image,
       environment: mergedEnv,
       resources: resolveServiceResources(svc, opts?.resources),
+      namespaces: resolvedNamespaces.namespaces,
       // Cloud stores the workspace id as the service's containerId. Reuse the
       // previous deployment's workspace so its disk (volume data) survives the
       // redeploy. Only meaningful on cloud; docker recreates containers.
@@ -1326,14 +1536,8 @@ export async function deployComposeServices(
     // bind-mounts host paths — cloud has neither, so warn-and-skip there.
     const advancedFiles = (svc.advanced as ComposeAdvanced | null)?.files ?? [];
     if (advancedFiles.length > 0) {
-      if (runtime.name === "cloud" || !opts?.executor) {
-        logger.log(
-          `Service "${svc.name}": ${advancedFiles.length} config file(s) require a self-hosted host mount — skipping on the ${runtime.name} runtime.\n`,
-          "warn",
-          { serviceName: svc.name },
-        );
-      } else {
-        const writer = await resolveHostConfigWriter(opts.executor);
+      const writeConfigFiles = async (host: CommandExecutor) => {
+        const writer = await resolveHostConfigWriter(host);
         for (const file of advancedFiles) {
           // Token-local on purpose: one unresolved URL must not blank the whole
           // file (the mount is required — a missing kong.yml is a dead service),
@@ -1348,18 +1552,30 @@ export async function deployComposeServices(
             );
           }
           const hostPath = appConfigHostPath(project.id, svc.name, file.path);
-          await writer.writeFile(hostPath, resolved.value);
+          await writeAppConfigFile(writer, hostPath, resolved.value, svc.name, file.path);
           serviceRuntimeConfig.volumes = [
             ...serviceRuntimeConfig.volumes,
             `${hostPath}:${file.path}:ro`,
           ];
         }
-        logger.log(
-          `Service "${svc.name}": mounted ${advancedFiles.length} generated config file(s).\n`,
-          "info",
-          { serviceName: svc.name },
-        );
-      }
+      };
+
+      // Which executor may write them is the whole question — see `withAppConfigHost`.
+      const { ran } = await withAppConfigHost(
+        {
+          executor: opts?.executor,
+          localHost: opts?.localHost,
+          isCloud: runtime.name === "cloud",
+        },
+        writeConfigFiles,
+      );
+      logger.log(
+        ran
+          ? `Service "${svc.name}": mounted ${advancedFiles.length} generated config file(s).\n`
+          : `Service "${svc.name}": ${advancedFiles.length} config file(s) require a self-hosted host mount — skipping on the ${runtime.name} runtime.\n`,
+        ran ? "info" : "warn",
+        { serviceName: svc.name },
+      );
     }
 
     const serviceDeployConfig = createServiceDeployConfig({
@@ -1371,13 +1587,31 @@ export async function deployComposeServices(
       resources: resolveServiceResources(svc, opts?.resources),
       buildSessionId: opts?.buildSessionId,
     });
-    const { routes: preparedRoutes, warnings: routeClaimWarnings } = await prepareServiceRoutes({
-      project,
-      service: svc,
-      runtimeName: runtime.name,
-      routeContext,
-      logger,
-    });
+    // Route PREPARATION is skipped outright for a service with no address, not just
+    // route registration: prepareServiceRoutes creates and force-activates the
+    // domain rows, so filtering afterwards left an active domain in the Domains tab
+    // with no vhost behind it — exactly the dishonest state the suppression exists
+    // to avoid. The operator setting a domain here isn't a mistake to punish; it
+    // just belongs on the service that owns the interfaces, and the log says so.
+    if (hasNoRoutableAddress) {
+      const providers = composeNamespaceDependencies(svc.advanced as ComposeAdvanced | null);
+      const where = providers.length > 0 ? `shares ${providers.join(", ")}'s network namespace` : "has no network of its own";
+      logger.log(
+        `Service "${svc.name}" ${where}, so it has no address to route to — skipping its ` +
+          `domains and its published ports. Move them to the service it shares.\n`,
+        "warn",
+        { serviceName: svc.name },
+      );
+    }
+    const { routes: preparedRoutes, warnings: routeClaimWarnings } = hasNoRoutableAddress
+      ? { routes: [] as Awaited<ReturnType<typeof prepareServiceRoutes>>["routes"], warnings: [] }
+      : await prepareServiceRoutes({
+          project,
+          service: svc,
+          runtimeName: runtime.name,
+          routeContext,
+          logger,
+        });
     composeRouteWarnings.push(...routeClaimWarnings);
     // Drop hostnames already claimed earlier in this deployment (two services
     // can't share a domain).
@@ -1421,11 +1655,29 @@ export async function deployComposeServices(
       composeRouteStrategy === "loopback-port" &&
       runtime.name !== "cloud" &&
       routedContainerPort !== undefined &&
+      // A container with no endpoint of its own publishes nothing — allocating a
+      // host port would burn it and pin a route to an upstream that never binds.
+      !hasNoRoutableAddress &&
       opts?.executor
     ) {
-      servicePinnedHostPort =
-        previousByServiceId.get(svc.id)?.hostPort ??
-        (await allocateHostPort(opts.executor, { avoid: usedHostPorts }));
+      const carried = previousByServiceId.get(svc.id)?.hostPort;
+      if (carried) {
+        servicePinnedHostPort = carried;
+      } else {
+        const allocation = await allocateHostPort(opts.executor, { avoid: usedHostPorts });
+        servicePinnedHostPort = allocation.port;
+        // "Couldn't read occupancy" is not "nothing is listening" — without this the
+        // bind failure that follows blames Docker for an unreachable host (#490).
+        if (!allocation.scanned) {
+          logger.log(
+            `Couldn't read live port occupancy on the target, so ${allocation.port} for ` +
+              `${svc.name} avoids only ports this deploy already took. If publishing it fails ` +
+              `as "already allocated", check that Openship can reach this host ` +
+              `(Servers → this box).\n`,
+            "warn",
+          );
+        }
+      }
       usedHostPorts.add(servicePinnedHostPort);
       serviceRuntimeConfig.ports = withLoopbackPublish(
         serviceRuntimeConfig.ports,
@@ -1567,6 +1819,9 @@ export async function deployComposeServices(
         ip: result.ip,
         hostPort: persistedHostPort ?? undefined,
       });
+      // Now resolvable as a namespace provider for the services after it. Set only
+      // on success: a dependent must never be pointed at a container that failed.
+      if (result.containerId) containerIdByServiceName.set(svc.name, result.containerId);
       successful += 1;
       if (result.containerId) {
         stabilityTargets.push({
@@ -2096,24 +2351,45 @@ export async function deployComposeServices(
             r.hostname,
             routeContext.domainByHostname.get(r.hostname.toLowerCase()),
           ),
-          targetUrl: r.targetUrl!,
+          // staticRoot wins when present — the same rule route-apply.service applies.
+          // `buildCompositeRegistration` returns one OR the other, and hardcoding
+          // targetUrl threw `Invalid proxy target: undefined` for every static-frontend
+          // composite (which is all of them self-hosted, since build.service sets
+          // staticExtractOnly whenever the runtime isn't cloud) — so the flagship
+          // monorepo shape never got a composite vhost at all.
+          ...(r.staticRoot ? { staticRoot: r.staticRoot } : { targetUrl: r.targetUrl! }),
           ...(r.proxyLocations?.length ? { proxyLocations: r.proxyLocations } : {}),
           ...(r.redirects?.length ? { redirects: r.redirects } : {}),
           ...(r.headerRules?.length ? { headerRules: r.headerRules } : {}),
+          ...(r.cleanUrls ? { cleanUrls: true } : {}),
+          ...(r.trailingSlash === undefined ? {} : { trailingSlash: r.trailingSlash }),
           ...(routeContext.proxy ? { proxy: routeContext.proxy } : {}),
         });
         logger.log(
           `Composed single domain ${r.hostname}: frontend at "/", backend proxied per vercel.json.\n`,
         );
+        // A rule we could not translate is NOT live. Say so here rather than letting it
+        // disappear — the deploy log is where someone looks after changing vercel.json.
+        for (const note of composite.skipped) {
+          logger.log(`vercel.json rule not applied — ${note}\n`, "warn");
+        }
       }
 
       // Re-emit any migration path-fan-out domains (a domain whose paths route to
       // DIFFERENT services) from this deploy's live upstreams — persisted on the
       // project so a redeploy reproduces `/v3 → api` instead of dropping it.
+      // These hostnames ARE project domains, so the live path (project-route.service) puts
+      // the project's vercel.json rules on them. Spread them here too or the deploy would
+      // strip what a live re-apply installed.
       for (const reg of buildDomainFanoutRegistrations({
         routes: project.compositeRoutes,
         resolveTargetUrl,
       })) {
+        // CONCATENATED, not overwritten: spreading the fan-out's locations after the
+        // compiled ones would ASSIGN over them, silently dropping a vercel.json external
+        // rewrite on a path-routed domain. Fan-out first, so its explicit per-path
+        // upstreams are matched ahead of a broader compiled rule.
+        const proxyLocations = [...(reg.proxyLocations ?? []), ...(routingFields.proxyLocations ?? [])];
         await routeContext.routing.registerRoute({
           domain: reg.hostname,
           tls: true,
@@ -2122,7 +2398,8 @@ export async function deployComposeServices(
             routeContext.domainByHostname.get(reg.hostname.toLowerCase()),
           ),
           targetUrl: reg.targetUrl!,
-          ...(reg.proxyLocations?.length ? { proxyLocations: reg.proxyLocations } : {}),
+          ...routingFields,
+          ...(proxyLocations.length ? { proxyLocations } : {}),
           ...(routeContext.proxy ? { proxy: routeContext.proxy } : {}),
         });
         logger.log(

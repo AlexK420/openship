@@ -3,7 +3,7 @@
  */
 
 import { Type, type Static } from "@sinclair/typebox";
-import { CloudResourceTierEnum } from "../projects/project.schema";
+import { CloudResourceTierEnum, NO_TRAVERSAL_PATTERN } from "../projects/project.schema";
 
 // ─── Route params ────────────────────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ const BuildServiceInput = Type.Object({
   // Source-built (monorepo) sub-app fields — optional, mirror MonorepoSubAppFields.
   kind: Type.Optional(Type.Union([Type.Literal("compose"), Type.Literal("monorepo")])),
   enabled: Type.Optional(Type.Boolean()),
-  rootDirectory: Type.Optional(Type.String()),
+  rootDirectory: Type.Optional(Type.String({ pattern: NO_TRAVERSAL_PATTERN })),
   installCommand: Type.Optional(Type.String()),
   buildCommand: Type.Optional(Type.String()),
   startCommand: Type.Optional(Type.String()),

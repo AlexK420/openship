@@ -12,7 +12,7 @@
 
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { internalAuth, localOnly, requireRole } from "../../middleware";
+import { internalAuth, localOnly, requireInstanceAdmin } from "../../middleware";
 import { rateLimiterFor } from "../../middleware/rate-limiter";
 import { secureRouter } from "../../lib/secure-router";
 import * as fs from "./filesystem.controller";
@@ -67,36 +67,57 @@ r.public("post", "/edge/import-sites", { reason: "CLI `openship up` (compose) �
  * and announces itself; a leftover STATIC one keeps serving the removed project's
  * files with a 200. This finds them, and removes them one named hostname at a
  * time — never as a sweep, which would break record-only's guarantee. */
-r.get("/edge/untracked", { tag: "settings:read" }, edgeOrphans.listUntrackedEdgeSites);
-// Stops serving a hostname → owner-only, like the other destructive system routes.
+// The scan diffs the host's live vhosts against EVERY org's domains
+// (repos.domain.listAllHostnames + every mail server + OPENSHIP_PUBLIC_URL), so
+// the READ is instance-wide too. `settings:read` alone admits a plain member
+// (lib/permission.ts discards the action half of the tag), which made this a
+// cross-tenant enumeration of every hostname the box serves. Gating the write
+// half while leaving the read open is not a boundary.
+r.get("/edge/untracked", { tag: "settings:read" }, requireInstanceAdmin(), edgeOrphans.listUntrackedEdgeSites);
+// Stops serving a hostname → instance-admin only, same reason as the read
+// (requireRole("owner") does not gate this; see middleware/instance-admin.ts).
 r.post(
   "/edge/untracked/remove",
   { tag: "settings:admin" },
-  requireRole("owner"),
+  requireInstanceAdmin(),
   edgeOrphans.removeUntrackedEdgeSite,
 );
 
 /* ── Authenticated routes (dashboard settings page) ─────────────── */
 r.get("/settings", { tag: "settings:read" }, setup.getSetup);
-r.patch("/settings", { tag: "settings:write" }, setup.updateSettings);
-// Destructive reset — owner-only (like the other destructive settings routes),
-// and the handler is org-scoped (it only clears the CALLER's-org servers, never
-// every org's — see deleteSettings).
-r.delete("/settings", { tag: "settings:admin" }, requireRole("owner"), setup.deleteSettings);
+// Instance-admin only (GHSA-43hf-p5j8-8vhx): this writes the single global
+// instance_settings row — authMode, tunnelProvider/tunnelToken,
+// defaultBuildMode, defaultRollbackWindow, invitationMailSource,
+// autoUpdate/autoScanInfra — none of which is org-scoped. `settings:write`
+// alone admits a plain member (lib/permission.ts allows every resource type
+// but billing/audit to `member`), so a member could repoint the tunnel, shrink
+// every org's rollback window, or flip auth mode on a zero-auth-enabled box.
+// An org-scoped role check does NOT gate this; see middleware/instance-admin.ts.
+r.patch("/settings", { tag: "settings:write" }, requireInstanceAdmin(), setup.updateSettings);
+// Destructive reset — instance-admin only. The server cleanup IS org-scoped
+// (see deleteSettings), but the handler also drops the global instance_settings
+// row, so this is a whole-instance operation and an org-scoped role check would
+// not gate it (see middleware/instance-admin.ts).
+r.delete("/settings", { tag: "settings:admin" }, requireInstanceAdmin(), setup.deleteSettings);
 
 // Instance SMTP (Settings → Email) — self-hosted operator transport for all
 // system mail (password reset, verification, invites, notifications).
 //
-// WRITE + TEST are owner-only via requireRole("owner"): the `settings:*` tag
-// alone also admits admins/members (see lib/permission.ts), and this row is
-// the transport for every password-reset/verification email — a member who
-// could repoint it to their own SMTP relay could harvest reset tokens and take
-// over the owner's account (same reasoning as the data-transfer routes below).
+// WRITE + TEST are instance-admin only: the `settings:*` tag alone also admits
+// plain members (lib/permission.ts discards the action half of the tag), and
+// this row is the transport for every password-reset/verification email — a
+// member who could repoint it to their own SMTP relay could harvest reset
+// tokens and take over the owner's account.
+//
+// This is the threat the previous requireRole("owner") was meant to stop and
+// did not: that check resolves a caller-selected org and every user owns their
+// personal org (GHSA-rwq6-r63g-3c8h). Instance SMTP is instance-wide state, so
+// it needs an instance-level gate.
 // GET returns only a MASKED config (no password) so it stays settings:read —
 // that keeps the "no email transport → set up SMTP" hint readable everywhere.
 r.get("/settings/email", { tag: "settings:read" }, setup.getEmailSettings);
-r.put("/settings/email", { tag: "settings:write" }, requireRole("owner"), setup.updateEmailSettings);
-r.post("/settings/email/test", { tag: "settings:write" }, requireRole("owner"), setup.sendTestEmail);
+r.put("/settings/email", { tag: "settings:write" }, requireInstanceAdmin(), setup.updateEmailSettings);
+r.post("/settings/email/test", { tag: "settings:write" }, requireInstanceAdmin(), setup.sendTestEmail);
 
 /* ── Zero-auth → local-auth upgrade (no session yet) ────────────── */
 r.public(
@@ -207,18 +228,27 @@ r.get("/browse", { tag: "settings:read" }, fs.browse);
  * Path B (single_user → cloud_hosted):       start-cloud
  * Path C (single_user → tunneled):           start-tunnel
  */
-r.post("/migration/preflight", { tag: "settings:admin" }, migration.preflight);
-r.post("/migration/start", { tag: "settings:admin" }, migration.start);
-r.post("/migration/start-cloud", { tag: "settings:admin" }, migration.startCloud);
-r.post("/migration/start-tunnel", { tag: "settings:admin" }, migration.startTunnel);
-r.post("/migration/switch-back", { tag: "settings:admin" }, migration.switchBack);
+// requireInstanceAdmin() is mandatory: migrating the instance exports every
+// org's data with all secrets DECRYPTED and ships it to a caller-named server.
+// The `settings:*` tag admits plain members (lib/permission.ts discards the
+// action half), and requireRole("owner") would NOT help — see the middleware's
+// header for why an org-scoped role can't gate a whole-instance operation.
+r.post("/migration/preflight", { tag: "settings:admin" }, requireInstanceAdmin(), migration.preflight);
+r.post("/migration/start", { tag: "settings:admin" }, requireInstanceAdmin(), migration.start);
+r.post("/migration/start-cloud", { tag: "settings:admin" }, requireInstanceAdmin(), migration.startCloud);
+r.post("/migration/start-tunnel", { tag: "settings:admin" }, requireInstanceAdmin(), migration.startTunnel);
+r.post("/migration/switch-back", { tag: "settings:admin" }, requireInstanceAdmin(), migration.switchBack);
 
-/* ── Whole-instance data export / import (owner-only) ─────────────
- * requireRole("owner") is mandatory — the `settings:*` tag alone also
- * admits admins/members (see lib/permission.ts), and this moves the
- * entire database including every org's data.
+/* ── Whole-instance data export / import (instance-admin only) ─────
+ * This moves the entire database including every org's data, and export
+ * returns every secret DECRYPTED in the response body under a passphrase the
+ * CALLER chooses. requireInstanceAdmin() is mandatory.
+ *
+ * This previously used requireRole("owner"), which did not gate it at all:
+ * that check resolves a caller-selected org and every user is owner of their
+ * own personal org (GHSA-rwq6-r63g-3c8h). Do not "restore" it here.
  */
-r.post("/data-transfer/export", { tag: "settings:admin" }, requireRole("owner"), dataTransfer.exportInstanceHandler);
+r.post("/data-transfer/export", { tag: "settings:admin" }, requireInstanceAdmin(), dataTransfer.exportInstanceHandler);
 r.use(
   "/data-transfer/import",
   bodyLimit({
@@ -226,7 +256,7 @@ r.use(
     onError: (c) => c.json({ error: "Import file exceeds the 500MB limit.", code: "PAYLOAD_TOO_LARGE" }, 413),
   }),
 );
-r.post("/data-transfer/import", { tag: "settings:admin" }, requireRole("owner"), dataTransfer.importInstanceHandler);
+r.post("/data-transfer/import", { tag: "settings:admin" }, requireInstanceAdmin(), dataTransfer.importInstanceHandler);
 
 export const systemRoutes = r.hono;
 

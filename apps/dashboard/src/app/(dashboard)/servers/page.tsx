@@ -86,6 +86,12 @@ export default function ServersPage() {
   const [loading, setLoading] = useState(true);
   /** Live reachability per server (see probeReachability). */
   const [reach, setReach] = useState<Record<string, Reachability>>({});
+  /**
+   * Why a row is offline, when the API knows. "Offline" on THIS box usually means
+   * the container→host SSH channel is firewalled, not that the machine is down
+   * (#490) — so the word alone sends people looking in the wrong place.
+   */
+  const [reachHint, setReachHint] = useState<Record<string, string>>({});
   /** Active (running) port-forward count per server — desktop-only. */
   const [forwardCounts, setForwardCounts] = useState<Record<string, number>>({});
 
@@ -127,7 +133,9 @@ export default function ServersPage() {
       void systemApi
         .probeReachability(s.id)
         .then((r) => {
-          if (!cancelled) setReach((prev) => ({ ...prev, [s.id]: r.reachable ? "online" : "offline" }));
+          if (cancelled) return;
+          setReach((prev) => ({ ...prev, [s.id]: r.reachable ? "online" : "offline" }));
+          if (!r.reachable && r.hint) setReachHint((prev) => ({ ...prev, [s.id]: r.hint! }));
         })
         .catch(() => {
           if (!cancelled) setReach((prev) => ({ ...prev, [s.id]: "offline" }));
@@ -411,7 +419,7 @@ export default function ServersPage() {
                       {/* Status state + arrow */}
                       <div className="flex shrink-0 items-center gap-4">
                         <span
-                          title={t.servers.list[state]}
+                          title={reachHint[server.id] ?? t.servers.list[state]}
                           className={`inline-flex items-center gap-1.5 text-xs font-medium ${sm.text}`}
                         >
                           <span className={`size-2.5 rounded-full border-2 ${sm.dot}`} />
@@ -555,7 +563,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
           {t.servers.list.addFirstServer}
         </button>
         <a
-          href="https://openship.io/docs/self-hosting"
+          href="https://openship.io/docs/guides/custom-servers"
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 rounded-xl bg-muted/50 px-6 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted"

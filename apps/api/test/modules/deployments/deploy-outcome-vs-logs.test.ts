@@ -95,9 +95,8 @@ vi.mock("../../../src/lib/notification-dispatcher", () => ({
 }));
 vi.mock("../../../src/lib/audit", () => ({ audit: { recordAsync: () => {} } }));
 vi.mock("../../../src/lib/favicon-detector", () => ({ detectAndStoreFavicon: async () => {} }));
-vi.mock("../../../src/modules/mail/webmail/webmail-project.service", () => ({
-  markWebmailInstalled: async () => {},
-  mailServerIdFromWebmailSlug: () => null,
+vi.mock("../../../src/modules/mail/webmail/webmail-install.service", () => ({
+  onWebmailDeployed: async () => {},
 }));
 
 const { onSuccess, onFailure, reportPipelineError } = await import(

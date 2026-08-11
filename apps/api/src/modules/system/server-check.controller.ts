@@ -22,6 +22,7 @@ import {
   COMPONENT_UNINSTALLERS,
   ensureEdge,
   getRemovalSupport,
+  isHostChannelUnavailableError,
   isSshAuthError,
   recoverInterruptedTakeover,
   scanPorts,
@@ -32,7 +33,8 @@ import {
   getSystemComponentDefinition,
 } from "@repo/adapters";
 import { formatDuration, systemDebug } from "@/lib/system-debug";
-import { sshManager, buildSshConfig } from "../../lib/ssh-manager";
+import { sshManager, buildSshConfig, isTransportFailure } from "../../lib/ssh-manager";
+import { sshKeyPathProblem } from "../../lib/ssh-key-path";
 import { pinnedEdgeImage, withPinnedEdgeImage } from "../../lib/edge-image";
 import { deliverManagedImage } from "../../lib/deliver-managed-image";
 import { resolveAcmeProviderOptions } from "../../lib/acme-config";
@@ -123,8 +125,13 @@ function resolveInfraComponents(): string[] {
  * **without** persisting them to the database. Used by the server
  * form to validate before saving.
  *
- * Body: { sshHost, sshPort?, sshUser?, sshAuthMethod, sshPassword?, sshKeyPath?, sshKeyPassphrase? }
- * Returns: { ok: boolean, message: string }
+ * Body: { sshHost, sshPort?, sshUser?, sshAuthMethod, sshPassword?, sshKeyPath?,
+ *         sshPrivateKey?, sshKeyPassphrase?, sshJumpHost?, sshArgs? }
+ * Returns: { ok: boolean, message: string, code?: ConnectivityCode }
+ *
+ * `sshJumpHost`/`sshArgs` are not optional decoration: a host only reachable
+ * through a bastion must be PROBED through it, or the test contradicts the save.
+ * The dashboard's `SshProbeInput` is this list.
  */
 /**
  * Run an ephemeral SSH echo test from request-body credentials (no DB row).
@@ -231,6 +238,29 @@ async function buildEphemeralSshConfig(c: Context) {
     return c.json({ ok: false, message: "SSH host is required" }, 400);
   }
 
+  // Diagnose the key path BEFORE buildSshConfig, which folds every key failure
+  // into a null return that reads as "Invalid auth configuration". This route
+  // exists to tell the operator what's wrong, and "wrong" here is usually
+  // concrete: a relative path, a key that was never copied to THIS host, or one
+  // outside the allowlisted roots (the desktop file picker can reach those).
+  const rawKeyPath = typeof body.sshKeyPath === "string" ? body.sshKeyPath.trim() : "";
+  const rawKeyMaterial = typeof body.sshPrivateKey === "string" ? body.sshPrivateKey.trim() : "";
+  if (body.sshAuthMethod === "key") {
+    // Pasted/uploaded material lives in the request, not on this host — no path
+    // to diagnose. Only fall back to the path diagnostic when no key was pasted.
+    if (!rawKeyMaterial && rawKeyPath) {
+      const problem = sshKeyPathProblem(rawKeyPath);
+      if (problem) {
+        return c.json({ ok: false, message: problem, code: "key_path_invalid" }, 400);
+      }
+    } else if (!rawKeyMaterial && !rawKeyPath) {
+      return c.json(
+        { ok: false, message: "Paste a private key or provide a key path", code: "key_missing" },
+        400,
+      );
+    }
+  }
+
   // buildSshConfig also handles "agent" auth (uses the host's SSH_AUTH_SOCK,
   // like VSCode) and THROWS a clear message when agent is selected but no
   // agent is available — surface that as a clean 400 instead of a 500.
@@ -243,6 +273,7 @@ async function buildEphemeralSshConfig(c: Context) {
       sshAuthMethod: body.sshAuthMethod as string,
       sshPassword: body.sshPassword as string ?? null,
       sshKeyPath: body.sshKeyPath as string ?? null,
+      sshPrivateKey: body.sshPrivateKey as string ?? null,
       sshKeyPassphrase: body.sshKeyPassphrase as string ?? null,
       sshJumpHost: body.sshJumpHost as string ?? null,
       sshArgs: body.sshArgs as string ?? null,
@@ -271,26 +302,43 @@ export async function checkServer(c: Context) {
 
   const startedAt = Date.now();
 
+  const body = await c.req.json().catch(() => ({}));
+  const serverId = body.serverId as string | undefined;
+  if (!serverId) return c.json({ error: "serverId is required" }, 400);
+
+  // OUTSIDE the try, and that is the point: `permission.assert` throws NotFoundError
+  // for a row the caller may not see, which the error handler turns into a 404. Caught
+  // here it fell through to the connection diagnosis below and answered 502 with the
+  // host channel's real address and remedy — an unauthorized caller learning the
+  // endpoint from a permission failure.
+  await permission.assert(getRequestContext(c), {
+    resourceType: "server",
+    resourceId: serverId,
+    action: "admin",
+  });
+
+  // Same reasoning, smaller stakes: a rejected component list is a 400 about the
+  // request, not a connection failure, so it must not reach the catch either. Which
+  // also means it can no longer be a non-array that throws on `.filter` and lands as
+  // a 502 about a healthy server.
+  const requestedComponents = body.components;
+  if (requestedComponents !== undefined && !Array.isArray(requestedComponents)) {
+    return c.json({ error: "components must be an array" }, 400);
+  }
+  const valid: string[] | null = requestedComponents?.length
+    ? (requestedComponents as string[]).filter((n) => ALLOWED_COMPONENTS.has(n))
+    : null;
+  if (valid && valid.length === 0) {
+    return c.json({ error: "Invalid component names" }, 400);
+  }
+
   try {
-    const body = await c.req.json().catch(() => ({}));
-    const serverId = body.serverId as string | undefined;
-    if (!serverId) return c.json({ error: "serverId is required" }, 400);
-
-    getRequestContext(c);
-    await permission.assert(getRequestContext(c), { resourceType: "server", resourceId: serverId, action: "admin" });
-
-    const requestedComponents = body.components as string[] | undefined;
-    systemDebug("system-check", 
-      `check:start server=${serverId} ${requestedComponents?.length ? requestedComponents.join(",") : "all"}`,
+    systemDebug("system-check",
+      `check:start server=${serverId} ${valid?.length ? valid.join(",") : "all"}`,
     );
 
     let components;
-    if (requestedComponents?.length) {
-      // Validate against allowlist
-      const valid = requestedComponents.filter((n) => ALLOWED_COMPONENTS.has(n));
-      if (valid.length === 0) {
-        return c.json({ error: "Invalid component names" }, 400);
-      }
+    if (valid) {
       components = await sshManager.withExecutor(serverId, async (executor) =>
         withCapabilities(executor, await checkComponents(executor, valid)),
       );
@@ -339,6 +387,35 @@ export async function checkServer(c: Context) {
     }
     if (isSshAuthError(err)) {
       return c.json({ error: "auth_failed", message }, 400);
+    }
+
+    // A connect failure on THIS box is almost never "the server is down" — it's the
+    // container→host SSH channel, and the row's display sshHost (127.0.0.1) names
+    // neither the right machine nor the right port (#490). Hand the UI the address
+    // we actually dial plus the remedy, so the banner stops pointing at loopback.
+    //
+    // Only for failures that came from the transport: a component check that threw for
+    // its own reasons is not evidence about the channel, and diagnosing it anyway costs
+    // a TCP probe to tell the operator about a firewall that was never involved.
+    if (isHostChannelUnavailableError(err) || isTransportFailure(err)) {
+      const d = await sshManager.diagnoseReachability(serverId).catch(() => null);
+      if (d?.code === "host_channel_blocked") {
+        return c.json(
+          {
+            error: "host_channel_blocked",
+            code: "host_channel_blocked",
+            message,
+            target: d.target ?? null,
+            hint: d.hint ?? null,
+            rule: d.rule ?? null,
+            // Which state this is. `host_channel_blocked` is one verdict over several
+            // states whose remedies differ, and the banner has to pick copy per state
+            // rather than infer it from which fields happen to be null (#509).
+            channel: d.channel ?? null,
+          },
+          502,
+        );
+      }
     }
     return c.json({ error: "connection_failed", message }, 502);
   }

@@ -130,9 +130,21 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:z
       - /var/lib/openship/edge/acme:/var/www/acme:z
       - /opt/openship/static:/opt/openship/static:z
+      # Host-op SSH key (createHostExecutor → host.docker.internal), at the path
+      # OPENSHIP_HOST_SSH_KEY names. /dev/null when the host channel isn't
+      # provisioned, which is what lets this stack come up on a box with no key:
+      # OPENSHIP_HOST_SSH_HOST stays unset, host operations REFUSE (they'd
+      # otherwise run against this container's filesystem, #509) and ordinary
+      # deploys keep working over the socket above. Set OPENSHIP_HOST_KEY_PATH to
+      # an ABSOLUTE host path to activate it — a relative one resolves against
+      # docker/, not the directory you run compose from. See .env.example → "Host
+      # operations from the container".
+      - ${OPENSHIP_HOST_KEY_PATH:-/dev/null}:/run/secrets/openship_host_key:ro
     # Reach the HOST over the internal docker bridge (host.docker.internal →
     # host-gateway) for host-OS ops when configured (OPENSHIP_HOST_SSH_*, set up
-    # by `openship up`). Harmless when unset. Linux needs the explicit mapping.
+    # by `openship up`; by hand on this file — see .env.example). Harmless when
+    # unset: host ops refuse rather than target the container. Linux needs the
+    # explicit mapping.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Mode + secrets (CLOUD_MODE, DEPLOY_MODE, OPENSHIP_TARGET, Oblien, GitHub

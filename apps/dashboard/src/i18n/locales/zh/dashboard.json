@@ -67,10 +67,17 @@
     "emails": "邮件",
     "settings": "设置",
     "billing": "账单与用量",
+    "mailSetup": "设置邮件",
+    "mailSetupProgress": "设置进度",
+    "addMailbox": "添加邮箱",
+    "webmail": "网页邮箱",
     "sections": {
       "main": "主要",
       "settings": "设置",
       "infrastructure": "基础设施",
+      "mail": "邮件",
+      "delivery": "投递",
+      "system": "系统",
       "account": "账户"
     },
     "apps": "应用",

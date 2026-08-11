@@ -10,6 +10,7 @@ import { app } from "./app";
 import { cloudRuntimeTarget, cloudRuntimeTargetId, env, runtimeTargetId } from "./config/env";
 import { getAuthMode } from "./lib/auth-mode";
 import { edgeBuildSpec, pinnedEdgeImage } from "./lib/edge-image";
+import { reportHostChannelAtBoot } from "./lib/host-channel-banner";
 import { mailBuildSpec, pinnedMailImage } from "./lib/mail-image";
 import { getJobRunner } from "./lib/job-runner";
 import { enforceRouteScanAtBoot } from "./lib/route-scanner";
@@ -81,6 +82,12 @@ void (async () => {
   console.error("!!! Loopback-only guard is in authMiddleware.");
   console.error("");
 })();
+
+// Same shape, for the container→host SSH channel (#490) — silent unless the channel
+// is actually broken. At boot and not only at install: `openship up` probes it now,
+// but a box provisioned before that existed never saw the check, and a firewall can
+// change under a running install.
+void reportHostChannelAtBoot().catch(() => {});
 
 // Attach the tunnel agent lifecycle if this instance has been migrated
 // via Path C (teamMode === "tunneled"). Local-API-only by design —

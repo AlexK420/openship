@@ -1,7 +1,11 @@
 import type { Context } from "hono";
 import { repos, type Permission, type PublicPersonalAccessToken } from "@repo/db";
 import { param } from "../../lib/controller-helpers";
-import { getRequestContext, type RequestContext } from "../../lib/request-context";
+import {
+  getRequestContext,
+  type RequestContext,
+  type RequestContextRole,
+} from "../../lib/request-context";
 import { checkPermissionOnResource } from "../../lib/permission";
 import { canUseGitHubRepo, resolveSourceAccess } from "../github/github-access";
 import { scopeIsSubset, type SourceAccessScope } from "@repo/core";
@@ -59,6 +63,12 @@ function splitRepoGrant(g: { resourceType: string; resourceId: string }): {
  * A token can only grant access the MINTER already has — reuses the live
  * permission path (owner ⇒ everything; others ⇒ their own grants). GitHub goes
  * through its dedicated gate.
+ *
+ * `ctx` MUST already be scoped to the org the token will be bound to — see
+ * `mintContextFor`. Every arm below takes its authority from `ctx.organizationId`
+ * (the GitHub gate directly, `checkPermissionOnResource` as its scope org), so
+ * handing this the caller's active org while binding the token elsewhere is exactly
+ * the escalation GHSA-qv27-39pc-qw9f finding 1 describes.
  */
 async function minterHasAccess(
   ctx: RequestContext,
@@ -68,18 +78,66 @@ async function minterHasAccess(
   if (g.resourceType === "github_installation" || g.resourceType === "github_repository") {
     const op = action === "read" ? "read" : "write";
     const { owner, repo } = splitRepoGrant(g);
-    return canUseGitHubRepo(ctx, { owner: owner ?? "", repo: repo ?? null }, op);
+    // "authority", not "reach": the grant written here IS the downstream
+    // authority, so there is nothing left to narrow an owner-level pass. Without
+    // this, one `github_repository` grant under `acme` mints an owner-wide
+    // `github_installation` grant over every repo under `acme`
+    // (GHSA-qv27-39pc-qw9f finding 2). Repo-level grants are unaffected — they
+    // carry a concrete repo and match exactly.
+    return canUseGitHubRepo(ctx, { owner: owner ?? "", repo: repo ?? null }, op, {
+      ownerLevel: "authority",
+    });
   }
   // Resolve the grant's resource to its OWN org and check access there — NOT
   // the minter's active org. Otherwise a non-restricted role passes for the
   // resource TYPE without verifying the specific id belongs to their org, so a
   // grant naming another org's resource id would mint a usable token (SaaS
   // audit: cross-tenant privilege escalation). Mirrors permission.assert.
+  //
+  // Org-singletons (billing, audit, …) have no resource row to resolve, so their
+  // authority is the caller's ROLE in an org — and `checkPermissionOnResource`
+  // takes that org from `ctx.organizationId`, which is why this function's
+  // precondition is a ctx already scoped to the binding's org.
   return checkPermissionOnResource(ctx, {
     resourceType: g.resourceType as never,
     resourceId: g.resourceId,
     action,
   });
+}
+
+/**
+ * The ctx grant validation runs against: ALWAYS scoped to the org the token will
+ * be BOUND to, never the caller's active org.
+ *
+ * `validateGrants` takes every authority from `ctx.organizationId` — the GitHub
+ * gate keys its membership + grant lookup on it, and `checkPermissionOnResource`
+ * resolves the org-singleton arms from it. Validating against the active org while writing
+ * the binding somewhere else is GHSA-qv27-39pc-qw9f finding 1: a plain member of
+ * org B mints a token bound to org B carrying permissions they hold only in org A.
+ * That precondition is free — every provisioned user gets an owner-role personal
+ * workspace, and the active org is caller-chosen via `X-Organization-Id` — so
+ * membership in the victim org was the only real barrier.
+ *
+ * Returns null when the caller is not a member of the target org. `role` and
+ * `membershipId` come from the TARGET org's membership row, so no field on the
+ * returned ctx still describes the caller's standing anywhere else. (Nothing on
+ * this path reads `ctx.role` today — every arm re-reads the membership for the org
+ * it is checking — but leaving a ctx whose org and role disagree is the shape this
+ * bug had in the first place.)
+ */
+async function mintContextFor(
+  ctx: RequestContext,
+  organizationId: string,
+): Promise<RequestContext | null> {
+  if (organizationId === ctx.organizationId) return ctx;
+  const membership = await repos.member.find(organizationId, ctx.userId);
+  if (!membership) return null;
+  return {
+    ...ctx,
+    organizationId,
+    role: (membership.role ?? "member") as RequestContextRole,
+    membershipId: membership.id,
+  };
 }
 
 type GrantError = { status: 400 | 403; body: { error: string; code: string } };
@@ -141,6 +199,10 @@ export function resolveScopeIntent(opts: {
  * create route and the MCP OAuth authorize path so both enforce identical rules
  * with no duplicated loop (and no drift). Returns the response to send on the
  * first invalid grant, or null when every grant is allowed.
+ *
+ * INVARIANT: `ctx.organizationId` must be the org the token will be BOUND to. Both
+ * callers satisfy it — `create` binds to `ctx.organizationId`, and
+ * `authorizeMcpClient` passes a ctx from `mintContextFor`.
  */
 async function validateGrants(
   ctx: RequestContext,
@@ -313,16 +375,16 @@ export async function authorizeMcpClient(c: Context) {
   // active org to the picked one before calling, so ctx.organizationId is
   // normally already it; the explicit id is defense-in-depth. Any org other
   // than the active one must be re-verified as a real membership so a caller
-  // can't bind a token to an org they don't belong to.
+  // can't bind a token to an org they don't belong to — and, since the grants
+  // are validated against the org the binding is WRITTEN to, the same lookup
+  // supplies the ctx that validation runs against.
   const organizationId = body.organizationId?.trim() || ctx.organizationId;
-  if (organizationId !== ctx.organizationId) {
-    const membership = await repos.member.find(organizationId, ctx.userId);
-    if (!membership) {
-      return c.json(
-        { error: "You are not a member of that organization", code: "ORG_NOT_A_MEMBER" },
-        403,
-      );
-    }
+  const mintCtx = await mintContextFor(ctx, organizationId);
+  if (!mintCtx) {
+    return c.json(
+      { error: "You are not a member of that organization", code: "ORG_NOT_A_MEMBER" },
+      403,
+    );
   }
 
   const grants = (body.grants ?? []).filter((g) => g.permissions.length > 0);
@@ -333,7 +395,9 @@ export async function authorizeMcpClient(c: Context) {
   if ("error" in intent) return c.json(intent.error.body, intent.error.status);
   const scoped = intent.scoped;
 
-  const grantErr = await validateGrants(ctx, grants);
+  // mintCtx, NOT ctx — membership in the target org was already checked above,
+  // but grant WIDTH has to be checked there too or it comes from another org.
+  const grantErr = await validateGrants(mintCtx, grants);
   if (grantErr) return c.json(grantErr.body, grantErr.status);
 
   const binding = await repos.personalAccessToken.upsertOAuthBinding({

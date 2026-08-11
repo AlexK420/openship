@@ -5,7 +5,7 @@ import { repos } from "@repo/db";
 import { env } from "../config/env";
 import { platform } from "./controller-helpers";
 import { createProvisionLock } from "./provision-lock";
-import { resolveDeploymentPlatform, type DeploymentMeta } from "./deployment-runtime";
+import { disposePlatform, resolveDeploymentPlatform, type DeploymentMeta } from "./deployment-runtime";
 
 /**
  * The per-domain issuance lock key. EVERY path that can open an ACME order
@@ -342,6 +342,28 @@ async function recoverIssuedCert(
 }
 
 /**
+ * `resolveDeploymentPlatform` for a caller that wants ONLY `.ssl`.
+ *
+ * The transport goes back before we return. Resolving a platform for a remote server
+ * eagerly binds a Docker-over-SSH bridge — one loopback listener — and this function
+ * is reached per issuance AND per renewal, so holding it is a leak on a schedule.
+ * Releasing it is safe rather than lucky: `createInfraProvider` (platform.ts:293) is
+ * handed the executor and the edge container and is never given the runtime, so
+ * `.ssl` cannot hold anything `disposePlatform` closes, and the pooled executor it
+ * does drive certbot through is explicitly kept (see `PLATFORM_DISPOSAL`).
+ *
+ * One function because the resolve/dispose/take-`.ssl` triple was written out at all
+ * three branches below, and the failure mode of forgetting the middle step there is
+ * invisible: certs still issue, the box just accumulates listeners until it runs out
+ * of descriptors.
+ */
+async function resolveSslOnly(meta: DeploymentMeta, organizationId: string): Promise<SslProvider> {
+  const resolved = await resolveDeploymentPlatform(meta, { organizationId });
+  disposePlatform(resolved);
+  return resolved.platform.ssl;
+}
+
+/**
  * Resolve the SSL provider that runs on the SAME host that serves the domain.
  *
  * certbot must execute on the box whose OpenResty serves the vhost and whose
@@ -361,11 +383,8 @@ async function resolveSslProvider(owner: SslOwner): Promise<ResolvedSslProvider>
   // `lockScope` is the server id so mail issuance takes the same per-box ACME lock
   // as the apps sharing that edge (they contend for one standalone challenge port).
   if (owner.kind === "mail") {
-    const resolved = await resolveDeploymentPlatform(
-      { serverId: owner.serverId } as DeploymentMeta,
-      { organizationId: owner.organizationId },
-    );
-    return { ssl: resolved.platform.ssl, lockScope: owner.serverId };
+    const ssl = await resolveSslOnly({ serverId: owner.serverId } as DeploymentMeta, owner.organizationId);
+    return { ssl, lockScope: owner.serverId };
   }
 
   const project = owner.project;
@@ -375,8 +394,8 @@ async function resolveSslProvider(owner: SslOwner): Promise<ResolvedSslProvider>
     if (dep) {
       const meta = (dep.meta ?? {}) as DeploymentMeta;
       try {
-        const resolved = await resolveDeploymentPlatform(meta, { organizationId: dep.organizationId });
-        return { ssl: resolved.platform.ssl, lockScope: meta.serverId ?? LOCAL_ACME_SCOPE };
+        const ssl = await resolveSslOnly(meta, dep.organizationId);
+        return { ssl, lockScope: meta.serverId ?? LOCAL_ACME_SCOPE };
       } catch (err) {
         // Deploy target unresolvable — fall through to the host-anchored fallback.
         // But say so with the real cause: for a REMOTE-target project (meta.serverId
@@ -408,11 +427,11 @@ async function resolveSslProvider(owner: SslOwner): Promise<ResolvedSslProvider>
     const local = await repos.server.findLocal(project.organizationId).catch(() => null);
     if (local) {
       try {
-        const resolved = await resolveDeploymentPlatform(
+        const ssl = await resolveSslOnly(
           { serverId: local.id } as DeploymentMeta,
-          { organizationId: project.organizationId },
+          project.organizationId,
         );
-        return { ssl: resolved.platform.ssl, lockScope: local.id };
+        return { ssl, lockScope: local.id };
       } catch (err) {
         // Host-server unresolvable — last resort below.
         console.warn(

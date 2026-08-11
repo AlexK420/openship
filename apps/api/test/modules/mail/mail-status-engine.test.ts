@@ -16,6 +16,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@repo/adapters", () => ({
+  // Read at module scope by openship-server-store (imported transitively), so the
+  // mock has to carry it or nothing under test loads. Its value is irrelevant here.
+  HOST_STATE_DIR: "/root/.openship",
   detectMailEngine: vi.fn(),
   MAIL_CONTAINER: "openship-mail",
   MAIL_DB_CONTAINER: "openship-mail-db",

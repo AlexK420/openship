@@ -9,10 +9,13 @@ import * as githubService from "../github/github.service";
 import type { RequestContext } from "../../lib/request-context";
 import { MANIFEST_FILES, type RepoFile, type StackResult } from "../../lib/stack-detector";
 import {
+  blockingComposeFields,
+  describeBlockingComposeFields,
   parseComposeEnvFile,
   parseComposeFile,
   type ComposeMissingVariable,
   type ComposeService,
+  type ComposeUnsupportedField,
 } from "../../lib/compose-parser";
 import { maskEnv, maskScanService } from "../../lib/secret-env";
 import {
@@ -211,6 +214,10 @@ export interface ProjectInfo {
   /** Compose variables the file marks mandatory that no `.env`/caller value
    *  satisfied — the wizard's list to prompt for. Absent when there are none. */
   missingRequiredEnv?: ComposeMissingVariable[];
+  /** Compose keys the file declares that Openship doesn't model — shown so the
+   *  user knows what won't carry over. Blocking ones never reach here: they
+   *  refuse the scan instead. Absent when there are none. */
+  unsupportedCompose?: ComposeUnsupportedField[];
   monorepoApps?: MonorepoApp[];
   monorepoWorkspace?: MonorepoWorkspace;
   rootEnv?: Record<string, string>;
@@ -474,6 +481,7 @@ export function projectInfoToScanResponse(result: ProjectInfo) {
     // wizard reveals them on demand via the write-gated reveal endpoint.
     services: (result.services ?? []).map(maskScanService),
     ...(result.missingRequiredEnv && { missingRequiredEnv: result.missingRequiredEnv }),
+    ...(result.unsupportedCompose && { unsupportedCompose: result.unsupportedCompose }),
     // Declared-overlay fields (openship.json) — omitted from the response when
     // absent so a repo without the file yields the exact same payload as before.
     ...(result.productionMode && { productionMode: result.productionMode }),
@@ -804,6 +812,7 @@ function toProjectInfo(
 
   let services: ComposeService[] | undefined;
   let missingRequiredEnv: ComposeMissingVariable[] | undefined;
+  let unsupportedCompose: ComposeUnsupportedField[] | undefined;
   if (composeContent && (opts?.declaredCompose || stack.projectType === "services")) {
     try {
       const parsed = parseComposeFile(composeContent, {
@@ -815,6 +824,9 @@ function toProjectInfo(
       // error: the scan runs before the user has filled the wizard's env form, so
       // this is the list to prompt for, not a reason to refuse the repo (#472).
       if (parsed.missingRequired.length > 0) missingRequiredEnv = parsed.missingRequired;
+      // Keys we can't honor, so the wizard can show what won't carry over instead
+      // of the file quietly deploying as something else (#533).
+      if (parsed.unsupported.length > 0) unsupportedCompose = parsed.unsupported;
     } catch (err) {
       // Surface the broken file — an unusable file (invalid YAML), which is all
       // the parser throws for now. Swallowing it returns a services project with
@@ -824,6 +836,22 @@ function toProjectInfo(
       const detail = err instanceof Error && err.message ? err.message : "Unknown parser error";
       const where = opts?.declaredCompose ? ` at "${projectRoot.rootDirectory || "."}"` : "";
       throw new Error(`Could not parse the Docker Compose file${where}: ${detail}`, { cause: err });
+    }
+
+    // A BLOCKING key refuses the import, outside the parse try/catch so it never
+    // reads as "could not parse" — the file is valid, it just asks for something
+    // that cannot be deployed faithfully. Unlike a missing env value (#472) there
+    // is nothing the wizard could collect to resolve it: the file has to change.
+    // Proceeding is the #533 failure mode — a service the author pinned to a VPN
+    // sidecar's namespace comes up with its own interface, egressing in the clear
+    // and looking healthy throughout.
+    const blocking = blockingComposeFields(unsupportedCompose ?? []);
+    if (blocking.length > 0) {
+      const where = opts?.declaredCompose ? ` at "${projectRoot.rootDirectory || "."}"` : "";
+      throw new Error(
+        `The Docker Compose file${where} declares options Openship can't deploy faithfully:\n` +
+          describeBlockingComposeFields(blocking),
+      );
     }
   }
 
@@ -871,6 +899,7 @@ function toProjectInfo(
     port: stack.port,
     ...(services && { services }),
     ...(missingRequiredEnv && { missingRequiredEnv }),
+    ...(unsupportedCompose && { unsupportedCompose }),
     ...(isMonorepo && monorepo
       ? { monorepoApps: monorepo.apps, monorepoWorkspace: monorepo.workspace }
       : {}),

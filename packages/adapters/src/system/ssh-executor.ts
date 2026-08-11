@@ -15,8 +15,14 @@ import { logEntry, sq } from "./local-shell";
 import { canUseRemoteRsync, extractRemoteArchive, packLocalArchive, uploadFileWithRsync } from "./remote-transfer";
 import type { Client as SshClient, SFTPWrapper } from "ssh2";
 import type { Readable, Duplex } from "node:stream";
-import { connectSshClient, openSftp, openSshUnixSocket, type StreamLocalCapableClient } from "./ssh-client";
-import { SshDisconnectedError } from "./errors";
+import {
+  connectSshClient,
+  openSftp,
+  openSshUnixSocket,
+  openDockerDialStdioChannel,
+  type StreamLocalCapableClient,
+} from "./ssh-client";
+import { commandForError, SshDisconnectedError } from "./errors";
 import { TRANSFER_EXCLUDES, formatBytes } from "@repo/core";
 
 /**
@@ -68,7 +74,7 @@ export class SshExecutor implements CommandExecutor {
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
 
-    this.connecting = (async () => {
+    const attempt = (async () => {
       const client = await connectSshClient(this.config);
 
       const onTransportDown = (cause?: Error) => {
@@ -83,11 +89,22 @@ export class SshExecutor implements CommandExecutor {
       client.on("error", (err: Error) => onTransportDown(err));
 
       this.client = client;
-      this.connecting = null;
       return client;
     })();
 
-    return this.connecting;
+    this.connecting = attempt;
+
+    // Drop the memo however it settles, not just on success. A rejected promise
+    // left cached here is permanent: once one connect failed, every later host
+    // operation replayed that same rejection without redialing, so opening the
+    // firewall that caused it (#490) appeared to change nothing until the API
+    // process restarted.
+    const clearMemo = () => {
+      if (this.connecting === attempt) this.connecting = null;
+    };
+    attempt.then(clearMemo, clearMemo);
+
+    return attempt;
   }
 
   /**
@@ -237,7 +254,10 @@ export class SshExecutor implements CommandExecutor {
       this.inflight.add(abort);
 
       timer = setTimeout(
-        () => finish(() => reject(new Error(`Command timed out after ${timeout}ms: ${command}`))),
+        () =>
+          finish(() =>
+            reject(new Error(`Command timed out after ${timeout}ms: ${commandForError(command)}`)),
+          ),
         timeout,
       );
 
@@ -594,28 +614,23 @@ export class SshExecutor implements CommandExecutor {
    * Carry the Docker Engine API over a `docker system dial-stdio` exec channel
    * on the pooled connection — the streamlocal-free transport used when the
    * SSH server (or the Bun-compiled desktop runtime) can't do socket
-   * forwarding. Uses the SAME ENV_PREFIX as streamExec so `docker` resolves on
-   * PATH exactly as it does for the remote build (which is proven to work).
+   * forwarding.
+   *
+   * Deliberately WITHOUT `ENV_PREFIX`: that prefix only exports apt's
+   * non-interactive variables (it sets no PATH, despite what the comment here
+   * used to claim), and the bridge's own ephemeral dial-stdio client opens the
+   * bare command. Two dial-stdio channels that differ by a shell prefix are two
+   * transports, and the bridge picks one by probing the other.
+   *
+   * Failure diagnostics (daemon down, socket permission, `docker: command not
+   * found`, an sshd ForceCommand banner) ride ON the returned channel — see
+   * `attachDialStdioDiagnostics`. They used to go to `console.warn` while the
+   * caller got a bare socket reset, which is how a host with no running dockerd
+   * reported itself as `socket hang up`.
    */
   async openDockerDialStdio(): Promise<Duplex> {
     const client = await this.connect();
-    return new Promise<Duplex>((resolve, reject) => {
-      client.exec(SshExecutor.ENV_PREFIX + "docker system dial-stdio", (err, stream) => {
-        if (err) return reject(err);
-        // Diagnostics: `docker system dial-stdio` writes any failure (daemon
-        // down, permission, "unknown command" on ancient docker) to stderr and
-        // exits non-zero. Surface it — otherwise dockerode just sees the stream
-        // close and reports an opaque timeout.
-        stream.stderr?.on("data", (d: Buffer) => {
-          const text = d.toString().trim();
-          if (text) console.warn(`[docker-ssh] dial-stdio stderr: ${text}`);
-        });
-        stream.on("exit", (code: number | null) => {
-          if (code) console.warn(`[docker-ssh] dial-stdio exited early (code=${code})`);
-        });
-        resolve(stream as unknown as Duplex);
-      });
-    });
+    return openDockerDialStdioChannel(client);
   }
 
   async forwardPort(remoteHost: string, remotePort: number): Promise<Duplex> {

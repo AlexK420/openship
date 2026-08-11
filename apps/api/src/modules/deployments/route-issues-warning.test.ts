@@ -8,9 +8,8 @@ vi.mock("../../lib/notification-dispatcher", () => ({ notification: {} }));
 vi.mock("../../lib/audit", () => ({ audit: {} }));
 vi.mock("../../lib/favicon-detector", () => ({ detectAndStoreFavicon: vi.fn() }));
 vi.mock("./session-manager", () => ({}));
-vi.mock("../mail/webmail/webmail-project.service", () => ({
-  markWebmailInstalled: vi.fn(),
-  mailServerIdFromWebmailSlug: vi.fn(),
+vi.mock("../mail/webmail/webmail-install.service", () => ({
+  onWebmailDeployed: vi.fn(),
 }));
 
 import { routeIssuesWarning } from "./deployment-lifecycle";

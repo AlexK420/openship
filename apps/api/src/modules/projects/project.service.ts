@@ -28,6 +28,7 @@ export {
   getLatestDeploymentSession,
   enrichProject,
   enrichProjectsBatch,
+  resolveProjectDeployTarget,
   deploymentIsBlocked,
 } from "./project-crud.service";
 

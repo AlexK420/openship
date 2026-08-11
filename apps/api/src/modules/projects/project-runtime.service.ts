@@ -3,11 +3,17 @@
  */
 
 import { repos } from "@repo/db";
-import { NotFoundError, ValidationError } from "@repo/core";
+import { AppError, NotFoundError, ValidationError } from "@repo/core";
 import { checkEdge, edgeProxy } from "@repo/adapters";
-import type { LogEntry, ImportedSite } from "@repo/adapters";
-import { resolveDeploymentRuntime } from "../../lib/deployment-runtime";
-import { assertResourceInOrg } from "../../lib/controller-helpers";
+import type { LogEntry, ImportedSite, RuntimeAdapter } from "@repo/adapters";
+import {
+  deploymentContainerIds,
+  resolveDeploymentRuntimeForRead,
+  withDeploymentPlatform,
+  withDeploymentRuntime,
+} from "../../lib/deployment-runtime";
+import { isAbsent, isAlreadyInState } from "../../lib/remote-state";
+import { assertNotControlPlane, assertResourceInOrg } from "../../lib/controller-helpers";
 import { syncManagedEdgeRoutes, edgeUnsyncedWarning } from "../../lib/managed-edge-proxy";
 import { resolveManagedHostname } from "../../lib/routing-domains";
 import { sshManager } from "../../lib/ssh-manager";
@@ -33,8 +39,8 @@ export async function getRuntimeLogs(
     throw new NotFoundError("No running container for project", projectId);
   }
 
-  const { runtime } = await resolveDeploymentRuntime(dep);
-  return runtime.getRuntimeLogs(dep.containerId, tail);
+  const containerId = dep.containerId;
+  return withDeploymentRuntime(dep, (runtime) => runtime.getRuntimeLogs(containerId, tail));
 }
 
 export async function streamRuntimeLogs(
@@ -55,28 +61,119 @@ export async function streamRuntimeLogs(
     throw new NotFoundError("No running container for project", projectId);
   }
 
-  const { runtime, serverId } = await resolveDeploymentRuntime(dep);
-  const cleanup = await runtime.streamRuntimeLogs(dep.containerId, onLog, opts);
+  // NOT withDeploymentRuntime: the transport has to outlive this call, so the
+  // runtime is disposed in the stream's cleanup instead — same shape as
+  // streamServiceRuntimeLogs. Disposing here would kill the live stream.
+  const { runtime, serverId } = await resolveDeploymentRuntimeForRead(dep);
+  const stop = await runtime.streamRuntimeLogs(dep.containerId, onLog, opts);
+  const cleanup = () => {
+    try {
+      stop();
+    } finally {
+      void Promise.resolve(runtime.dispose?.()).catch(() => {});
+    }
+  };
   return { cleanup, serverId };
 }
 
 // ─── Enable / Disable ────────────────────────────────────────────────────────
 
+type ProjectRow = NonNullable<Awaited<ReturnType<typeof repos.project.findById>>>;
+type DeploymentRow = NonNullable<Awaited<ReturnType<typeof repos.deployment.findById>>>;
+
+/**
+ * A project the EDGE serves rather than a container runtime — a self-hosted
+ * static site.
+ *
+ * `!hasServer` + non-cloud is the signal the deploy pipeline itself branches on
+ * (`resolveDeployRouting` → deployMode "static-file-serve"), and it is why
+ * pause/resume could never work through the runtime here: such a deployment's
+ * `containerId` is a release DIRECTORY on the host (see
+ * `resolveDeploymentStaticRoot`), so `runtime.stop()` dials
+ * `/containers//opt/openship/static/releases/<id>/stop` and the daemon answers 301
+ * to the doubled slash — measured, not assumed, and it is neither `isAbsent` nor
+ * `isAlreadyInState`, so both actions died on "(HTTP code 301) unexpected".
+ *
+ * Cloud statics are excluded because they already pause correctly one level up:
+ * their containerId is a `page:` handle and CloudRuntime maps stop/start onto
+ * pages.disable/enable — the same edge-level pause the branches below perform
+ * against our own edge.
+ */
+function isEdgeServedStatic(project: Pick<ProjectRow, "hasServer" | "cloudWorkspaceId">): boolean {
+  return !project.hasServer && !project.cloudWorkspaceId;
+}
+
+/**
+ * Pause a static project: delete the vhosts that serve it.
+ *
+ * The edge IS the workload, so removing its routes is the only stop there is.
+ * The free *.opsh.io route is deliberately LEFT registered on Cloud's edge —
+ * deregistering releases the slug for anyone else to claim, which a reversible
+ * pause must not do; requests for it still reach this box and now get the edge's
+ * not-found page.
+ *
+ * Not best-effort, unlike routing on a deploy: nothing else takes this site down,
+ * so a removal that failed has to reach the caller (which rolls the `disabled_at`
+ * intent back) instead of reporting a pause that didn't happen. `removeRoute` is
+ * safe to call either way — it is idempotent (rm -rf semantics) and restores the
+ * vhost + rethrows if the reload fails.
+ */
+async function stopEdgeServing(project: Pick<ProjectRow, "id">, dep: DeploymentRow): Promise<void> {
+  const hostnames = (await repos.domain.listByProject(project.id))
+    .filter((d) => !d.serviceId)
+    .map((d) => d.hostname);
+  if (hostnames.length === 0) return;
+  await withDeploymentPlatform(dep, async ({ routing }) => {
+    for (const hostname of hostnames) {
+      await routing.removeRoute(hostname);
+    }
+  });
+}
+
 export async function enableProject(projectId: string, organizationId: string) {
   const p = await repos.project.findById(projectId);
   assertResourceInOrg(p, "Project", organizationId, projectId);
+  assertNotControlPlane(p);
 
   if (!p.activeDeploymentId) {
     throw new ValidationError("No deployment to enable - deploy first");
   }
 
   const dep = await repos.deployment.findById(p.activeDeploymentId);
-  if (!dep?.containerId) {
+  if (!dep) {
     throw new ValidationError("No container found for active deployment");
   }
 
-  const { runtime } = await resolveDeploymentRuntime(dep);
-  await runtime.start(dep.containerId);
+  if (isEdgeServedStatic(p)) {
+    // Deliberately `retryProjectRouting` rather than a second routing path: it is
+    // already the action that re-applies a project's LIVE routes (a static
+    // domain's doc root included), reconciles the managed *.opsh.io edge, and then
+    // VERIFIES the edge is serving what it wrote — the exact inverse of
+    // `stopEdgeServing`. It reports failures instead of throwing, so this is where
+    // the resume decides they are fatal: same contract as a container whose start
+    // failed, so the pause marker survives a resume that didn't take.
+    const { ok, warning } = await retryProjectRouting(projectId, organizationId);
+    if (!ok) {
+      throw new AppError(
+        warning ?? "Couldn't re-apply this project's routes — resume once the server is reachable.",
+        502,
+        "ROUTES_NOT_APPLIED",
+      );
+    }
+    await repos.project.update(projectId, { disabledAt: null });
+    return { success: true, message: "Project enabled" };
+  }
+
+  const containerIds = await deploymentContainerIds(dep);
+  if (containerIds.length === 0) {
+    throw new ValidationError("No container found for active deployment");
+  }
+
+  await withDeploymentRuntime(dep, async (runtime) => {
+    for (const containerId of containerIds) {
+      await startOne(runtime, containerId);
+    }
+  });
   // Cleared AFTER the start succeeded — the mirror of disableProject's ordering.
   // Clearing first would tell the health watch to expect a container that hasn't
   // come up yet.
@@ -85,7 +182,9 @@ export async function enableProject(projectId: string, organizationId: string) {
 }
 
 /**
- * Stop a project's container and RECORD that a human meant to.
+ * Stop whatever serves a project — its containers, or the edge routes when the
+ * edge is the workload (see `isEdgeServedStatic`) — and RECORD that a human meant
+ * to.
  *
  * The `disabled_at` write is not bookkeeping — it is the only place that
  * intent exists. Docker cannot tell "the operator turned this off" from "it
@@ -96,22 +195,73 @@ export async function enableProject(projectId: string, organizationId: string) {
 export async function disableProject(projectId: string, organizationId: string) {
   const p = await repos.project.findById(projectId);
   assertResourceInOrg(p, "Project", organizationId, projectId);
+  // Pausing the control plane means stopping the container that is handling this
+  // request — it would answer with a dropped connection, not a result.
+  assertNotControlPlane(p);
 
   if (!p.activeDeploymentId) {
     return { success: true, message: "No active deployment" };
   }
 
   const dep = await repos.deployment.findById(p.activeDeploymentId);
-  if (!dep?.containerId) {
+  if (!dep) {
+    return { success: true, message: "No container to stop" };
+  }
+  // EVERY container, not just `dep.containerId`: on a compose project that column
+  // names one service (or nothing), so pausing used to leave the rest running
+  // while the project reported itself disabled.
+  const edgeServed = isEdgeServedStatic(p);
+  const containerIds = edgeServed ? [] : await deploymentContainerIds(dep);
+  if (!edgeServed && containerIds.length === 0) {
     return { success: true, message: "No container to stop" };
   }
 
   // Marked BEFORE the stop, deliberately: a poll that lands between the two must
   // see the intent, not a container that just went down for no recorded reason.
+  const previous = p.disabledAt ?? null;
   await repos.project.update(projectId, { disabledAt: new Date() });
-  const { runtime } = await resolveDeploymentRuntime(dep);
-  await runtime.stop(dep.containerId);
+  try {
+    if (edgeServed) {
+      await stopEdgeServing(p, dep);
+    } else {
+      await withDeploymentRuntime(dep, async (runtime) => {
+        for (const containerId of containerIds) {
+          await stopOne(runtime, containerId);
+        }
+      });
+    }
+  } catch (err) {
+    // The intent write has to be undone when the workload did NOT stop.
+    // Leaving it set was the worst of both worlds: the project read "disabled"
+    // (and the health watch went quiet on it) while every container kept
+    // serving, and `enableProject` refuses to clear the flag until a start
+    // succeeds — so an unreachable box made the state permanent.
+    await repos.project.update(projectId, { disabledAt: previous }).catch(() => {});
+    throw err;
+  }
   return { success: true, message: "Project disabled" };
+}
+
+/** Stop one container, treating "already stopped" and "already gone" as done.
+ *  Everything else — above all an unreachable host — propagates. */
+async function stopOne(runtime: RuntimeAdapter, containerId: string): Promise<void> {
+  try {
+    await runtime.stop(containerId);
+  } catch (err) {
+    if (isAlreadyInState(err) || isAbsent(err)) return;
+    throw err;
+  }
+}
+
+/** Start one container, treating "already running" as done. An ABSENT container
+ *  is a real failure here — unlike a stop, there is nothing to converge on. */
+async function startOne(runtime: RuntimeAdapter, containerId: string): Promise<void> {
+  try {
+    await runtime.start(containerId);
+  } catch (err) {
+    if (isAlreadyInState(err)) return;
+    throw err;
+  }
 }
 
 /**

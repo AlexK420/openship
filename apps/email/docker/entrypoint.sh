@@ -5,12 +5,18 @@
 #   1. seed-if-absent: copy baked config into empty bind mounts, never overwrite
 #      operator edits (config dirs are host bind mounts; the queue/maildir/DKIM
 #      data dirs start empty and are left alone).
-#   2. wait for the postgres SIDECAR (127.0.0.1:5432).
-#   3. bootstrap the vmail DB (roles + schema) if it isn't there yet, using the
-#      per-install secrets delivered via --env-file; never re-init an existing DB.
-#   4. reuse-or-generate the DKIM key on its bind mount (never regenerate — a new
+#   2. reconcile: rewrite the baked placeholders in every daemon config to the
+#      real per-install values from the --env-file — the `build-placeholder` DB
+#      password (shared role) and the `build.invalid` domain (-> $FIRST_DOMAIN),
+#      the latter also writing /etc/mailname + an /etc/hosts FQDN entry.
+#   3. wait for the postgres SIDECAR (127.0.0.1:5432).
+#   4. bootstrap the mail databases (roles + schema + first domain) if the vmail
+#      schema isn't there yet — see db-bootstrap.sh; never re-init an existing DB.
+#   5. pre-create the log files fail2ban tails (rsyslog fills them once daemons
+#      log; a jail whose logpath is missing at start would crash-loop).
+#   6. reuse-or-generate the DKIM key on its bind mount (never regenerate — a new
 #      selector breaks DMARC until DNS repropagates).
-#   5. hand off to supervisord (the CMD).
+#   7. hand off to supervisord (the CMD).
 #
 # Env (from ensure-container-mail.ts --env-file): FIRST_DOMAIN,
 # OPENSHIP_MAIL_DB_{HOST,PORT,NAME,USER}, plus iRedMail secrets
@@ -22,7 +28,6 @@ log() { echo "[openship-mail] $*"; }
 
 DB_HOST="${OPENSHIP_MAIL_DB_HOST:-127.0.0.1}"
 DB_PORT="${OPENSHIP_MAIL_DB_PORT:-5432}"
-DB_NAME="${OPENSHIP_MAIL_DB_NAME:-vmail}"
 FIRST_DOMAIN="${FIRST_DOMAIN:-}"
 SEED_DIR="/opt/openship-mail/seed"
 
@@ -39,60 +44,118 @@ seed dovecot /etc/dovecot
 seed amavis-confd /etc/amavis/conf.d
 mkdir -p /var/vmail /var/spool/postfix /var/lib/dkim /var/lib/clamav
 
-# 2. wait for the sidecar DB.
+# 2. reconcile baked placeholder secrets -> the real shared role password.
+#    The image is built with `build-placeholder` in every daemon's DB config; all
+#    five mail roles share one password (loopback-only sidecar; privsep via
+#    GRANTs — see db-bootstrap.sh), so one global replace wires postfix/dovecot/
+#    amavis/iredapd/fail2ban to the sidecar. Idempotent: once replaced there is no
+#    placeholder left to match, so every later boot is a no-op.
+if [ -n "${VMAIL_DB_BIND_PASSWD:-}" ]; then
+  export _OPENSHIP_MAIL_PW="$VMAIL_DB_BIND_PASSWD"
+  # Pipe grep straight into xargs, newline-delimited. A NUL-delimited list (grep
+  # -Z / xargs -0) cannot round-trip through a shell variable — bash silently
+  # drops NUL bytes, mashing every path into one bogus filename that rewrites
+  # nothing. Config paths never contain spaces/newlines, so newline-split is safe.
+  # Skip *.pyc: rewriting iRedAPD's compiled settings.pyc would corrupt it, and
+  # it is redundant — Python recompiles it from settings.py (which we DO rewrite,
+  # so its mtime is now newer). Deleting the stale .pyc below makes that certain.
+  if grep -rl --exclude='*.pyc' 'build-placeholder' \
+       /etc/postfix /etc/dovecot /etc/amavis /opt/iredapd /etc/fail2ban 2>/dev/null \
+       | xargs -r perl -pi -e 's/\Qbuild-placeholder\E/$ENV{_OPENSHIP_MAIL_PW}/g'; then
+    log "reconciled DB passwords in daemon configs"
+  else
+    log "no placeholder passwords to reconcile"
+  fi
+  rm -f /opt/iredapd/__pycache__/*.pyc 2>/dev/null || true
+  unset _OPENSHIP_MAIL_PW
+fi
+
+# 2b. reconcile the baked placeholder DOMAIN -> the real FIRST_DOMAIN.
+#     The image is built with FIRST_DOMAIN=build.invalid (docker/build-config), so
+#     every config iRedMail laid down at build carries `build.invalid` /
+#     `mail.build.invalid` — most importantly amavis's
+#     `dkim_key('build.invalid', 'dkim', '/var/lib/dkim/build.invalid.pem')`, whose
+#     key never exists on the fresh DKIM bind mount. Left as-is `amavisd` aborts
+#     loading its own config ("Can't open PEM file …/build.invalid.pem") and DKIM
+#     retrieval (setup step 6) fails. One token replace fixes the dkim_key directive
+#     AND postfix myhostname/mydomain at once (`mail.build.invalid` ->
+#     `mail.$FIRST_DOMAIN`, `build.invalid` -> `$FIRST_DOMAIN`); the DKIM step below
+#     then generates `/var/lib/dkim/$FIRST_DOMAIN.pem`, which the rewritten directive
+#     now points at. Idempotent: once the token is gone every later boot no-ops — and
+#     it still matches on an already-seeded broken mount, so `docker pull` + recreate
+#     self-heals a server that halted here.
+if [ -n "$FIRST_DOMAIN" ]; then
+  # Same fail-closed charset guard as db-bootstrap.sh: FIRST_DOMAIN is spliced into
+  # perl -e, /etc/mailname and /etc/hosts below, so a shell/regex metachar must never
+  # reach them. A bad value skips the reconcile (db-bootstrap FATALs on it shortly)
+  # rather than corrupting a config.
+  case "$FIRST_DOMAIN" in
+    *[!A-Za-z0-9.-]*|"")
+      log "WARN: FIRST_DOMAIN '$FIRST_DOMAIN' outside [A-Za-z0-9.-] — skipping domain reconcile" ;;
+    *)
+      export _OPENSHIP_MAIL_DOMAIN="$FIRST_DOMAIN"
+      # \Q…\E so the dot in build.invalid is literal, not a wildcard. Same file set +
+      # *.pyc handling as the password reconcile above.
+      if grep -rl --exclude='*.pyc' 'build\.invalid' \
+           /etc/postfix /etc/dovecot /etc/amavis /opt/iredapd /etc/fail2ban 2>/dev/null \
+           | xargs -r perl -pi -e 's/\Qbuild.invalid\E/$ENV{_OPENSHIP_MAIL_DOMAIN}/g'; then
+        log "reconciled build.invalid -> ${FIRST_DOMAIN} in daemon configs"
+      else
+        log "no build.invalid placeholder to reconcile"
+      fi
+      rm -f /opt/iredapd/__pycache__/*.pyc 2>/dev/null || true
+      unset _OPENSHIP_MAIL_DOMAIN
+
+      # /etc/mailname — Debian's "system mail name" (postfix myorigin source). Not on
+      # a bind mount and never written under the stubbed-init build, so it is missing
+      # at runtime: the `head: cannot open '/etc/mailname'` line in the step-6 error.
+      # Write the mail FQDN atomically (temp + rename) to match the reconciled
+      # myhostname; a write failure is a warning, never fatal.
+      printf 'mail.%s\n' "$FIRST_DOMAIN" > /etc/mailname.tmp \
+        && mv -f /etc/mailname.tmp /etc/mailname \
+        || log "WARN: could not write /etc/mailname"
+
+      # /etc/hosts — give the container FQDN a resolvable entry so `hostname --fqdn`
+      # (amavis/postfix call it at startup) stops failing with "Name or service not
+      # known". Docker manages /etc/hosts and resets it on recreate, so add-once-per-
+      # boot is correct; the -F guard keeps a within-boot re-run from duplicating.
+      if ! grep -qF "mail.${FIRST_DOMAIN}" /etc/hosts 2>/dev/null; then
+        printf '127.0.0.1 mail.%s mail\n' "$FIRST_DOMAIN" >> /etc/hosts \
+          || log "WARN: could not append FQDN to /etc/hosts"
+      fi
+      ;;
+  esac
+fi
+
+# 3. wait for the sidecar DB.
 log "waiting for the mail database at ${DB_HOST}:${DB_PORT}..."
 for _ in $(seq 1 60); do
   if nc -z "$DB_HOST" "$DB_PORT" 2>/dev/null; then break; fi
   sleep 2
 done
-export PGPASSWORD="${PGSQL_ROOT_PASSWD:-}"
-psql_root() { psql -h "$DB_HOST" -p "$DB_PORT" -U postgres -v ON_ERROR_STOP=1 "$@"; }
 
-# 3. bootstrap the vmail DB if the schema isn't present yet.
-#    Validation seam: the exact role list + schema load below mirror what
-#    iRedMail's PGSQL backend creates; confirm against engine/samples on a Debian
-#    build host and adjust the SQL template paths if they differ.
-if ! psql_root -d "$DB_NAME" -tc "SELECT 1 FROM information_schema.tables WHERE table_name='mailbox'" 2>/dev/null | grep -q 1; then
-  log "bootstrapping vmail database roles + schema"
-  psql_root -d "$DB_NAME" <<SQL || log "WARN: vmail bootstrap reported errors (inspect on a Debian build host)"
-    DO \$\$ BEGIN
-      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='vmail') THEN
-        CREATE ROLE vmail LOGIN PASSWORD '${VMAIL_DB_BIND_PASSWD:-}';
-      END IF;
-      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='vmailadmin') THEN
-        CREATE ROLE vmailadmin LOGIN PASSWORD '${VMAIL_DB_ADMIN_PASSWD:-}';
-      END IF;
-      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='amavisd') THEN
-        CREATE ROLE amavisd LOGIN PASSWORD '${AMAVISD_DB_PASSWD:-}';
-      END IF;
-      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='iredapd') THEN
-        CREATE ROLE iredapd LOGIN PASSWORD '${IREDAPD_DB_PASSWD:-}';
-      END IF;
-      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='fail2ban') THEN
-        CREATE ROLE fail2ban LOGIN PASSWORD '${FAIL2BAN_DB_PASSWD:-}';
-      END IF;
-    END \$\$;
-SQL
-  # Load iRedMail's vmail schema (tables + the FIRST_DOMAIN seed row). The engine
-  # ships these SQL templates under conf/ / samples/; point at them here.
-  for f in /opt/iRedMail-engine/samples/*vmail*.sql /opt/iRedMail-engine/conf/*vmail*.sql; do
-    [ -f "$f" ] && psql_root -d "$DB_NAME" -f "$f" || true
-  done
-  if [ -n "$FIRST_DOMAIN" ]; then
-    psql_root -d "$DB_NAME" -c \
-      "INSERT INTO domain (domain, active) VALUES ('${FIRST_DOMAIN}', 1) ON CONFLICT DO NOTHING;" || true
-  fi
-fi
+# 4. bootstrap the mail databases (idempotent; skips if the vmail schema exists).
+bash /opt/openship-mail/db-bootstrap.sh || log "ERROR: db-bootstrap failed — inspect the log above"
 
-# 4. DKIM: reuse the key on the mount, else generate one (per domain).
+# 5. pre-create the log files the fail2ban jails tail, so a jail never starts
+#    against a missing path (rsyslog populates them as the daemons log).
+mkdir -p /var/log/dovecot /var/log/iredapd /var/log/supervisor
+touch /var/log/mail.log \
+      /var/log/dovecot/dovecot.log /var/log/dovecot/imap.log \
+      /var/log/dovecot/pop3.log /var/log/dovecot/lda.log /var/log/dovecot/sieve.log \
+      /var/log/iredapd/iredapd.log
+chown -R iredapd:iredapd /var/log/iredapd 2>/dev/null || true
+
+# 6. DKIM: reuse the key on the mount, else generate one (per domain).
 if [ -n "$FIRST_DOMAIN" ] && [ ! -s "/var/lib/dkim/${FIRST_DOMAIN}.pem" ]; then
   log "generating DKIM key for ${FIRST_DOMAIN}"
-  amavisd-new genrsa "/var/lib/dkim/${FIRST_DOMAIN}.pem" 2048 || \
-    amavisd genrsa "/var/lib/dkim/${FIRST_DOMAIN}.pem" 2048 || \
-    log "WARN: DKIM keygen failed (validate amavisd binary name on Debian)"
+  # Debian ships the daemon as `amavisd` (no `amavisd-new` executable); try it
+  # first and keep the old name only as a fallback for non-Debian bases.
+  amavisd genrsa "/var/lib/dkim/${FIRST_DOMAIN}.pem" 2048 || \
+    amavisd-new genrsa "/var/lib/dkim/${FIRST_DOMAIN}.pem" 2048 || \
+    log "WARN: DKIM keygen failed (no amavisd binary?)"
 fi
 chown -R amavis:amavis /var/lib/dkim 2>/dev/null || true
 
-mkdir -p /var/log/supervisor
 log "starting supervisord"
 exec "$@"

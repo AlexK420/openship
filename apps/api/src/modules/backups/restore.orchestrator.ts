@@ -50,11 +50,16 @@ import {
   type BackupExecutor,
   type BackupTrigger,
   type PayloadKind,
+  type RuntimeAdapter,
   type ServiceHandle,
 } from "@repo/adapters";
 import { staticReleaseDir, usableRef } from "../deployments/rollback/restore-plan";
-import { decryptEnvMap } from "../../lib/encryption";
-import { resolveDeploymentPlatform, resolveTargetPlatform } from "../../lib/deployment-runtime";
+import { serviceHandleFor } from "./service-handle";
+import {
+  disposeRuntime,
+  resolveDeploymentPlatform,
+  resolveTargetPlatform,
+} from "../../lib/deployment-runtime";
 import { safeErrorMessage } from "@repo/core";
 import { assertResourceInOrg } from "../../lib/controller-helpers";
 import type { RequestContext } from "../../lib/request-context";
@@ -540,11 +545,14 @@ export class RestoreOrchestrator {
     destinationRow: { organizationId: string },
     artifacts: RecordedArtifact[],
   ): Promise<{ meta: Record<string, unknown> }> {
-    const { executor, serviceHandle } = await this.resolveTarget(
+    const { executor, serviceHandle, runtime } = await this.resolveTarget(
       restore,
       sourceRun,
       destinationRow,
     );
+    // A prepare-time PROBE only — nothing here outlives the method, so the
+    // transport goes back when it returns (including on a throw).
+    try {
 
     // A probe that FAILED is not the same fact as a target with nothing in it,
     // and conflating them would report an unreachable host as a misconfigured
@@ -620,6 +628,9 @@ export class RestoreOrchestrator {
         targetSources: restorable.length,
       },
     };
+    } finally {
+      disposeRuntime(runtime);
+    }
   }
 
   /**
@@ -823,6 +834,8 @@ export class RestoreOrchestrator {
     // first millisecond of apply still finds a handle to abort.
     const controller = new AbortController();
     this.inFlight.set(restoreId, controller);
+    // Released alongside the in-flight handle at the bottom — see resolveTarget.
+    let targetRuntime: RuntimeAdapter | null = null;
     try {
       const restore = await repos.backupRestore.findById(restoreId);
       if (!restore) return;
@@ -838,11 +851,14 @@ export class RestoreOrchestrator {
       const adapterRow = await toAdapterRow(destinationRow);
       const destination = resolveDestination(adapterRow);
 
-      const { executor, serviceHandle } = await this.resolveTarget(
+      const { executor, serviceHandle, runtime } = await this.resolveTarget(
         restore,
         sourceRun,
         destinationRow,
       );
+      // Used through the whole restore (the executor shells into the target), so
+      // it is released in this method's `finally`, not here.
+      targetRuntime = runtime;
 
       // Checkpoint 1 — before anything is stopped. Free.
       await this.throwIfCancelRequested(restoreId, null);
@@ -997,6 +1013,7 @@ export class RestoreOrchestrator {
       });
     } finally {
       this.inFlight.delete(restoreId);
+      disposeRuntime(targetRuntime);
     }
   }
 
@@ -1131,11 +1148,22 @@ export class RestoreOrchestrator {
    * disagree about the target: a preflight that passed against a different
    * resolution than apply uses would be worse than no preflight.
    */
+  /**
+   * `runtime` is returned so the CALLER can release it: the BackupExecutor wraps
+   * it and shells into the target for the whole restore, and on a remote server it
+   * carries a Docker-over-SSH loopback bridge that only `dispose()` closes. Both
+   * call sites hand it to `disposeRuntime` when they're done (the mail branch's
+   * bare runtime has nothing to release — a deliberate no-op).
+   */
   private async resolveTarget(
     restore: BackupRestore,
     sourceRun: BackupRun,
     destinationRow: { organizationId: string },
-  ): Promise<{ executor: BackupExecutor; serviceHandle: ServiceHandle }> {
+  ): Promise<{
+    executor: BackupExecutor;
+    serviceHandle: ServiceHandle;
+    runtime: RuntimeAdapter | null;
+  }> {
     if (sourceRun.sourceKind === "mail_server") {
       const targetMailServerId =
         restore.mode === "to_fork" ? restore.forkMailServerId : sourceRun.mailServerId;
@@ -1143,7 +1171,7 @@ export class RestoreOrchestrator {
         throw new Error("Mail restore has no target mail server");
       }
       const built = await this.buildMailTarget(targetMailServerId, destinationRow.organizationId);
-      return { executor: built.executor, serviceHandle: built.handle };
+      return { executor: built.executor, serviceHandle: built.handle, runtime: null };
     }
 
     if (!sourceRun.serviceId) throw new Error("Source run has no serviceId");
@@ -1160,6 +1188,7 @@ export class RestoreOrchestrator {
     return {
       executor: resolveExecutor(platform.platform.runtime.name, platform.platform.runtime),
       serviceHandle: await this.buildServiceHandle(serviceRow),
+      runtime: platform.platform.runtime,
     };
   }
 
@@ -1248,19 +1277,6 @@ export class RestoreOrchestrator {
     const project = await repos.project.findById(serviceRow.projectId);
     if (!project) throw new Error(`Project ${serviceRow.projectId} not found`);
 
-    const envFromService =
-      (serviceRow.environment as Record<string, string> | null) ?? {};
-    const envFromProjectEncrypted = await repos.project
-      .listEnvVars(serviceRow.projectId)
-      .then((vars) => {
-        const out: Record<string, string> = {};
-        for (const v of vars) out[v.key] = v.value;
-        return out;
-      })
-      .catch(() => ({}));
-    const projectEnv = decryptEnvMap(envFromProjectEncrypted);
-    const decrypted = { ...envFromService, ...projectEnv };
-
     let containerId: string | null = null;
     if (project.activeDeploymentId) {
       const dep = await repos.deployment.findById(project.activeDeploymentId);
@@ -1274,17 +1290,7 @@ export class RestoreOrchestrator {
       }
     }
 
-    return {
-      id: serviceRow.id,
-      projectId: serviceRow.projectId,
-      name: serviceRow.name,
-      image: serviceRow.image,
-      env: decrypted,
-      volumes: (serviceRow.volumes as string[] | null) ?? [],
-      containerId,
-      projectSlug: project.slug,
-      namespaceVolumes: serviceRow.namespaceVolumes,
-    };
+    return serviceHandleFor(serviceRow, { projectSlug: project.slug, containerId });
   }
 }
 

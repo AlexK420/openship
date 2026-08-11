@@ -18,6 +18,7 @@ export {
 	isNetworkError,
 	setNetworkErrorHandler,
 	getApiBaseUrl,
+	REQUEST_TIMEOUT_MESSAGE,
 } from "./client";
 export type { RequestOptions } from "./client";
 
@@ -62,7 +63,14 @@ export type { ImageCatalogEntry, ListImagesResponse } from "./images";
 export { aiApi } from "./ai";
 export { sandboxApi } from "./sandbox";
 export { systemApi } from "./system";
-export type { EdgeOrphanScan, UntrackedEdgeSite, ContainerIssues, ContainerIssue } from "./system";
+export type {
+  EdgeOrphanScan,
+  UntrackedEdgeSite,
+  ContainerIssues,
+  ContainerIssue,
+  SshProbeInput,
+  SshProbeResult,
+} from "./system";
 export { issuesApi, runResolution } from "./issues";
 export type {
   SystemIssue,
@@ -168,6 +176,11 @@ export type {
   MailComponentStatus,
   MailComponentDef,
   MailHealthResponse,
+  MailDeliveryHealth,
+  MailDeliveryStatus,
+  MailDeferral,
+  MailDeferralKind,
+  MailOutboundMode,
   WebmailTargetOption,
 } from "./mail";
 

@@ -128,7 +128,12 @@ import { resolveDockerfileCandidates } from "./docker-paths";
 import type { ContainerStabilitySample } from "./stability";
 import { generateDockerfile, staticBuilderOutputPath } from "./docker-build-plan";
 import { transferLocalDirectory } from "./transfer";
-import { safeErrorMessage, type ComposeAdvanced, type ComposeHealthcheck } from "@repo/core";
+import {
+  ownsNetworkEndpoint,
+  safeErrorMessage,
+  type ComposeAdvanced,
+  type ComposeHealthcheck,
+} from "@repo/core";
 import {
   dockerResourceLimits,
   dockerBuildResourceLimits,
@@ -3444,17 +3449,18 @@ export class DockerRuntime implements RuntimeAdapter {
    */
   async joinServiceGroupContainers(
     slug: string,
-    members: Array<{ containerId: string; alias: string }>,
+    members: Array<{ containerId: string; aliases: string[] }>,
   ): Promise<void> {
     if (members.length === 0) return;
     const networkId = await this.ensureNetwork(slug);
     const network = this.docker.getNetwork(networkId);
     for (const m of members) {
       if (!m.containerId) continue;
+      const aliases = m.aliases.filter(Boolean);
       try {
         await network.connect({
           Container: m.containerId,
-          EndpointConfig: m.alias ? { Aliases: [m.alias] } : {},
+          EndpointConfig: aliases.length ? { Aliases: aliases } : {},
         });
       } catch (err) {
         // Already-on-network races are fine; anything else is swallowed — this is
@@ -3462,7 +3468,7 @@ export class DockerRuntime implements RuntimeAdapter {
         const msg = (err as { message?: string })?.message ?? "";
         if (!/already exists|already connected/i.test(msg)) {
           console.warn(
-            `[docker] group join failed for ${m.containerId.slice(0, 12)} (${m.alias}): ${msg}`,
+            `[docker] group join failed for ${m.containerId.slice(0, 12)} (${aliases.join(", ")}): ${msg}`,
           );
         }
       }
@@ -3535,6 +3541,21 @@ export class DockerRuntime implements RuntimeAdapter {
    * network prune/rm, daemon/host rebuild) and surviving containers fell off it.
    */
 
+  /**
+   * A container that can never be attached to a network, because it doesn't own a
+   * network namespace to attach (compose `network_mode: container:…`/`none`, or a
+   * migration-adopted `host`).
+   *
+   * Both membership loops below are best-effort and swallow errors, so without this
+   * they'd still work — they'd just log "connect failed" for such a container on
+   * every single deploy, forever, over something that is correct by design. Read
+   * from `HostConfig.NetworkMode`, which `/containers/json` reports.
+   */
+  private cannotJoinNetworks(container: { HostConfig?: { NetworkMode?: string } }): boolean {
+    const mode = container.HostConfig?.NetworkMode;
+    return !!mode && (mode.startsWith("container:") || mode === "none" || mode === "host");
+  }
+
   private async reconcileNetworkMembership(
     networkId: string,
     projectId: string,
@@ -3555,6 +3576,7 @@ export class DockerRuntime implements RuntimeAdapter {
         (n) => n?.NetworkID === networkId,
       );
       if (onNetwork) continue;
+      if (this.cannotJoinNetworks(c)) continue;
       const service = c.Labels?.["openship.service"];
       try {
         await network.connect({
@@ -3608,6 +3630,7 @@ export class DockerRuntime implements RuntimeAdapter {
           (n) => n?.NetworkID === netId,
         );
         if (onNetwork) continue;
+        if (this.cannotJoinNetworks(c)) continue;
         try {
           await network.connect({ Container: c.Id });
         } catch (err) {
@@ -3671,6 +3694,27 @@ export class DockerRuntime implements RuntimeAdapter {
     // images). See resolveComposeCmd.
     const cmd = resolveComposeCmd(config);
 
+    // Shared namespaces (compose `network_mode` / `pid`), pre-resolved by the
+    // deploy loop to `container:<id>` / `none`.
+    //
+    // A shared NETWORK namespace is not additive — it replaces this container's
+    // networking wholesale, and Docker refuses the combinations rather than
+    // ignoring them: a port binding, a network endpoint, or an explicit hostname
+    // alongside `NetworkMode: container:…` each fail the create. So they're
+    // dropped here, and the caller is told where the traffic has to land instead.
+    // A shared PID namespace has no such interaction: the container keeps its own
+    // interface, ports, and aliases.
+    const sharedNetwork = config.namespaces?.network;
+    /** Inside ANOTHER container's netns — it owns the interfaces AND the hostname. */
+    const sharesNetns = !!sharedNetwork && sharedNetwork !== "none";
+    /** Any declared network mode replaces the project network, so there is no
+     *  endpoint to attach and nothing a published port could reach. `none` differs
+     *  from `container:` only in that it keeps its own (empty) namespace, and so
+     *  keeps its own hostname. The SAME predicate gates the deploy path's route and
+     *  host-port decisions — see ownsNetworkEndpoint in @repo/core. */
+    const ownsProjectEndpoint = ownsNetworkEndpoint(sharedNetwork);
+    const sharedPid = config.namespaces?.pid;
+
     // Port bindings
     const { exposedPorts, portBindings } = parsePortBindings(config.ports);
 
@@ -3699,6 +3743,28 @@ export class DockerRuntime implements RuntimeAdapter {
       message: `Resource limits: ${describeResourceLimits(config.resources)}\n`,
       level: "info",
     });
+    // Say what sharing costs, in the build log, at the moment it's applied. A
+    // silently-inert port list is how the operator ends up debugging a 502 against
+    // a service that was never listening where they published it.
+    if (sharedNetwork) {
+      log({
+        timestamp: new Date().toISOString(),
+        message:
+          `Network namespace: ${sharedNetwork} — this container gets no interface of its own` +
+          (sharesNetns
+            ? `, so its ports, project-network alias, and hostname come from the service it shares` +
+              `. Publish and route on THAT service instead.\n`
+            : ` and no network access at all.\n`),
+        level: "warn",
+      });
+    }
+    if (sharedPid) {
+      log({
+        timestamp: new Date().toISOString(),
+        message: `PID namespace: ${sharedPid}\n`,
+        level: "info",
+      });
+    }
 
     // Pull image if not local
     if (!config.image.startsWith("openship/")) {
@@ -3727,7 +3793,9 @@ export class DockerRuntime implements RuntimeAdapter {
       Image: config.image,
       Cmd: cmd,
       Env: env,
-      Hostname: config.serviceName,
+      // Docker rejects an explicit hostname when the network namespace is another
+      // container's — that container owns the UTS identity too.
+      ...(sharesNetns ? {} : { Hostname: config.serviceName }),
       Labels: {
         ...this.labels({
           deploymentId: config.deploymentId,
@@ -3736,23 +3804,32 @@ export class DockerRuntime implements RuntimeAdapter {
         "openship.service": config.serviceName,
       },
       ...(healthcheck && { Healthcheck: healthcheck }),
-      ExposedPorts: exposedPorts,
+      ...(ownsProjectEndpoint ? { ExposedPorts: exposedPorts } : {}),
       HostConfig: {
         RestartPolicy: restartPolicy,
         ...dockerResourceLimits(config.resources),
-        PortBindings: portBindings,
+        ...(ownsProjectEndpoint ? { PortBindings: portBindings } : {}),
         Binds: binds,
-        NetworkMode: group.id,
+        // The project network is the default; a compose `network_mode` replaces it.
+        NetworkMode: sharedNetwork ?? group.id,
+        ...(sharedPid ? { PidMode: sharedPid } : {}),
       },
-      NetworkingConfig: {
-        EndpointsConfig: {
-          [group.id]: {
-            // Default service name plus any operator-chosen aliases; both
-            // resolve to this container on the project network.
-            Aliases: buildNetworkAliases(config.serviceName, config.extraAliases),
-          },
-        },
-      },
+      // A declared network mode means there is no endpoint to name — omit the
+      // block entirely rather than send an empty one (and never contradict
+      // `NetworkMode: none` by attaching a network anyway).
+      ...(ownsProjectEndpoint
+        ? {
+            NetworkingConfig: {
+              EndpointsConfig: {
+                [group.id]: {
+                  // Default service name plus any operator-chosen aliases; both
+                  // resolve to this container on the project network.
+                  Aliases: buildNetworkAliases(config.serviceName, config.extraAliases),
+                },
+              },
+            },
+          }
+        : {}),
     });
 
     try {

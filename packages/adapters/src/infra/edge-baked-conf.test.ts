@@ -83,8 +83,8 @@ describe("baked edge nginx.conf", () => {
     // passed, so assert they are co-located.
     const http = conf.slice(conf.indexOf("listen 80 default_server;"));
     const block = http.slice(0, http.indexOf("\n    }"));
-    expect(block).toContain(`location ${EDGE_CHALLENGE_URL_PREFIX} {`);
-    expect(block).toContain("location /.well-known/acme-challenge/ {");
+    expect(block).toContain(`location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {`);
+    expect(block).toContain("location ^~ /.well-known/acme-challenge/ {");
     expect(block).toContain("location / {");
   });
 
@@ -154,7 +154,7 @@ describe("baked edge nginx.conf", () => {
   });
 
   test("serves the Openship Cloud edge-target challenge on the catch-all", () => {
-    expect(conf).toContain(`location ${EDGE_CHALLENGE_URL_PREFIX} {`);
+    expect(conf).toContain(`location ^~ ${EDGE_CHALLENGE_URL_PREFIX} {`);
     expect(conf).toContain(`root ${EDGE_CHALLENGE_ROOT};`);
   });
 

@@ -15,6 +15,7 @@ import {
   type PortOccupant,
 } from "../../runtime/port-conflict";
 import { waitForPortFree } from "../port-listen";
+import { tryExec } from "../probe-exec";
 import type {
   SystemLog,
   EdgeOccupant,
@@ -54,14 +55,6 @@ export class EdgeMigrateRequested extends Error {
   ) {
     super("Edge migration requested by user");
     this.name = "EdgeMigrateRequested";
-  }
-}
-
-async function tryExec(executor: CommandExecutor, command: string): Promise<string | null> {
-  try {
-    return await executor.exec(command);
-  } catch {
-    return null;
   }
 }
 

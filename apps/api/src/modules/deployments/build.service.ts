@@ -127,6 +127,10 @@ export async function runDeploymentPreflight(
     /** Project id — passed to the remote-clone-token preflight check so
      *  project-scoped clone tokens are considered. */
     projectId?: string;
+    /** Catalog app this project instantiates + whether it has ever been live, so
+     *  the app's declared host minimum is matched against the target machine. */
+    appTemplateId?: string | null;
+    firstDeploy?: boolean;
   },
 ): Promise<void> {
   const preflight = await runPreflightChecks(snapshot, {
@@ -141,6 +145,8 @@ export async function runDeploymentPreflight(
     ...(opts.multiService !== undefined ? { multiService: opts.multiService } : {}),
     ...(opts.gitOwner !== undefined ? { gitOwner: opts.gitOwner } : {}),
     ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
+    ...(opts.appTemplateId !== undefined ? { appTemplateId: opts.appTemplateId } : {}),
+    ...(opts.firstDeploy !== undefined ? { firstDeploy: opts.firstDeploy } : {}),
     buildStrategy: snapshot.buildStrategy as "local" | "server" | undefined,
   });
   if (!preflight.ok) {
@@ -1193,6 +1199,10 @@ export async function requestBuildAccess(ctx: RequestContext, input: BuildAccess
     multiService: useServicePipeline,
     gitOwner: project.gitOwner,
     projectId: project.id,
+    // An app project carries its catalog id; a never-deployed one is the only
+    // deploy a host-capacity shortfall is allowed to refuse.
+    appTemplateId: project.appTemplateId,
+    firstDeploy: !project.activeDeploymentId,
   });
   const env = environment || "production";
 
@@ -1397,10 +1407,23 @@ export async function redeployBuildSession(
     meta.deployTarget = t.deployTarget;
     meta.serverId = t.serverId;
     meta.runtimeMode = t.runtimeMode;
-    meta.buildStrategy = await settingsService.resolveStrategy(meta.framework, meta.buildStrategy, {
-      deployTarget: meta.deployTarget,
-    });
   }
+
+  // buildStrategy is re-resolved on EVERY redeploy, frozen snapshot or not — it is a
+  // policy answer about the instance, not part of the build identity, so it belongs
+  // with `resources` above rather than with the frozen source.
+  //
+  // Passing the frozen value through as `explicit` keeps it: resolveStrategy returns
+  // an explicit choice unchanged. The one thing it does NOT keep is a "local" that is
+  // no longer permitted, because its CLOUD_MODE branch answers "server" before it
+  // looks at `explicit`. That is the whole point — a project promoted from a
+  // self-hosted install arrives with a frozen "local" and, while this sat inside the
+  // `!frozenMeta` branch, every redeploy of it asked the cloud runtime to build on
+  // the SaaS host. The runtime now refuses that too (HostBuildForbiddenError); this
+  // is the half that keeps a legitimate deploy working instead of failing.
+  meta.buildStrategy = await settingsService.resolveStrategy(meta.framework, meta.buildStrategy, {
+    deployTarget: meta.deployTarget,
+  });
 
   // Release/dist source: refresh the resolved dist dir. useExistingCommit →
   // redeploy the SAME version; default → newest advertised (parity with the
@@ -1734,13 +1757,19 @@ export async function triggerDeployment(
     await applyReleaseSourceToSnapshot(project, snapshot, { version: data.releaseVersion });
   }
 
-  if (!reuse) {
+  {
     // Non-UI callers (CI, webhook, manual API) don't pass buildStrategy, so the
     // snapshot inherits `undefined` from buildConfigSnapshot and the later
     // fallback at resolveBuildGitToken collapses everything to "server". Run
     // it through resolveStrategy so a non-cloud stack with a "local" default
-    // gets the same answer the UI would give — single source of truth. A reused
-    // snapshot already froze its resolved strategy, so leave it untouched.
+    // gets the same answer the UI would give — single source of truth.
+    //
+    // Runs for a REUSED (rollback) snapshot too. That looks like it contradicts
+    // "restore the exact prior state", and for the source it would — but a frozen
+    // explicit value is returned unchanged here, so the only thing a rollback loses
+    // is a "local" the instance no longer permits, which it could not have honoured
+    // anyway (the cloud runtime refuses it at the sink). Rolling back to a build that
+    // cannot run is not a restored state.
     snapshot.buildStrategy = await settingsService.resolveStrategy(
       snapshot.framework,
       snapshot.buildStrategy,
@@ -1760,6 +1789,10 @@ export async function triggerDeployment(
     multiService: useServicePipeline,
     gitOwner: project.gitOwner,
     projectId: project.id,
+    // An app project carries its catalog id; a never-deployed one is the only
+    // deploy a host-capacity shortfall is allowed to refuse.
+    appTemplateId: project.appTemplateId,
+    firstDeploy: !project.activeDeploymentId,
   });
 
   // Env: a reused snapshot ships the EXACT encrypted env captured with the

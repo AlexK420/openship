@@ -113,7 +113,20 @@
     "running": "Läuft",
     "upToDate": "Aktuell",
     "notInstalled": "Nicht installiert",
-    "installEdge": "Edge installieren"
+    "installEdge": "Edge installieren",
+    "edgeAbsentImpactOne": "{n} Projekt läuft auf diesem Server, aber nichts leitet Traffic dorthin.",
+    "edgeAbsentImpactMany": "{n} Projekte laufen auf diesem Server, aber nichts leitet Traffic dorthin."
+  },
+  "modules": {
+    "title": "Modul-Updates verfügbar",
+    "checkFailedTitle": "Prüfung auf Modul-Updates fehlgeschlagen",
+    "needsConfirmation": "Bestätigung erforderlich",
+    "update": "Aktualisieren",
+    "updating": "Wird aktualisiert…",
+    "confirmTitle": "{module} aktualisieren?",
+    "confirmIntro": "Dieses Update enthält Änderungen, die Ihre Zustimmung brauchen:",
+    "cancel": "Abbrechen",
+    "updateFailed": "Update von {module} fehlgeschlagen"
   },
   "form": {
     "sshConnection": "SSH-Verbindung",
@@ -146,6 +159,10 @@
     "testConnection": "Verbindung testen",
     "saveChanges": "Änderungen speichern",
     "saveAndContinue": "Speichern & zur Einrichtung fortfahren",
+    "modalTitle": "Server hinzufügen",
+    "modalSubtitle": "Über SSH verbinden. Sie können die Einrichtung später abschließen.",
+    "saveServer": "Server speichern",
+    "savingServer": "Wird gespeichert…",
     "toastIpRequired": "Server-IP-Adresse ist erforderlich",
     "toastPasswordSwitchRequired": "Passwort ist erforderlich, wenn zur Passwort-Authentifizierung gewechselt wird",
     "toastKeyPathSwitchRequired": "Schlüsselpfad ist erforderlich, wenn zur SSH-Schlüssel-Authentifizierung gewechselt wird",

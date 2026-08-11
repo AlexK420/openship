@@ -102,11 +102,46 @@ export const composeSpecsEqual = (a: ComposeServiceSpec, b: ComposeServiceSpec) 
 function composeWritePatch(
   parsed: ParsedComposeService,
   stored?: { advanced?: ComposeAdvanced | null } | null,
+  /** `parsed` is a full re-read of the compose FILE, so an absent compose-owned
+   *  key means the author deleted it. See {@link COMPOSE_OWNED_ADVANCED_KEYS}. */
+  composeAuthoritative = false,
 ): ComposeServiceSpec {
+  const advanced = mergeAdvanced(stored?.advanced ?? null, parsed.advanced);
   return {
     ...toComposeSpec(parsed),
-    advanced: mergeAdvanced(stored?.advanced ?? null, parsed.advanced),
+    advanced: composeAuthoritative ? clearComposeOwnedKeys(advanced, parsed.advanced) : advanced,
   };
+}
+
+/**
+ * `advanced` keys that compose YAML can express, and therefore OWNS.
+ *
+ * The merge above exists for keys compose has no syntax for — a readiness gate,
+ * generated config files, an east-west alias — where an absent key means "the
+ * parser had nothing to say", not "the operator removed it". Shared namespaces
+ * are the opposite: nothing but the compose file sets them, so an absent key
+ * means DELETED, and merging would keep pinning the container into a namespace
+ * the file no longer asks for (or into a service that no longer exists, which
+ * the deploy then refuses).
+ *
+ * Only honored when the caller says its input IS the file. Half of
+ * syncFromCompose's callers pass a release's frozen snapshot rather than a fresh
+ * parse — and that snapshot travels through a wire schema with no `advanced` at
+ * all (BuildServiceInput), so treating its silence as a deletion would wipe the
+ * namespace on the next deploy. Removal on the git path already propagates the
+ * right way, through `reconcileFromCompose` applying `theirs` wholesale.
+ */
+const COMPOSE_OWNED_ADVANCED_KEYS = ["networkMode", "pidMode"] as const;
+
+function clearComposeOwnedKeys(
+  merged: ComposeAdvanced,
+  parsed: ComposeAdvanced | undefined,
+): ComposeAdvanced {
+  const out = { ...merged };
+  for (const key of COMPOSE_OWNED_ADVANCED_KEYS) {
+    if (parsed?.[key] === undefined) delete out[key];
+  }
+  return out;
 }
 
 /** Per-field diff of two specs — powers the drift UI. */
@@ -481,9 +516,12 @@ export function createServiceRepo(db: Database) {
     async syncFromCompose(
       projectId: string,
       parsed: ParsedComposeService[],
-      opts?: { removeMissing?: boolean },
+      opts?: { removeMissing?: boolean; composeAuthoritative?: boolean },
     ) {
       const removeMissing = opts?.removeMissing ?? true;
+      // Default false: only a caller that just re-read the compose file may treat
+      // an absent compose-owned key as a deletion (see COMPOSE_OWNED_ADVANCED_KEYS).
+      const composeAuthoritative = opts?.composeAuthoritative ?? false;
       // Defensive filter - even though every caller should already strip
       // non-compose entries before reaching here, an explicit kind="monorepo"
       // would otherwise insert a ghost compose row with the same name as the
@@ -515,7 +553,7 @@ export function createServiceRepo(db: Database) {
           // `sortOrder` (dashboard reordering); the compose YAML carries neither.
           // One computed patch for both the write and the echoed row, or the
           // returned Service would disagree with what was stored.
-          const patch = composeWritePatch(p, ex);
+          const patch = composeWritePatch(p, ex, composeAuthoritative);
           await this.update(ex.id, {
             ...patch,
             ...routing,

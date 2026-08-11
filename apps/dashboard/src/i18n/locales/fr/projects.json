@@ -8,6 +8,7 @@
   },
   "status": {
     "live": "En ligne",
+    "paused": "En pause",
     "attention": "Action requise",
     "queued": "En file d'attente",
     "building": "Compilation",
@@ -156,7 +157,7 @@
     "subtextOther": "Ce projet n'a pas encore de déploiement en ligne. Vérifiez la source et réessayez.",
     "deployNow": "Déployer maintenant",
     "connectSource": "Connecter une source",
-    "settings": "Paramètres",
+    "settings": "Paramètres de déploiement",
     "attemptsTitle": "Tentatives de déploiement",
     "attemptsDescription": "Chaque compilation de ce projet — cliquez sur l'une d'elles pour l'ouvrir",
     "sourceTitle": "Source",

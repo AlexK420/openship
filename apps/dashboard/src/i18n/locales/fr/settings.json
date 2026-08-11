@@ -115,10 +115,6 @@
     "noServers": "Aucun serveur configuré pour l'instant - ajoutez-en un depuis le sélecteur de déploiement.",
     "clearDefault": "Effacer la valeur par défaut (demander à chaque fois)",
     "targets": {
-      "local": {
-        "label": "Cette machine",
-        "desc": "Docker / runtime local"
-      },
       "server": {
         "label": "Mon serveur",
         "desc": "Un serveur SSH configuré"
@@ -130,8 +126,7 @@
     },
     "labelFor": {
       "yourServer": "votre serveur",
-      "cloud": "Openship Cloud",
-      "local": "Cette machine"
+      "cloud": "Openship Cloud"
     },
     "toast": {
       "pickServer": "Choisissez d'abord un serveur",
