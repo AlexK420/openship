@@ -924,6 +924,43 @@ describe("parseComposeFile — shared namespaces (network_mode / pid)", () => {
   });
 });
 
+// #388: stop_signal / stop_grace_period were parsed only to warn "not modeled"
+// and then dropped, so a service that needs longer than Docker's 10s to flush on
+// shutdown got SIGKILLed mid-write. They now flow through advanced to the
+// container's StopSignal / StopTimeout.
+describe("parseComposeFile — shutdown behavior (stop_signal / stop_grace_period)", () => {
+  const svc = (body: string) => `services:\n  app:\n    image: nginx\n${body}`;
+
+  it("stores stop_signal and stop_grace_period on advanced without warning", () => {
+    const parsed = parseComposeFile(
+      svc("    stop_signal: SIGINT\n    stop_grace_period: 1m30s\n"),
+    );
+    expect(parsed.services[0]?.advanced?.stopSignal).toBe("SIGINT");
+    expect(parsed.services[0]?.advanced?.stopGracePeriod).toBe("1m30s");
+    // The whole point of the fix: these keys are honored, not reported dropped.
+    expect(parsed.unsupported.map((u) => u.field)).not.toContain("stop_signal");
+    expect(parsed.unsupported.map((u) => u.field)).not.toContain("stop_grace_period");
+  });
+
+  it("accepts a bare-number grace period (compose treats it as seconds)", () => {
+    const parsed = parseComposeFile(svc("    stop_grace_period: 30\n"));
+    expect(parsed.services[0]?.advanced?.stopGracePeriod).toBe("30");
+  });
+
+  it("interpolates stop_signal from the env file", () => {
+    const parsed = parseComposeFile(svc("    stop_signal: ${SIG}\n"), {
+      envFileContent: "SIG=SIGQUIT\n",
+    });
+    expect(parsed.services[0]?.advanced?.stopSignal).toBe("SIGQUIT");
+  });
+
+  it("omits both when neither is declared", () => {
+    const parsed = parseComposeFile(svc("    ports:\n      - '80:80'\n"));
+    expect(parsed.services[0]?.advanced?.stopSignal).toBeUndefined();
+    expect(parsed.services[0]?.advanced?.stopGracePeriod).toBeUndefined();
+  });
+});
+
 describe("parseComposeFile — dropped-key reporting", () => {
   const svc = (body: string) => `services:\n  app:\n    image: nginx\n${body}`;
 

@@ -30,6 +30,7 @@ import { discoverServerStack } from "./docker-inspect.service";
 import {
   EDGE_PORTS,
   parseComposePort,
+  isExternalHostPublish,
   type DiscoveredService,
   type DiscoveredVolumeMount,
   type OpenshipProjectGroup,
@@ -168,68 +169,64 @@ function volumeToComposeString(v: DiscoveredVolumeMount): string | null {
   return `${v.source}:${v.target}${mode}`;
 }
 
-/** Normalize an adopted service's ports for the shared Openship service group:
+/** Normalize an adopted service's ports for the shared Openship service group.
  *
- *   - Ports 80/443 belong to Openship's OpenResty edge → drop the host side,
- *     keep the container port (e.g. "80:3000" → "3000"); OpenResty routes to it.
- *   - Every OTHER host-published port must be UNIQUE across the group — two
- *     containers cannot bind the same host port (the classic "two postgres both
- *     on 127.0.0.1:5432" migration failure: `port is already allocated`). The
- *     first service to claim a host port keeps it; a later collision drops only
- *     the HOST binding and keeps the container port, so the service stays
- *     reachable by name on the group network (`postgres-2:5432`).
+ *  Adoption deliberately leaves every service UNEXPOSED and drops the HOST side of
+ *  ALL published ports, keeping only the container port. Three reasons, one rule:
  *
- *  `claimed` is the shared set of host ports already taken by earlier services
- *  in the group (mutated here). Returns the rewritten ports + the host ports
- *  that were dropped as duplicates (for a user-facing note). */
-function normalizeHostPorts(
-  ports: string[],
-  claimed: Set<number>,
-): { ports: string[]; droppedDuplicates: number[] } {
-  const droppedDuplicates: number[] = [];
+ *   - 80/443 belong to Openship's OpenResty edge — a service can't bind them, the
+ *     edge routes to the container port instead.
+ *   - A pinned host port (e.g. "5432:5432") collides with whatever already holds
+ *     it on the box: another adopted service, a second project's Postgres, or
+ *     Openship's OWN Postgres. That collision is the exact `port is already
+ *     allocated` failure #388 reports — and it aborts the whole deploy, not just
+ *     the one service. Stripping the host binding removes the entire class.
+ *   - Exposure is added LATER from the project's Domains tab, which runs the one
+ *     unified OpenResty-ensure + 80/443 takeover-consent flow (the wizard can't
+ *     surface that modal mid-import). Host-publishing here would both skip that
+ *     flow and re-introduce the collision.
+ *
+ *  A stripped service stays reachable by name on the group network
+ *  (`postgres-2:5432`) — compose service-to-service resolves the container with no
+ *  `ports:` entry — and the DISCOVERED ports are untouched, so the wizard still
+ *  shows the port for the operator to route to. Returns the rewritten ports + the
+ *  concrete host publishes that were dropped, each flagged `external` when it was
+ *  reachable off-box (so the warning can name the genuine exposure loss, not just
+ *  a port number; bare/random and edge publishes carry no host port to report). */
+function normalizeHostPorts(ports: string[]): {
+  ports: string[];
+  stripped: { host: number; external: boolean }[];
+} {
+  const stripped: { host: number; external: boolean }[] = [];
   const out: string[] = [];
   for (const spec of ports) {
-    const { host, container, proto } = parseComposePort(spec);
+    const { host, hostIp, container, proto } = parseComposePort(spec);
     const containerOnly = proto ? `${container}/${proto}` : container;
     if (host == null) {
-      // DROP a bare "<port>" — it does NOT mean "nothing published". A single-part
-      // compose `ports:` entry publishes the container port on a RANDOM host port
-      // (docker: `HostPort: ""`). Adoption deliberately leaves services UNEXPOSED
-      // (routing + its pinned loopback host port are added later from the Domains
-      // tab), so an internal / expose-only port — e.g. a database's 5432 that the
-      // source never published — must not be host-published here: doing so
-      // needlessly exposes the DB and collides with whatever already holds a host
-      // port on the box (#388). Compose service-to-service still resolves the
-      // container by name over the shared network with no `ports:` entry, so this
-      // is safe; the discovered ports are untouched, so the wizard still shows the
-      // port for the operator to route to.
+      // A bare "<port>" is NOT "nothing published": compose publishes it on a
+      // RANDOM host port (docker `HostPort: ""`). Drop it for the same reason as a
+      // pinned one — adopted services are left unexposed and reached by name.
       continue;
     }
-    if (EDGE_PORTS.has(host)) {
-      out.push(containerOnly); // edge → OpenResty owns 80/443
-      continue;
-    }
-    if (claimed.has(host)) {
-      droppedDuplicates.push(host);
-      out.push(containerOnly); // duplicate host port — keep only the container side
-      continue;
-    }
-    claimed.add(host);
-    out.push(spec); // unique host publish — keep as-is
+    // Edge ports carry no host port worth reporting; every other concrete host
+    // publish is stripped and noted so the operator knows to re-route it — and
+    // whether it was externally reachable, which is what the strip actually costs.
+    if (!EDGE_PORTS.has(host)) stripped.push({ host, external: isExternalHostPublish(hostIp) });
+    out.push(containerOnly);
   }
-  return { ports: out, droppedDuplicates };
+  return { ports: out, stripped };
 }
 
 /**
  * Map selected discovered services → compose service rows for `syncFromCompose`.
  * Shared by adopt AND re-import so the two paths can't drift: unique names,
- * group-wide host-port de-dup, adopt-the-running-image (never rebuild), and —
- * critically — services are left UNEXPOSED. Exposing here would fire the
- * routing/OpenResty ensure mid-import (which needs the 80/443 takeover-consent
- * modal the wizard can't surface); instead the user adds routes from the
- * project's Domains tab, and THAT redeploy runs the one unified ensure-OpenResty
- * + takeover-consent flow. Pushes a per-service warning when a host port is
- * dropped as a duplicate.
+ * host-port stripping (see normalizeHostPorts), adopt-the-running-image (never
+ * rebuild), and — critically — services are left UNEXPOSED. Exposing here would
+ * fire the routing/OpenResty ensure mid-import (which needs the 80/443
+ * takeover-consent modal the wizard can't surface); instead the user adds routes
+ * from the project's Domains tab, and THAT redeploy runs the one unified
+ * ensure-OpenResty + takeover-consent flow. Pushes a per-service warning when a
+ * host publish is stripped.
  */
 export function buildAdoptedServiceRows(
   chosen: DiscoveredService[],
@@ -252,9 +249,6 @@ export function buildAdoptedServiceRows(
   rows: ParsedComposeList;
   renames: Record<string, string>;
   handover: Record<string, string>;
-  /** Host ports already claimed by the adopted rows — reused when normalizing the
-   *  new (container-less) repo rows so both paths strip 80/443 + dedupe together. */
-  claimedHostPorts: Set<number>;
 } {
   const nameCounts = new Map<string, number>();
   const firstUnique = new Map<string, string>(); // discovered name → FINAL row name
@@ -269,14 +263,26 @@ export function buildAdoptedServiceRows(
     return unique;
   });
 
-  const claimedHostPorts = new Set<number>();
   const handover: Record<string, string> = {};
   const rows = chosen.map((s, i) => {
-    const { ports, droppedDuplicates } = normalizeHostPorts(s.ports, claimedHostPorts);
-    if (droppedDuplicates.length > 0) {
+    const { ports, stripped } = normalizeHostPorts(s.ports);
+    if (stripped.length > 0) {
+      // Call out an off-box publish specifically: that exposure is the real thing
+      // the strip drops, and it's the security-meaningful signal (a raw compose
+      // publish DNATs past the host firewall). Loopback-only publishes never left
+      // the box, so they get the plainer note.
+      const external = stripped.filter((p) => p.external).map((p) => p.host);
+      const loopback = stripped.filter((p) => !p.external).map((p) => p.host);
+      const clauses: string[] = [];
+      if (external.length > 0)
+        clauses.push(
+          `Port(s) ${external.join(", ")} were published externally (reachable off-box) and are not re-published`,
+        );
+      if (loopback.length > 0)
+        clauses.push(`Loopback-only port(s) ${loopback.join(", ")} are not re-published`);
       s.warnings.push(
-        `Host port(s) ${droppedDuplicates.join(", ")} already published by another service — ` +
-          `kept ${uniqueNames[i]} on the internal network only (reachable as ${uniqueNames[i]}:<port>).`,
+        `${clauses.join("; ")} — kept ${uniqueNames[i]} on the internal network ` +
+          `(reachable as ${uniqueNames[i]}:<port>). Add a route from the project's Domains tab to expose it.`,
       );
     }
     // Source of truth for build/image:
@@ -333,7 +339,7 @@ export function buildAdoptedServiceRows(
           : undefined,
     };
   });
-  return { rows, renames, handover, claimedHostPorts };
+  return { rows, renames, handover };
 }
 
 
@@ -444,7 +450,7 @@ export async function adoptServerStack(opts: {
   };
   const { project_id, created } = await ensureProject(ensureBody, organizationId);
 
-  const { rows: parsed, renames, handover, claimedHostPorts } = buildAdoptedServiceRows(
+  const { rows: parsed, renames, handover } = buildAdoptedServiceRows(
     chosen,
     selected,
     serviceEnv,
@@ -463,11 +469,12 @@ export async function adoptServerStack(opts: {
   if (repoServices) {
     for (const [name, rs] of repoServices) {
       if (adoptedNames.has(name)) continue;
-      // Run the compose host ports through the SAME normalizer + claimed-set as
-      // the adopted rows: strip edge-owned 80/443 (OpenResty owns them) and dedupe
-      // host ports already taken by a sibling — else a new `web` on "80:80" would
-      // collide with the edge and fail the deploy.
-      const { ports } = normalizeHostPorts(rs.ports ?? [], claimedHostPorts);
+      // Run the compose host ports through the SAME normalizer as the adopted
+      // rows: strip every host binding (edge-owned 80/443 AND pinned ports) so a
+      // new `web` on "80:80" doesn't collide with the edge and a `db` on "5432:5432"
+      // doesn't collide with whatever holds it on the box — reachable by name,
+      // routed later from the Domains tab.
+      const { ports } = normalizeHostPorts(rs.ports ?? []);
       newRows.push({
         name,
         kind: "compose",

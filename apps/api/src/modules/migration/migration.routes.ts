@@ -6,7 +6,6 @@
  */
 
 import { Hono } from "hono";
-import { localOnly } from "../../middleware";
 import { secureRouter } from "../../lib/secure-router";
 import * as migration from "./migration.controller";
 
@@ -14,9 +13,9 @@ const r = secureRouter(new Hono(), {
   module: "migration",
   basePath: "/api/migration",
   ids: { server: "serverId" },
+  localOnly: true,
 });
 
-r.use("*", localOnly);
 
 // Read-only: inspect a server's Docker and return the adoptable stack.
 r.post("/scan", { tag: "server:write", collection: true }, migration.scanServer);

@@ -36,6 +36,7 @@
     "services": "サービス",
     "static": "静的",
     "standalone": "スタンドアロン",
+    "worker": "ワーカー",
     "updateAvailable": "Update",
     "appBadge": "アプリ"
   },
@@ -194,6 +195,7 @@
     "modeStatic": "静的サイト",
     "modeStandalone": "スタンドアロン",
     "modeServer": "サーバー",
+    "modeWorker": "ワーカー",
     "infrastructure": "インフラ",
     "platform": "プラットフォーム",
     "mode": "モード",

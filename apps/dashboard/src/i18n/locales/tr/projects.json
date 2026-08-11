@@ -37,6 +37,7 @@
     "services": "Servisler",
     "static": "Statik",
     "standalone": "Bağımsız",
+    "worker": "Worker",
     "updateAvailable": "Güncelle"
   },
   "hosting": {
@@ -194,6 +195,7 @@
     "modeStatic": "Statik Site",
     "modeStandalone": "Bağımsız",
     "modeServer": "Sunucu",
+    "modeWorker": "Worker",
     "infrastructure": "Altyapı",
     "platform": "Platform",
     "mode": "Mod",

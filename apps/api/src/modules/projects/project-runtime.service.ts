@@ -19,6 +19,7 @@ import { resolveManagedHostname } from "../../lib/routing-domains";
 import { sshManager } from "../../lib/ssh-manager";
 import { applyProjectRouting } from "../domains/routing-apply.service";
 import { reapplyProjectLiveRoutes } from "../domains/project-route.service";
+import { deploymentWorkload } from "../deployments/deployment-class";
 
 // ─── Runtime logs ────────────────────────────────────────────────────────────
 
@@ -99,8 +100,14 @@ type DeploymentRow = NonNullable<Awaited<ReturnType<typeof repos.deployment.find
  * pages.disable/enable — the same edge-level pause the branches below perform
  * against our own edge.
  */
-function isEdgeServedStatic(project: Pick<ProjectRow, "hasServer" | "cloudWorkspaceId">): boolean {
-  return !project.hasServer && !project.cloudWorkspaceId;
+function isEdgeServedStatic(
+  project: Pick<ProjectRow, "hasServer" | "workloadType" | "cloudWorkspaceId">,
+): boolean {
+  // Only a STATIC workload is served by the edge as files. A worker shares
+  // `hasServer=false` but is a real container with its own runtime lifecycle, so
+  // route through the workload axis — not the legacy boolean — or a worker's
+  // pause/resume would be (mis)handled as edge-route removal (#538-B).
+  return deploymentWorkload(project) === "static" && !project.cloudWorkspaceId;
 }
 
 /**

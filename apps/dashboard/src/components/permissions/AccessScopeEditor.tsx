@@ -16,7 +16,7 @@
  */
 
 import { PlusCircle } from "lucide-react";
-import { ResourcePicker } from "@/components/permissions/ResourcePicker";
+import { ResourcePicker } from "./ResourcePicker";
 import { Switch } from "@/components/ui/Switch";
 import {
   ACCESS_LEVELS,
@@ -27,16 +27,19 @@ import {
   pickerGrants,
   type AccessLevel,
   type AccessSelection,
-} from "@/components/permissions/mcp-access-templates";
-import type { LevelsConfig } from "@/components/permissions/ResourcePicker";
-import type { PickerGrant, ResourceType } from "@/lib/api";
+} from "./mcp-access-templates";
+import type { LevelsConfig } from "./ResourcePicker";
+import type { CatalogEntry, PickerGrant, ResourceType } from "@/lib/api";
 import { useI18n } from "@/components/i18n-provider";
 
-export function ScopeEditor({
+export function AccessScopeEditor({
   selection,
   availableTypes,
   orgKey,
   disabled,
+  showCreateCapability = true,
+  onCatalogLoaded,
+  suppressWildcardTypes = ["project"],
   onPickerChange,
   onCreateChange,
 }: {
@@ -45,6 +48,12 @@ export function ScopeEditor({
   /** Remounts the picker on an org switch so no catalog row outlives its org. */
   orgKey: string;
   disabled?: boolean;
+  /** Member grants hide it: the grants API's permission whitelist has no "create",
+   *  so the switch would offer a capability the server drops. */
+  showCreateCapability?: boolean;
+  onCatalogLoaded?: (type: ResourceType, entries: CatalogEntry[]) => void;
+  /** Defaults to ["project"] — see the picker call below. */
+  suppressWildcardTypes?: ResourceType[];
   onPickerChange: (grants: PickerGrant[]) => void;
   onCreateChange: (on: boolean) => void;
 }) {
@@ -90,6 +99,8 @@ export function ScopeEditor({
       </div>
 
       {/* ── Capabilities ── */}
+      {showCreateCapability && (
+      <>
       <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         {m.capabilitiesHeading}
       </p>
@@ -110,6 +121,8 @@ export function ScopeEditor({
           />
         </div>
       </div>
+      </>
+      )}
 
       {/* ── Resources ── */}
       <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -129,8 +142,9 @@ export function ScopeEditor({
         // "All projects" would emit {project,"*",[read,write]} → 400
         // INVALID_GRANT_SCOPE. The create capability above is the only legitimate
         // project wildcard.
-        suppressWildcardTypes={["project"]}
+        suppressWildcardTypes={suppressWildcardTypes}
         levels={levels}
+        onCatalogLoaded={onCatalogLoaded}
         disabled={disabled}
       />
 

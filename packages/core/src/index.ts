@@ -37,9 +37,11 @@ export {
 export * from "./apps/install-phases";
 export * from "./app-settings";
 export * from "./project-source";
+export * from "./deployment-class";
 export * from "./updates";
 export * from "./proxy-settings";
 export * from "./audit-taxonomy";
+export * from "./access-grants";
 export * from "./answer";
 export * from "./host-profile";
 export * from "./host-firewall";

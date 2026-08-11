@@ -9,7 +9,7 @@ import React, {
   useRef,
   useMemo,
 } from "react";
-import { isServicesFramework } from "@repo/core";
+import { isServicesFramework, type WorkloadType } from "@repo/core";
 import { isSchemaAppTemplate } from "@/components/app-settings/AppSettingsForm";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/components/i18n-provider";
@@ -138,6 +138,10 @@ interface BuildData {
   composePath: string;
   hasBuild: boolean;
   hasServer: boolean;
+  /** Resolved runtime workload (#538). Flows in from `projectData.options`
+   *  (getInfo sets it). A worker shares `hasServer=false` with a static site;
+   *  only this distinguishes "runs a process" from "edge-served files". */
+  workloadType?: WorkloadType;
   isLoading: boolean;
   error: string | null;
 }

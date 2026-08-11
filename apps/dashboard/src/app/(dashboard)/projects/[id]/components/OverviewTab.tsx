@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { useProjectSettings } from "@/context/ProjectSettingsContext";
+import { workloadOf } from "@/context/deployment/types";
 import { ConnectionCard } from "./ConnectionCard";
 import { ConnectedServicesCard } from "./ConnectedServicesCard";
 import { UsedByCard } from "./UsedByCard";
@@ -66,15 +67,20 @@ export const OverviewTab = () => {
           ? t.projects.overview.platformLocal
           : "-";
   const hasGit = !!(projectData.gitOwner && projectData.gitRepo);
-  const isStaticRuntime =
-    projectData.hasServer === false ||
-    projectData.options?.hasServer === false ||
-    projectData.productionMode === "static";
-  const modeLabel = isStaticRuntime
-    ? t.projects.overview.modeStatic
-    : projectData.productionMode === "standalone"
-      ? t.projects.overview.modeStandalone
-      : t.projects.overview.modeServer;
+  // A worker shares hasServer=false with a static site, so classify via the
+  // resolved workload — otherwise a worker mislabels as "Static" (#538).
+  const workload = workloadOf({
+    workloadType: projectData.workloadType ?? projectData.options?.workloadType,
+    hasServer: projectData.hasServer ?? projectData.options?.hasServer,
+  });
+  const modeLabel =
+    workload === "static"
+      ? t.projects.overview.modeStatic
+      : workload === "worker"
+        ? t.projects.overview.modeWorker
+        : projectData.productionMode === "standalone"
+          ? t.projects.overview.modeStandalone
+          : t.projects.overview.modeServer;
 
   const formatNumber = (num: number): string => {
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
@@ -209,10 +215,10 @@ export const OverviewTab = () => {
             value={modeLabel}
             loading={showProjectInfoSkeleton}
           />
-          {/* Port row shown when loading (we don't know hasServer yet)
-              or when there's an actual server runtime. Once project
-              info hydrates and we know it's static, the row is hidden. */}
-          {(showProjectInfoSkeleton || !isStaticRuntime) && (
+          {/* Port row shown when loading (we don't know the workload yet) or
+              when it's a web app. A worker runs a process but listens on no
+              port, and a static site has none either — both hide the row. */}
+          {(showProjectInfoSkeleton || workload === "web") && (
             <Item
               label={t.projects.overview.port}
               value={String(projectData.port || 3000)}

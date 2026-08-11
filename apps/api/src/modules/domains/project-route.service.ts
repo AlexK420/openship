@@ -326,9 +326,12 @@ export async function reapplyProjectLiveRoutes(
     | "organizationId"
     | "webhookDomain"
     | "routeStrategy"
-    // Needed to re-emit a STATIC route live (see resolveLiveStaticRoot): a
+    // Needed to re-emit a STATIC route live (see resolveDeploymentStaticRoot): a
     // path-targeted domain serves files, so it needs a doc root, not an upstream.
+    // `workloadType` rides along so the static-root resolver can tell a worker
+    // (hasServer=false, but a real container) apart from a static site (#538-B).
     | "hasServer"
+    | "workloadType"
     | "outputDirectory"
     // Carries `proxy` (upload limit, timeouts) through to reconcileProjectRoutes,
     // so raising a limit applies on save instead of waiting for a redeploy.

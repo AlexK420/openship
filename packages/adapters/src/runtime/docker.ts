@@ -542,6 +542,54 @@ function toDockerHealthcheck(hc?: ComposeHealthcheck):
 }
 
 /**
+ * Map compose `stop_signal` / `stop_grace_period` (carried on `advanced`) to the
+ * container's top-level `StopSignal` / `StopTimeout` (#388). `StopTimeout` is
+ * whole seconds while a compose grace period is a duration ("30s", "1m"): parse
+ * to ns and round. A graceful shutdown never wants LESS time than asked, so a
+ * positive sub-second grace clamps up to one second rather than truncating to
+ * "kill now"; an explicit zero stays zero. Returns an empty object when neither
+ * is set so the spread adds no keys and Docker keeps its defaults (SIGTERM/10s).
+ */
+export function toStopConfig(advanced?: ComposeAdvanced): { StopSignal?: string; StopTimeout?: number } {
+  const out: { StopSignal?: string; StopTimeout?: number } = {};
+  const signal = advanced?.stopSignal?.trim();
+  if (signal) out.StopSignal = signal;
+  const graceNs = parseDurationNs(advanced?.stopGracePeriod);
+  if (graceNs !== undefined) {
+    out.StopTimeout = graceNs <= 0 ? 0 : Math.max(1, Math.round(graceNs / 1_000_000_000));
+  }
+  return out;
+}
+
+/**
+ * Before a container is force-removed during recreate/teardown, give one that
+ * opted into a shutdown grace period the chance to flush (#388). Setting a
+ * container's `StopTimeout`/`StopSignal` (from compose stop_grace_period /
+ * stop_signal) does nothing unless something issues a *graceful* stop —
+ * `remove({force:true})` SIGKILLs. So on the recreate + destroy paths we first
+ * inspect the container: only when it carries a positive `StopTimeout` (the
+ * operator asked for grace) do we `stop()` it — no explicit timeout, so Docker
+ * honors that StopTimeout and StopSignal. Containers that declared no grace
+ * (StopTimeout null/0, the default) skip straight to the caller's force-remove,
+ * so redeploy latency is unchanged for everyone who didn't opt in. Best-effort:
+ * a gone / un-inspectable / already-stopped container is fine — the caller's
+ * remove handles it. The Engine API returns StopTimeout on Config even though
+ * @types/dockerode omits it.
+ */
+export async function gracefulStopForGrace(container: Dockerode.Container): Promise<void> {
+  let stopTimeout: number | null | undefined;
+  try {
+    // @types/dockerode omits StopTimeout from Config; the Engine API returns it.
+    stopTimeout = ((await container.inspect()).Config as { StopTimeout?: number | null }).StopTimeout;
+  } catch {
+    return; // can't inspect (gone / racing removal) → let the force-remove no-op handle it
+  }
+  if (typeof stopTimeout === "number" && stopTimeout > 0) {
+    await container.stop().catch(() => { /* already stopped (304) / removed (404) */ });
+  }
+}
+
+/**
  * Detect whether a buffer chunk starts with Docker's 8-byte multiplexed
  * stream header (stream_type | 0 | 0 | 0 | size_be32).
  */
@@ -759,6 +807,14 @@ export class DockerRuntime implements RuntimeAdapter {
     "hostContainerQuery",
     "stabilityProbe",
     "containerEvents",
+    // Docker implements `inContainerExecutor` but had never DECLARED the capability.
+    // Nothing gated on it (every caller tested for the method), so the omission was
+    // invisible — but it meant the honest answer to supports("inContainerExec") was
+    // wrong for the one runtime that best supports it.
+    "inContainerExec",
+    // A docker exec lands in the container's own namespaces, so a command run
+    // through it cannot reach the host. Bare deliberately does NOT declare this.
+    "isolatedExec",
   ]);
 
   /** Docker honors every extended compose key we currently support. */
@@ -2188,9 +2244,10 @@ export class DockerRuntime implements RuntimeAdapter {
 
     const containerName = `openship-${config.runtimeName || config.projectId}-${config.deploymentId}`;
 
-    // Environment variables
+    // Environment variables. A worker (config.portless) listens on nothing, so
+    // injecting PORT would be a lie the app might bind to — omit it there (#538-B).
     const env = [
-      `PORT=${config.port}`,
+      ...(config.portless ? [] : [`PORT=${config.port}`]),
       `NODE_ENV=${config.environment === "production" ? "production" : "development"}`,
       ...Object.entries(config.envVars).map(([k, v]) => `${k}=${v}`),
     ];
@@ -2278,7 +2335,9 @@ export class DockerRuntime implements RuntimeAdapter {
         // rebuild, exactly like a compose service.
         ...(networkId ? { service: config.networkAlias } : {}),
       }),
-      ExposedPorts: { [`${config.port}/tcp`]: {} },
+      // A worker exposes and publishes no port (#538-B); everything else exposes
+      // its app port for the loopback publish below.
+      ...(config.portless ? {} : { ExposedPorts: { [`${config.port}/tcp`]: {} } }),
       ...(networkId
         ? { NetworkingConfig: { EndpointsConfig: { [networkId]: { Aliases: aliases } } } }
         : {}),
@@ -2298,11 +2357,16 @@ export class DockerRuntime implements RuntimeAdapter {
         // app directly, bypassing the edge's SSL/rate-limit/rules (and Docker's
         // iptables bypass ufw). A pinned `config.hostPort` (loopback-port route
         // strategy) is stable across redeploys; otherwise a random loopback port.
-        PortBindings: {
-          [`${config.port}/tcp`]: [
-            { HostIp: "127.0.0.1", HostPort: config.hostPort ? String(config.hostPort) : "" },
-          ],
-        },
+        // A worker (config.portless) binds no host port at all (#538-B).
+        ...(config.portless
+          ? {}
+          : {
+              PortBindings: {
+                [`${config.port}/tcp`]: [
+                  { HostIp: "127.0.0.1", HostPort: config.hostPort ? String(config.hostPort) : "" },
+                ],
+              },
+            }),
       },
     });
 
@@ -2365,6 +2429,7 @@ export class DockerRuntime implements RuntimeAdapter {
     }
     const container = this.docker.getContainer(containerId);
     try {
+      await gracefulStopForGrace(container); // #388: honor stop_grace_period before the SIGKILL
       await container.remove({ force: true });
     } catch (err) {
       // Idempotent: swallow "no such container" / 404 so partial-cleanup
@@ -3670,9 +3735,13 @@ export class DockerRuntime implements RuntimeAdapter {
     const log = onLog ?? (() => {});
     const containerName = `openship-${config.slug}-${config.serviceName}`;
 
-    // Stop and remove any existing container with the same name
+    // Stop and remove any existing container with the same name. A container that
+    // declared a shutdown grace period (compose stop_grace_period, #388) gets a
+    // graceful stop first so a redeploy of e.g. Postgres flushes instead of being
+    // SIGKILLed mid-write; those that didn't opt in skip straight to force-remove.
     try {
       const existing = this.docker.getContainer(containerName);
+      await gracefulStopForGrace(existing);
       await existing.remove({ force: true });
     } catch {
       // Does not exist - fine
@@ -3731,6 +3800,7 @@ export class DockerRuntime implements RuntimeAdapter {
 
     const restartPolicy = resolveRestartPolicy(config.restart);
     const healthcheck = toDockerHealthcheck(config.advanced?.healthcheck);
+    const stopConfig = toStopConfig(config.advanced);
 
     log({
       timestamp: new Date().toISOString(),
@@ -3804,6 +3874,7 @@ export class DockerRuntime implements RuntimeAdapter {
         "openship.service": config.serviceName,
       },
       ...(healthcheck && { Healthcheck: healthcheck }),
+      ...stopConfig,
       ...(ownsProjectEndpoint ? { ExposedPorts: exposedPorts } : {}),
       HostConfig: {
         RestartPolicy: restartPolicy,

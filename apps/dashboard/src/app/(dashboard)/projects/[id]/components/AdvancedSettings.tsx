@@ -34,6 +34,7 @@ import { getApiErrorMessage } from "@/lib/api/client";
 import { invalidateProjectCaches } from "@/hooks/useProjectEndpoints";
 import type { RouteStrategy } from "@/lib/api/settings";
 import type { OpenshipReadiness } from "@repo/core";
+import { workloadOf } from "@/context/deployment/types";
 import ReadinessSection from "@/components/project-settings/ReadinessSection";
 
 interface Props {
@@ -363,9 +364,10 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
             service form; static/cloud apps have no private container to name. */}
         {projectData?.deployTarget !== "cloud" &&
           (projectData?.serviceCount ?? 0) === 0 &&
-          projectData?.hasServer !== false &&
-          projectData?.options?.hasServer !== false &&
-          projectData?.productionMode !== "static" && (
+          workloadOf({
+            workloadType: projectData?.workloadType ?? projectData?.options?.workloadType,
+            hasServer: projectData?.hasServer ?? projectData?.options?.hasServer,
+          }) !== "static" && (
             <SectionCard
               title={t.projectSettings.advanced.internalAlias.title}
               description={t.projectSettings.advanced.internalAlias.description}

@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nProvider } from "@/components/i18n-provider";
-import { ScopeEditor } from "./ScopeEditor";
+import { AccessScopeEditor } from "./AccessScopeEditor";
 import type { PickerGrant, ResourceType } from "@/lib/api";
 
 /**
@@ -27,7 +27,7 @@ const ALL_TYPES: ResourceType[] = [
 function render(grants: PickerGrant[] = []) {
   return renderToStaticMarkup(
     <I18nProvider>
-      <ScopeEditor
+      <AccessScopeEditor
         selection={{ template: "custom", grants, readOnly: false }}
         availableTypes={ALL_TYPES}
         orgKey="Local User's workspace"
@@ -42,7 +42,7 @@ function text(html: string) {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-describe("ScopeEditor resource tabs", () => {
+describe("AccessScopeEditor resource tabs", () => {
   it("offers every grantable type as a tab, with nothing behind a disclosure", () => {
     const out = text(render());
     // Labels from RESOURCE_TYPE_LABELS; the two github types collapse to one tab.

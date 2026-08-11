@@ -10,7 +10,7 @@
 
 import { Boxes, Eye, FolderGit2, ShieldAlert, SlidersHorizontal, RotateCcw } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { TEMPLATE_ORDER, type AccessTemplateId } from "@/components/permissions/mcp-access-templates";
+import { TEMPLATE_ORDER, type AccessTemplateId } from "./mcp-access-templates";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 
 const ICONS: Record<AccessTemplateId, LucideIcon> = {
@@ -21,7 +21,7 @@ const ICONS: Record<AccessTemplateId, LucideIcon> = {
   custom: SlidersHorizontal,
 };
 
-export function TemplatePicker({
+export function AccessTemplateCards({
   active,
   orgName,
   disabled,

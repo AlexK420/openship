@@ -30,6 +30,9 @@ import {
   type BuildStrategy,
   type StackDefinition,
   type ReleaseSource,
+  type SourceKind,
+  type BuildKind,
+  type WorkloadType,
 } from "@repo/core";
 import type {
   LogEntry,
@@ -44,6 +47,7 @@ import { assertGitHubRepoAccess } from "../github/github-access";
 import { firePreDeployBackups } from "../backups/triggers/pre-deploy";
 import { resolveSmartRoute } from "./smart-route";
 import { snapshotNeedsGitSource, withoutPinnedArtifacts } from "./pinned-artifacts";
+import { deploymentWorkload, projectToClass, snapshotToClass } from "./deployment-class";
 import { resolveProjectInfo } from "./prepare.service";
 import { getFolderSession } from "../projects/folder/session-store";
 import { hasMaskedValue, unmaskEnv } from "../../lib/secret-env";
@@ -181,6 +185,16 @@ export interface DeploymentConfigSnapshot {
   hasServer: boolean;
   /** Whether the project needs a build step (false = deploy source directly) */
   hasBuild: boolean;
+  /**
+   * Deployment class frozen at request time (issue #538). The three orthogonal
+   * axes every downstream reads via `snapshotToClass` — source (clone-or-not),
+   * build (how the artifact is produced), workload (web / worker / static).
+   * Absent on snapshots frozen before #538; `snapshotToClass` then derives them
+   * from the legacy fields above, so rollback of an old release stays correct.
+   */
+  source?: SourceKind;
+  build?: BuildKind;
+  workload?: WorkloadType;
   /** Absolute path to a local project directory (alternative to repoUrl) */
   localPath?: string;
   /**
@@ -360,6 +374,11 @@ export function buildConfigSnapshot(
     buildResources: (project.buildResources as ResourceConfig) || null,
     hasServer: project.hasServer ?? !!project.startCommand?.trim(),
     hasBuild: project.hasBuild ?? true,
+    // Freeze the resolved three-axis class once (issue #538). Downstream reads
+    // it via snapshotToClass and never re-derives — a redeploy of THIS release
+    // classifies as it did the day it was built, even after the project's flags
+    // change.
+    ...projectToClass(project),
     localPath: project.localPath || undefined,
     // Per packages/db/src/schema/project.ts:231 — `cloudWorkspaceId IS
     // NOT NULL` is THE canonical "is this a cloud project?" test.
@@ -645,12 +664,15 @@ export async function resolveSnapshotTarget(
 }
 
 function resolveRuntimeImage(project: Project): string {
-  const hasServer = project.hasServer ?? !!project.startCommand?.trim();
   const stackId = (
     project.framework && project.framework in STACKS ? project.framework : "unknown"
   ) as StackId;
 
-  if (!hasServer) {
+  // Only a STATIC site is served by the static (nginx) image. A worker is a normal
+  // long-running container that happens to publish no port, so it runs the stack
+  // base image exactly like a web app (#538-B) — routing through the workload axis
+  // keeps this from mis-reading a worker's `hasServer=false` mirror as static.
+  if (deploymentWorkload(project) === "static") {
     return getRuntimeImage("static", project.packageManager ?? undefined);
   }
 
@@ -1037,7 +1059,12 @@ export async function requestBuildAccess(ctx: RequestContext, input: BuildAccess
   if (
     nextPublicEndpoints === undefined &&
     routeState.publicEndpoints.length === 0 &&
-    !isServicesDeploy
+    !isServicesDeploy &&
+    // A worker is reached by nothing — it gets no default free subdomain (#538-B).
+    // The route layer (project-route.service) also refuses to route one, but not
+    // manufacturing the endpoint here keeps a portless deploy from ever synthesizing
+    // a route it can't answer.
+    deploymentWorkload(project) !== "worker"
   ) {
     nextPublicEndpoints = [defaultFreeEndpoint(project)];
   }
@@ -1182,13 +1209,17 @@ export async function requestBuildAccess(ctx: RequestContext, input: BuildAccess
   }
 
   // Openship Cloud resource tier — only a SERVER-BACKED cloud (Oblien)
-  // deploy provisions a workspace sized by these resources. Static (Pages)
-  // deploys have no workspace to size, and non-cloud targets keep the
-  // project's own resource config, so the picker is ignored for them.
-  // The resolved ResourceConfig rides the existing `snapshot.resources`
-  // plumbing → prodResources → runtime.deploy / ensureServiceGroup →
-  // cloud.ts (cpus/memory_mb/disk_size_mb).
-  if (snapshot.deployTarget === "cloud" && snapshot.hasServer && cloudResourceTier) {
+  // deploy provisions a workspace sized by these resources. Both a web app and
+  // a worker run a long-lived container that must be sized; only a static
+  // (Pages) deploy has no workspace. Non-cloud targets keep the project's own
+  // resource config, so the picker is ignored for them. The resolved
+  // ResourceConfig rides the existing `snapshot.resources` plumbing →
+  // prodResources → runtime.deploy / ensureServiceGroup → cloud.ts.
+  if (
+    snapshot.deployTarget === "cloud" &&
+    snapshotToClass(snapshot).workload !== "static" &&
+    cloudResourceTier
+  ) {
     snapshot.resources = resolveCloudResourceConfig(cloudResourceTier, cloudResourceCustom);
   }
 

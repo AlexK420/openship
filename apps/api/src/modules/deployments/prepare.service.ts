@@ -45,6 +45,7 @@ import {
   type OpenshipReadiness,
   type OpenshipMonorepoApp,
   type ComposeAdvanced,
+  type WorkloadType,
   resolveTierResources,
 } from "@repo/core";
 import { env } from "../../config";
@@ -231,6 +232,10 @@ export interface ProjectInfo {
   // output/routing) fold in through the metadata parser and appear above.
   /** How the app is served: "host"/"static"/"standalone" (seeds hasServer). */
   productionMode?: "host" | "static" | "standalone";
+  /** The runtime workload (web | worker | static) declared via openship.json's
+   *  `workload`. Authoritative over `productionMode` when both are present — it's
+   *  the only way to declare a `worker`, which no legacy field can express (#538). */
+  workloadType?: WorkloadType;
   /** Bare-metal vs Docker runtime, declared intent (git apps pick at deploy). */
   runtimeMode?: "bare" | "docker";
   /** Declared public endpoints (from `domains`), normalized to the create shape. */
@@ -418,6 +423,10 @@ function applyOpenshipOverlay(info: ProjectInfo, config: OpenshipConfig | undefi
   if (config.volumes) info.volumes = config.volumes;
   if (config.port !== undefined) info.port = config.port;
   if (config.productionMode) info.productionMode = config.productionMode;
+  // `workload` is the modern runtime axis and wins over `productionMode` (#538) —
+  // the write path treats an explicit workloadType as authoritative and re-syncs
+  // the legacy productionMode/hasServer from it.
+  if (config.workload) info.workloadType = config.workload;
   if (config.runtime) info.runtimeMode = config.runtime;
   if (config.domains?.length) info.publicEndpoints = domainsToPublicEndpoints(config.domains);
   if (config.env && Object.keys(config.env).length > 0) {
@@ -485,6 +494,7 @@ export function projectInfoToScanResponse(result: ProjectInfo) {
     // Declared-overlay fields (openship.json) — omitted from the response when
     // absent so a repo without the file yields the exact same payload as before.
     ...(result.productionMode && { productionMode: result.productionMode }),
+    ...(result.workloadType && { workloadType: result.workloadType }),
     ...(result.volumes && { volumes: result.volumes }),
     ...(result.runtimeMode && { runtimeMode: result.runtimeMode }),
     ...(result.publicEndpoints && { publicEndpoints: result.publicEndpoints }),

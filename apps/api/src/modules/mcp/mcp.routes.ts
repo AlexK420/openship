@@ -5,9 +5,8 @@
  * request that re-runs the full auth + permission stack (see mcp-dispatch.ts).
  */
 
-import { Hono } from "hono";
-import type { Context } from "hono";
-import { repos } from "@repo/db";
+import { Hono, type Context } from "hono";
+import { repos, type Permission } from "@repo/db";
 import { secureRouter } from "../../lib/secure-router";
 import { parseBearerToken } from "../../lib/bearer";
 import {
@@ -47,11 +46,20 @@ async function resolveMcpPrincipal(token: string, headers: Headers): Promise<Mcp
   }
 
   let grantedRootTypes: ReadonlySet<string> = new Set();
+  let wildcardGrants: ReadonlyMap<string, readonly Permission[]> = new Map();
   let canCreateProjects = false;
   let sourceCapabilities: ReadonlySet<"content" | "write"> = new Set();
   if (role === "restricted" && id.hasBinding) {
     const grants = await repos.patGrant.listByToken(id.tokenId);
     grantedRootTypes = new Set(grants.map((g) => g.resourceType));
+    // Wildcard rows carry their permissions so the tool filter can answer the same
+    // verb question the wildcard arm of `checkPermission` answers. One row per type
+    // at most — `pat_grant_unique` is on (token, type, id).
+    wildcardGrants = new Map(
+      grants
+        .filter((g) => g.resourceId === "*")
+        .map((g) => [g.resourceType, g.permissions ?? []] as const),
+    );
     // Repo CONTENT is granted separately from the repo itself, so a token holding
     // github grants is still deploy-only until some grant names read/write paths.
     // Coarse on purpose (any grant, not per-repo): `tools/list` advertises what
@@ -74,7 +82,14 @@ async function resolveMcpPrincipal(token: string, headers: Headers): Promise<Mcp
     );
   }
 
-  return { role, readOnly: id.readOnly, grantedRootTypes, canCreateProjects, sourceCapabilities };
+  return {
+    role,
+    readOnly: id.readOnly,
+    grantedRootTypes,
+    wildcardGrants,
+    canCreateProjects,
+    sourceCapabilities,
+  };
 }
 
 const PUBLIC_REASON =

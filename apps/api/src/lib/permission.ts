@@ -30,7 +30,7 @@
  */
 
 import type { Context } from "hono";
-import { NotFoundError } from "@repo/core";
+import { NotFoundError, ORG_SINGLETON_RESOURCE_TYPES } from "@repo/core";
 import { repos } from "@repo/db";
 import type { Permission, ResourceType } from "@repo/db";
 import { getRequestContext, withScopedOrg, type RequestContext } from "./request-context";
@@ -38,54 +38,19 @@ import { grantSourceFor, type GrantSource } from "./grant-source";
 import { env } from "../config";
 import { resolveOrgCloudUserId } from "./cloud/transport";
 
-/** Grantable resource roots — the types that can be the target of a grant. */
-const GRANTABLE_ROOTS: ResourceType[] = [
-  "project",
-  "server",
-  "mail_server",
-  "backup_destination",
-  "billing",
-  "audit",
-  // Org-singleton features — listed so the resolver accepts their tags
-  // even though restricted-role grants on them are unusual in practice.
-  "analytics",
-  "github",
-  // GitHub access-control grant targets (default-deny, owner-granted):
-  // installation-level + single-repo, alongside the org-wide "github".
-  "github_installation",
-  "github_repository",
-  "permissions",
-  "settings",
-  "job",
-  "terminal",
-  "cloud",
-];
-
 /**
  * Resources that exist exactly once per org and carry no resource id in the URL —
  * their routes assert `resourceId: "*"` and the org comes from request scope.
  *
- * Lives here, next to GRANTABLE_ROOTS and `roleAllowsResourceType`, because it is
- * resource-type POLICY that both the route middleware and the restricted arm below
- * must agree on. `route-permission.ts` re-exports it for its existing importers;
- * defining it there instead would make this module import from it and cycle.
- *
- * Add any new "feature" tag whose URL doesn't follow /resource/:id. Per-resource
- * types (project, deployment, …) MUST NOT be here.
+ * Sourced from @repo/core so the route middleware, the wildcard arm below, the
+ * grant picker, and the MCP tool filter cannot disagree about which types are
+ * feature-shaped. `route-permission.ts` re-exports this for its existing
+ * importers; defining it there instead would make this module import from it and
+ * cycle.
  */
-export const ORG_SINGLETON_RESOURCES = new Set<string>([
-  "billing",
-  "audit",
-  "analytics",
-  "github",
-  "permissions",
-  "settings",
-  "job",
-  "cloud",
-  "terminal",
-  "notifications",
-  "updates",
-]);
+export const ORG_SINGLETON_RESOURCES: ReadonlySet<string> = new Set<string>(
+  ORG_SINGLETON_RESOURCE_TYPES,
+);
 
 /** Resource types accepted by permission.check — includes leaves. */
 export type CheckedResourceType =
@@ -166,10 +131,16 @@ async function resolveResourceOrg(
   resourceType: CheckedResourceType,
   resourceId: string,
 ): Promise<ResolvedResource | null> {
-  if (GRANTABLE_ROOTS.includes(resourceType as ResourceType)) {
-    const orgId = await loadRootOrgId(resourceType as ResourceType, resourceId);
-    if (!orgId) return null;
-    return { orgId, rootType: resourceType as ResourceType, rootId: resourceId };
+  // A ROOT type resolves directly. There used to be a GRANTABLE_ROOTS membership
+  // test in front of this, but it was inert: every type it listed WITHOUT a
+  // `loadRootOrgId` case resolved to null anyway, and the leaf switch below
+  // returns null for those same types via its default arm. The root cases and the
+  // leaf cases are disjoint, so trying the root first and falling through on null
+  // is equivalent — and costs no extra query, since a leaf type hits
+  // `loadRootOrgId`'s default arm without touching the DB.
+  const rootOrgId = await loadRootOrgId(resourceType as ResourceType, resourceId);
+  if (rootOrgId) {
+    return { orgId: rootOrgId, rootType: resourceType as ResourceType, rootId: resourceId };
   }
 
   switch (resourceType) {
@@ -381,26 +352,46 @@ export async function checkPermission(
     }
   }
 
-  // Org-singleton grants (billing, audit, …). Every route for these asserts
-  // resourceId "*", and the resolution below CANNOT resolve "*": `loadRootOrgId`
-  // returns null for it, so the grant lookup never ran and the grant was inert at
-  // every id. Mint-time acceptance has no such gap — `resolveInputOrg`
-  // short-circuits "*" to the request-scope org and evaluates the MINTER's role —
-  // so an owner could mint a billing grant the token could never use. That
-  // asymmetry is the bug this closes; `project` had the only such case (above).
+  // ── Collection / wildcard arm ──────────────────────────────────────────────
+  // Every assertion at resourceId "*" — a `:list` scope, a `collection: true`
+  // write, or an org-singleton route — is authorized by a WILDCARD grant on the
+  // asserted type, and by nothing else.
+  //
+  // This SUBSUMES the org-singleton-only arm that used to live here: a singleton's
+  // only id IS "*", so that was this same rule with a narrower type set. Widening
+  // it to every type fixes the absurdity that a `{server,"*",read}` grant could
+  // read every server BY ID (the grant lookup below matches `resource_id = $id OR
+  // resource_id = '*'`) while 404ing on enumerating them.
+  //
+  // TERMINAL on purpose: `resolveResourceOrg` cannot resolve "*" for ANY type —
+  // `loadRootOrgId` returns null for it in every case — so the per-resource arm
+  // below is a guaranteed deny at "*". Returning here says that out loud and
+  // avoids a second, pointless grant query.
+  //
+  // POSITION IS LOAD-BEARING:
+  //   • AFTER the {project,"*",create} arm above, because `permitsAction` is false
+  //     for "create" on every action. Running first — terminal — would deny both
+  //     abilities that arm exists to allow. Placed after, a create-only grant
+  //     still cannot reach ensure/scan/import: those fall through to here and are
+  //     denied, exactly as before.
+  //   • BEFORE the per-resource arm, for the terminality reason above.
+  //
+  // Keyed on the id, not `input.scope`: every caller that sets `scope: "list"`
+  // also passes resourceId "*" (see route-permission's isList and collection
+  // branches), and one predicate cannot disagree with itself.
   //
   // The org is already resolved by the caller (`resolveInputOrg` → request scope,
   // pinned to the token's bound org for a scoped principal — see the unbound
-  // rejection in middleware/auth.ts), and `checkPermission` has already asserted
-  // membership in it, so reading the grant directly adds no new trust input.
-  if (ORG_SINGLETON_RESOURCES.has(input.resourceType) && input.resourceId === "*") {
-    const singleton = await source.findForResource(
+  // rejection in middleware/auth.ts), and membership in it is asserted above, so
+  // reading the grant directly adds no new trust input.
+  if (input.resourceId === "*") {
+    const wildcard = await source.findForResource(
       organizationId,
       userId,
       input.resourceType as ResourceType,
       "*",
     );
-    return singleton ? permitsAction(singleton.permissions, input.action) : false;
+    return wildcard ? permitsAction(wildcard.permissions, input.action) : false;
   }
 
   let root = await resolveResourceOrg(input.resourceType, input.resourceId);
@@ -435,11 +426,13 @@ export async function checkPermission(
  * what lets the dashboard render the three levels as a lossless view of the
  * underlying arrays (mcp-access-templates.ts).
  *
- * The single definition shared by the org-singleton arm and the per-resource arm,
- * so the two can't drift. Exhaustive switch: adding a new Permission value without
- * updating this fails the build via the `never` check.
+ * The single definition shared by the wildcard arm, the per-resource arm, and the
+ * MCP tool filter (`filterToolsForPrincipal`), so "can call" and "is listed"
+ * cannot drift — the same reason `roleAllowsResourceType` is exported. Exhaustive
+ * switch: adding a new Permission value without updating this fails the build via
+ * the `never` check.
  */
-function permitsAction(permissions: readonly Permission[], action: Permission): boolean {
+export function permitsAction(permissions: readonly Permission[], action: Permission): boolean {
   switch (action) {
     case "read":
       return permissions.some((p) => p === "read" || p === "write" || p === "admin");

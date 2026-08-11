@@ -385,6 +385,23 @@ function parseAdvanced(
   const pidMode = parseNamespaceField(svc.pid, "pid", env, serviceName, unsupported);
   if (pidMode) advanced.pidMode = pidMode;
 
+  // Shutdown behavior. Both are kept as authored strings — the runtime maps
+  // stop_signal → StopSignal verbatim and rounds stop_grace_period to the whole
+  // seconds Docker's StopTimeout expects.
+  const rawSignal = svc.stop_signal;
+  if (typeof rawSignal === "string") {
+    const signal = interpolateComposeString(rawSignal, env).trim();
+    if (signal) advanced.stopSignal = signal;
+  }
+  const rawGrace = svc.stop_grace_period;
+  const grace =
+    typeof rawGrace === "string"
+      ? interpolateComposeString(rawGrace, env).trim()
+      : typeof rawGrace === "number"
+        ? String(rawGrace)
+        : undefined;
+  if (grace) advanced.stopGracePeriod = grace;
+
   return Object.keys(advanced).length > 0 ? advanced : undefined;
 }
 
@@ -457,8 +474,6 @@ const UNSUPPORTED_SERVICE_KEYS: Record<string, string> = {
   mac_address: "mac_address is not modeled.",
   platform: "platform is not modeled — the image is pulled for the host's architecture.",
   init: "init is not modeled — no init process is injected.",
-  stop_signal: "stop_signal is not modeled — SIGTERM is sent.",
-  stop_grace_period: "stop_grace_period is not modeled — Docker's default applies.",
   read_only: "read_only (root filesystem) is not modeled — the root filesystem stays writable.",
   tmpfs: "tmpfs is not modeled — no in-memory filesystem is mounted.",
   // ── Networking ──

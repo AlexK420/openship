@@ -215,6 +215,11 @@ const ProjectCard: React.FC<Props> = ({ project, preferAppLogo, updateAvailable,
             <Server className="size-3.5" />
             {t.projects.card.services}
           </span>
+        ) : project.workloadType === "worker" ? (
+          <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+            <Server className="size-3.5" />
+            {t.projects.card.worker}
+          </span>
         ) : project.hasServer === false ? (
           <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
             <Globe className="size-3.5" />

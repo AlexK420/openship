@@ -36,6 +36,7 @@
     "services": "服务",
     "static": "静态",
     "standalone": "独立",
+    "worker": "工作进程",
     "updateAvailable": "Update",
     "appBadge": "应用"
   },
@@ -194,6 +195,7 @@
     "modeStatic": "静态站点",
     "modeStandalone": "独立",
     "modeServer": "服务器",
+    "modeWorker": "工作进程",
     "infrastructure": "基础设施",
     "platform": "平台",
     "mode": "模式",

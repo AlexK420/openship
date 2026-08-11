@@ -1,6 +1,6 @@
 import { api } from "./client";
 import { endpoints } from "./endpoints";
-import type { StackId, ComposeAdvanced, RoutingConfig, OpenshipResourceTier, OpenshipReadiness } from "@repo/core";
+import type { StackId, ComposeAdvanced, RoutingConfig, OpenshipResourceTier, OpenshipReadiness, WorkloadType } from "@repo/core";
 import type { CloudResourceTier, CloudResourceCustom, PublicEndpoint, PortCheckUI, OutputCheckUI } from "@/context/deployment/types";
 
 /** How a rollback to a given deployment would run — see the API's restore plan. */
@@ -170,6 +170,10 @@ export interface PrepareProjectResponse extends PrepareAppConfig {
   //    ships the file. Seed wizard defaults; absent → detection is unchanged. ──
   /** Declared serve mode ("static" ⇒ no server). Seeds `options.hasServer`. */
   productionMode?: "host" | "static" | "standalone";
+  /** Declared runtime workload ("web"|"worker"|"static", #538). Wins over
+   *  `productionMode` — seeds `options.workloadType` directly so a repo whose
+   *  openship.json declares `workload: worker` lands on the worker selection. */
+  workloadType?: WorkloadType;
   /** Declared runtime isolation. Seeds `runtimeMode` for a brand-new deploy. */
   runtimeMode?: "bare" | "docker";
   /** Declared project domains, normalized to the create shape. Seed endpoints. */

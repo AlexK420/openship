@@ -438,6 +438,9 @@ export class CloudRuntime implements MultiServiceRuntimeAdapter {
     "unitRestore",
     "serviceShell",
     "inContainerExec",
+    // Runs in the REMOTE workspace over the Oblien API, so it never touches the
+    // control-plane host.
+    "isolatedExec",
   ]);
 
   /**

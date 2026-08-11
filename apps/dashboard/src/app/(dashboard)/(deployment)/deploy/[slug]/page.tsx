@@ -19,7 +19,7 @@ import DeployTargetStep, { DeployTargetSummary, lastPickStore, useDesktopTargets
 // CloneStrategyNudge.tsx for the hook + modal-content exports.
 import { decodeSlug } from "@/utils/repoSlug";
 import { useDeployment } from "@/context/DeploymentContext";
-import { usesServiceDeployment } from "@/context/deployment/types";
+import { usesServiceDeployment, workloadOf } from "@/context/deployment/types";
 import { usePlatform, canUseCloudConnection } from "@/context/PlatformContext";
 import SkeletonLoader from "./components/SkeletonLoader";
 import ErrorState from "@/components/shared/ErrorState";
@@ -423,7 +423,7 @@ const DeployRepository: React.FC = () => {
                                     buildStrategy={config.buildStrategy}
                                     showBuildStrategy={isSingleAppFlow}
                                     cloudResourceTier={config.cloudResourceTier}
-                                    hasServer={config.options.hasServer}
+                                    hasServer={workloadOf(config.options) !== "static"}
                                     runtimeMode={config.runtimeMode}
                                     isServices={usesServiceDeployment(config)}
                                     rollbackWindow={config.rollbackWindow}

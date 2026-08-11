@@ -81,7 +81,15 @@ const MISSING_BASELINE: Record<string, number> = {
   // deepMerge, so both render everywhere. The mail rail's own labels needed no new
   // baseline: the ten tab names reuse emailsAdmin.panel.tabs.*, and the nav/chrome
   // keys are translated in all 9 locales, keeping those namespaces at 0.
-  settings: 1280,
+  // +112: the MCP tab's access editor — 14 net-new English keys × 8 locales. A
+  // connected agent's scope is now editable in place (Edit access → the shared
+  // AccessControlEditor), which needs its own verbs and, more importantly, the
+  // widen-confirmation copy. Left English-first deliberately rather than
+  // machine-translated: this block includes the "this removes every restriction"
+  // confirmation, and a mistranslated security prompt is worse than an untranslated
+  // one. The other 8 locales fall back via deepMerge, so the panel renders
+  // correctly everywhere.
+  settings: 1392,
   // +164: the Sending tab's rebuild — 21 net-new English keys (the direct-vs-relay
   // path picker and its switch-back action, the "which senders relay?" card with the
   // individual-sender editor, the manual SPF include for providers whose token is

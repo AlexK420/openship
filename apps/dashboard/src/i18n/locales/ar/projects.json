@@ -36,6 +36,7 @@
     "services": "الخدمات",
     "static": "ثابت",
     "standalone": "مستقل",
+    "worker": "عامل",
     "updateAvailable": "Update",
     "appBadge": "تطبيق"
   },
@@ -194,6 +195,7 @@
     "modeStatic": "موقع ثابت",
     "modeStandalone": "مستقل",
     "modeServer": "خادم",
+    "modeWorker": "عامل",
     "infrastructure": "البنية التحتية",
     "platform": "المنصة",
     "mode": "الوضع",

@@ -23,7 +23,7 @@ import { generateIcon } from "@/utils/icons";
 import { useRouter } from "next/navigation";
 import { encodeRepoSlug } from "@/utils/repoSlug";
 import { useDeployment } from "@/context/DeploymentContext";
-import { getPublicEndpointHosts } from "@/context/deployment/types";
+import { getPublicEndpointHosts, workloadOf } from "@/context/deployment/types";
 import { resolveBuildElapsedMs } from "@/context/deployment/types";
 import { usePlatform } from "@/context/PlatformContext";
 import { invalidateProjectCaches } from "@/hooks/useProjectEndpoints";
@@ -332,7 +332,7 @@ const DeploymentProcessing: React.FC<DeploymentProcessingProps> = ({ onRedeploy 
                 <div className="flex items-center gap-2">
                   {generateIcon('terminal-58-1658431404.png', 24, 'currentColor')}
                   <h2 className="text-base font-normal text-foreground">
-                    {state.deploymentSuccess && config.options.hasServer ? dp.productionLogs : dp.buildTerminal}
+                    {state.deploymentSuccess && workloadOf(config.options) !== "static" ? dp.productionLogs : dp.buildTerminal}
                   </h2>
                 </div>
                 {deploymentStatus === "failed" && (

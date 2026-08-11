@@ -1,6 +1,7 @@
 import type { Context } from "hono";
-import { repos, type Permission, type PublicPersonalAccessToken } from "@repo/db";
+import { repos, type Permission, type PublicPersonalAccessToken, type ResourceType } from "@repo/db";
 import { param } from "../../lib/controller-helpers";
+import { audit, auditContextFrom } from "../../lib/audit";
 import {
   getRequestContext,
   type RequestContext,
@@ -8,21 +9,18 @@ import {
 } from "../../lib/request-context";
 import { checkPermissionOnResource } from "../../lib/permission";
 import { canUseGitHubRepo, resolveSourceAccess } from "../github/github-access";
-import { scopeIsSubset, type SourceAccessScope } from "@repo/core";
+import {
+  isGrantableResourceType,
+  isOrgSingletonResourceType,
+  scopeIsSubset,
+  type SourceAccessScope,
+} from "@repo/core";
 import { mintPatToken } from "../../lib/pat";
 import { wildcardProjectGrantRejected, type TCreateTokenBody } from "./token.schema";
 
-/** Resource types a token may be scoped to (mirrors the picker + grants API). */
-const GRANTABLE_TOKEN_TYPES = new Set<string>([
-  "project",
-  "server",
-  "mail_server",
-  "backup_destination",
-  "billing",
-  "audit",
-  "github_installation",
-  "github_repository",
-]);
+// Token scoping and member grants offer the SAME types — they used to be two
+// hand-maintained lists, which is how the PAT screen ended up offering types the
+// MCP consent screen withheld. `isGrantableResourceType` is now the one answer.
 
 /** Public view of a token — NEVER includes the hash or the plaintext. */
 function serialize(t: PublicPersonalAccessToken) {
@@ -214,10 +212,22 @@ async function validateGrants(
   }>,
 ): Promise<{ status: 400 | 403; body: { error: string; code: string } } | null> {
   for (const g of grants) {
-    if (!GRANTABLE_TOKEN_TYPES.has(g.resourceType)) {
+    if (!isGrantableResourceType(g.resourceType)) {
       return {
         status: 400,
         body: { error: `Invalid resource type: ${g.resourceType}`, code: "INVALID_RESOURCE_TYPE" },
+      };
+    }
+    // A feature grant is only reachable at "*" — `checkPermission`'s wildcard arm
+    // looks up that id and nothing else. Stored at any other id it would make the
+    // type read as granted (and advertise its MCP tools) while every call 404s.
+    if (isOrgSingletonResourceType(g.resourceType) && g.resourceId !== "*") {
+      return {
+        status: 400,
+        body: {
+          error: `${g.resourceType} is granted for the whole organization — use "*" as the resource id`,
+          code: "SINGLETON_REQUIRES_WILDCARD",
+        },
       };
     }
     // Hardening: the wildcard project grant is the "projects it creates" scope
@@ -358,6 +368,14 @@ export async function authorizeMcpClient(c: Context) {
     /** Explicit "no limits" intent — required when `grants` is empty. See
      *  resolveScopeIntent: an empty list no longer implies full access. */
     fullAccess?: boolean;
+    /**
+     * "consent" (default) is the first authorization, from the OAuth consent page.
+     * "edit" re-scopes an ALREADY connected client from the settings MCP tab, which
+     * adds three requirements consent doesn't have — see the guards below.
+     */
+    mode?: "consent" | "edit";
+    /** Required to widen an edit to unscoped. See the widen guard. */
+    confirmWiden?: boolean;
     grants?: Array<{
       resourceType: string;
       resourceId: string;
@@ -371,6 +389,18 @@ export async function authorizeMcpClient(c: Context) {
   const clientId = body.clientId?.trim();
   if (!clientId) return c.json({ error: "clientId required", code: "CLIENT_ID_REQUIRED" }, 400);
 
+  const mode = body.mode === "edit" ? "edit" : "consent";
+
+  // An EDIT must target a binding that already exists. Consent may create one, and
+  // deliberately accepts any clientId string — Better Auth won't issue a token for
+  // an unregistered client, so those rows are inert. An edit has no such excuse: a
+  // typo'd id would silently create a second, unreachable binding instead of
+  // changing the one the user is looking at.
+  const existing = await repos.personalAccessToken.findOAuthBinding(ctx.userId, clientId);
+  if (mode === "edit" && !existing) {
+    return c.json({ error: "MCP client is not connected", code: "MCP_CLIENT_NOT_CONNECTED" }, 404);
+  }
+
   // The org the client is confined to. The consent page switches the session's
   // active org to the picked one before calling, so ctx.organizationId is
   // normally already it; the explicit id is defense-in-depth. Any org other
@@ -379,6 +409,21 @@ export async function authorizeMcpClient(c: Context) {
   // are validated against the org the binding is WRITTEN to, the same lookup
   // supplies the ctx that validation runs against.
   const organizationId = body.organizationId?.trim() || ctx.organizationId;
+
+  // An edit must not RE-BIND a live client to a different org. Every resource id in
+  // the editor was picked from the binding's current org, so rewriting the org while
+  // keeping those ids would produce grants that name resources the new org doesn't
+  // contain — and `upsertOAuthBinding` would happily do it.
+  if (mode === "edit" && existing && organizationId !== existing.organizationId) {
+    return c.json(
+      {
+        error: "An MCP client cannot be moved to a different organization — disconnect and reconnect it instead",
+        code: "ORG_REBIND_NOT_ALLOWED",
+      },
+      400,
+    );
+  }
+
   const mintCtx = await mintContextFor(ctx, organizationId);
   if (!mintCtx) {
     return c.json(
@@ -400,29 +445,55 @@ export async function authorizeMcpClient(c: Context) {
   const grantErr = await validateGrants(mintCtx, grants);
   if (grantErr) return c.json(grantErr.body, grantErr.status);
 
-  const binding = await repos.personalAccessToken.upsertOAuthBinding({
+  // Widening a live client to unscoped takes effect on its very NEXT request, with
+  // no reconnect and no new token — so it is the one direction where a mis-click has
+  // an immediate, org-wide consequence. Narrowing needs no confirmation: it can only
+  // remove access. Enforced here rather than in the dialog so a script or a curl gets
+  // the same gate the dashboard does.
+  const previousGrants = existing ? await repos.patGrant.listByToken(existing.id) : [];
+  if (mode === "edit" && existing?.scoped && previousGrants.length > 0 && !scoped) {
+    if (body.confirmWiden !== true) {
+      return c.json(
+        {
+          error:
+            "This removes every restriction on a connected agent, effective immediately. Re-send with confirmWiden to proceed.",
+          code: "SCOPE_WIDEN_NOT_CONFIRMED",
+        },
+        400,
+      );
+    }
+  }
+
+  const binding = await repos.personalAccessToken.upsertOAuthBindingWithGrants({
     userId: ctx.userId,
     organizationId,
     oauthClientId: clientId,
     readOnly: body.readOnly ?? false,
     scoped,
+    // A fresh consent IS a new authorization, so it may clear a stale revocation.
+    // An edit must never resurrect a binding revoked out from under it.
+    unrevoke: mode === "consent",
+    grants: grants.map((g) => ({
+      resourceType: g.resourceType as ResourceType,
+      resourceId: g.resourceId,
+      permissions: g.permissions,
+      scope: g.scope,
+    })),
   });
 
-  // Replace the binding's grants wholesale (re-authorizing overwrites).
-  await repos.patGrant.deleteByToken(binding.id);
-  if (scoped) {
-    await repos.patGrant.createMany(
-      binding.id,
-      grants.map((g) => ({
-        resourceType: g.resourceType as never,
-        resourceId: g.resourceId,
-        permissions: g.permissions,
-        // Normalised by the repo on write, so a pattern the matcher would reject
-        // is never stored as though it were enforceable.
-        scope: g.scope,
-      })),
-    );
-  }
+  // Counts and flags only, never the grant tuples: a full scope dump per edit is
+  // unbounded, and a github grant's source scope would put repo paths into a table
+  // many roles can read. Matches how `grant.replaced` records a member change.
+  audit.recordAsync(auditContextFrom(c, organizationId, ctx.userId), {
+    eventType: mode === "edit" ? "mcp.scope_changed" : "mcp.authorized",
+    resourceType: "mcp_client",
+    resourceId: binding.id,
+    before:
+      mode === "edit" && existing
+        ? { scoped: existing.scoped, readOnly: existing.readOnly, grantCount: previousGrants.length }
+        : null,
+    after: { clientId, scoped, readOnly: binding.readOnly, grantCount: grants.length },
+  });
 
   return c.json({ data: { ok: true, scoped, readOnly: binding.readOnly } });
 }
@@ -431,6 +502,88 @@ export async function authorizeMcpClient(c: Context) {
  * GET /api/tokens/mcp-clients — the caller's connected MCP clients (one per
  * OAuth binding), for the settings management list. Self-scoped to ctx.userId.
  */
+/**
+ * One shape for a binding, so the list's `grantCount` and the detail's
+ * `grants.length` cannot disagree about the same row.
+ *
+ * Grants are projected to the four fields a client may see. The row `id` and the
+ * stubbed `organizationId`/`userId` the pat-grant repo fills in are placeholders,
+ * not data, and must not leak. `scope` DOES round-trip — an editor that loads a
+ * grant without its source scope and saves it back silently strips the path
+ * restriction, which is a live bug in the member-grants panel and must not be
+ * reproduced here.
+ */
+function serializeBinding(
+  b: { oauthClientId: string | null; name: string; organizationId: string | null; readOnly: boolean; scoped: boolean; createdAt: Date; lastUsedAt: Date | null },
+  name: string,
+  organizationName: string | null,
+  grants: Array<{ resourceType: string; resourceId: string; permissions: Permission[]; scope?: SourceAccessScope }>,
+  opts: { includeGrants: boolean },
+) {
+  return {
+    clientId: b.oauthClientId,
+    name,
+    organizationId: b.organizationId,
+    organizationName,
+    readOnly: b.readOnly,
+    scoped: b.scoped,
+    grantCount: grants.length,
+    authorizedAt: b.createdAt,
+    lastUsedAt: b.lastUsedAt,
+    ...(opts.includeGrants
+      ? {
+          grants: grants.map((g) => ({
+            resourceType: g.resourceType,
+            resourceId: g.resourceId,
+            permissions: g.permissions,
+            ...(g.scope ? { scope: g.scope } : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
+/**
+ * GET /api/tokens/mcp-clients/:clientId — one binding WITH its grants, so the
+ * settings editor can prefill.
+ *
+ * This is the read half the edit flow was missing: `mcp-authorize` has always been
+ * an idempotent re-scope, but it replaces grants wholesale with no diff, so an
+ * editor that opened without the current scope in hand would overwrite it on save.
+ *
+ * Resolved through `findOAuthBinding` — the SAME call `resolveBearerIdentity` makes
+ * on every request, including its revoked filter — so what the editor shows and what
+ * the agent's token resolves to are the same row by construction.
+ */
+export async function getMcpClient(c: Context) {
+  const ctx = getRequestContext(c);
+  const clientId = param(c, "clientId").trim();
+  if (!clientId) return c.json({ error: "clientId required", code: "CLIENT_ID_REQUIRED" }, 400);
+
+  const binding = await repos.personalAccessToken.findOAuthBinding(ctx.userId, clientId);
+  if (!binding) {
+    return c.json({ error: "MCP client is not connected", code: "MCP_CLIENT_NOT_CONNECTED" }, 404);
+  }
+
+  const [apps, org, grants] = await Promise.all([
+    repos.oauth.listApplicationsByClientIds([clientId]),
+    binding.organizationId
+      ? repos.organization.findManyById([binding.organizationId])
+      : Promise.resolve([]),
+    repos.patGrant.listByToken(binding.id),
+  ]);
+
+  return c.json({
+    data: serializeBinding(
+      binding,
+      apps[0]?.name || binding.name,
+      org[0]?.name ?? null,
+      grants,
+      { includeGrants: true },
+    ),
+  });
+}
+
 export async function listMcpClients(c: Context) {
   const ctx = getRequestContext(c);
   const bindings = await repos.personalAccessToken.listOAuthBindings(ctx.userId);
@@ -452,18 +605,19 @@ export async function listMcpClients(c: Context) {
   const nameByClient = new Map(apps.map((a) => [a.clientId, a.name]));
   const nameByOrg = new Map(orgs.map((o) => [o.id, o.name]));
 
-  const data = bindings.map((b, i) => ({
-    clientId: b.oauthClientId,
-    // Registered client name; fall back to the binding's stored label.
-    name: (b.oauthClientId && nameByClient.get(b.oauthClientId)) || b.name,
-    organizationId: b.organizationId,
-    organizationName: b.organizationId ? (nameByOrg.get(b.organizationId) ?? null) : null,
-    readOnly: b.readOnly,
-    scoped: b.scoped,
-    grantCount: grantsPerBinding[i]?.length ?? 0,
-    authorizedAt: b.createdAt,
-    lastUsedAt: b.lastUsedAt,
-  }));
+  // grantCount only — the list renders a count, and shipping every binding's full
+  // scope to the settings page is more data than the rows use. The detail route
+  // carries the grants.
+  const data = bindings.map((b, i) =>
+    serializeBinding(
+      b,
+      // Registered client name; fall back to the binding's stored label.
+      (b.oauthClientId && nameByClient.get(b.oauthClientId)) || b.name,
+      b.organizationId ? (nameByOrg.get(b.organizationId) ?? null) : null,
+      grantsPerBinding[i] ?? [],
+      { includeGrants: false },
+    ),
+  );
 
   return c.json({ data });
 }

@@ -29,6 +29,7 @@ import {
   type BackupRun,
 } from "@/lib/api";
 import { PolicyEditor } from "@/components/backup/PolicyEditor";
+import { workloadOf } from "@/context/deployment/types";
 import { RollbackRetentionCards } from "@/components/rollback/RollbackRetentionCards";
 import { projectsApi } from "@/lib/api";
 import type { RollbackCapacityUI } from "@/lib/api/projects";
@@ -250,9 +251,13 @@ export function BackupSettings(): React.JSX.Element {
         <RollbackRetentionCards
           strategy={rollbackStrategy}
           capacity={rollbackCapacity}
-          // Static projects retain built FILES, not images.
+          // Static projects retain built FILES, not images. A worker runs a
+          // container and retains an image like any running workload (#538).
           artifactKind={
-            projectData.hasServer === false && (servicesData.services?.length ?? 0) === 0
+            workloadOf({
+              workloadType: projectData.workloadType ?? projectData.options?.workloadType,
+              hasServer: projectData.hasServer ?? projectData.options?.hasServer,
+            }) === "static" && (servicesData.services?.length ?? 0) === 0
               ? "files"
               : "image"
           }

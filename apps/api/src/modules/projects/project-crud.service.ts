@@ -20,9 +20,13 @@ import {
   aliasConflictsWithSiblings,
   normalizeFramework,
   deriveProjectDeployTarget,
+  resolveWorkload,
+  toWorkloadType,
   type DeployTarget,
   type ReleaseSource,
   type UpdatableIdentity,
+  type WorkloadType,
+  type ProductionMode,
 } from "@repo/core";
 import type { ResourceConfig } from "@repo/adapters";
 import { encodeResources } from "../../lib/resources";
@@ -397,6 +401,56 @@ async function ensureProjectApp(
   return { app, created: true };
 }
 
+/**
+ * The workload axis is THREE columns kept in lockstep (issue #538): the explicit
+ * `workloadType` (the source of truth — `web` | `worker` | `static`) and its two
+ * legacy mirrors `hasServer` / `productionMode` that older readers and rollback
+ * snapshots still depend on. Historically the coupling `hasServer===false ⇒
+ * productionMode="static"` was re-derived at every write site, and there was no
+ * way to express `worker`. This is the single choke point: give it whatever the
+ * caller expressed (any of the three, in priority order workloadType > hasServer
+ * > productionMode) and it returns all three columns, consistent by
+ * construction. Returns `null` when the caller expressed nothing about the axis,
+ * so an update leaves those columns untouched.
+ */
+function resolveWorkloadColumns(intent: {
+  workloadType?: string | null;
+  hasServer?: boolean;
+  productionMode?: ProductionMode;
+}): { workloadType: WorkloadType; hasServer: boolean; productionMode: ProductionMode } | null {
+  const explicit = toWorkloadType(intent.workloadType);
+  // Fold the weaker signals into a workload only when nothing stronger was
+  // given. `worker` is NOT reachable from a legacy signal — a portless worker
+  // has never had a legacy encoding, so it only ever arrives via an explicit
+  // `workloadType`. In particular productionMode "standalone" is a self-
+  // contained WEB server (Next standalone output), not a worker.
+  const seed: WorkloadType | undefined =
+    explicit ??
+    (intent.hasServer !== undefined
+      ? intent.hasServer
+        ? "web"
+        : "static"
+      : intent.productionMode === "static"
+        ? "static"
+        : intent.productionMode === "host" || intent.productionMode === "standalone"
+          ? "web"
+          : undefined);
+  if (seed === undefined) return null;
+  const workload = resolveWorkload(seed, undefined);
+  return {
+    workloadType: workload,
+    // Only a web workload has a listening server; a worker and a static site
+    // both have `hasServer=false` — the legacy boolean can't tell them apart,
+    // which is exactly why `workloadType` exists.
+    hasServer: workload === "web",
+    // An explicit productionMode wins (e.g. a Next "standalone" web app that is
+    // still hasServer=true); otherwise map from the workload.
+    productionMode:
+      intent.productionMode ??
+      (workload === "static" ? "static" : workload === "worker" ? "standalone" : "host"),
+  };
+}
+
 function buildProductionProjectInput(
   groupId: string,
   data: TCreateProjectBody,
@@ -405,6 +459,13 @@ function buildProductionProjectInput(
   organizationId: string,
 ): Omit<NewProject, "id"> {
   const source = resolveProjectSource(data);
+  // Workload triad, resolved once. Absent any axis signal a new project is a web
+  // app (hasServer=true / host) — the historical create default.
+  const workload = resolveWorkloadColumns({
+    workloadType: data.workloadType,
+    hasServer: data.hasServer,
+    productionMode: data.productionMode,
+  }) ?? { workloadType: "web" as WorkloadType, hasServer: true, productionMode: "host" as ProductionMode };
 
   return {
     organizationId,
@@ -436,10 +497,15 @@ function buildProductionProjectInput(
     composePath: normalizeComposePath(data.composePath),
     startCommand: data.startCommand,
     buildImage: data.buildImage,
-    productionMode: data.productionMode ?? (data.hasServer === false ? "static" : "host"),
+    productionMode: workload.productionMode,
     port: data.port ?? 3000,
-    hasServer: data.hasServer ?? true,
+    hasServer: workload.hasServer,
     hasBuild: data.hasBuild ?? true,
+    workloadType: workload.workloadType,
+    // Source/build axes are explicit OVERRIDES only — null means "derive at
+    // read time from framework/source", which is what every existing row does.
+    sourceKind: data.sourceKind ?? null,
+    buildKind: data.buildKind ?? null,
     workspacePrepareCommand:
       data.projectType === "monorepo"
         ? data.monorepoWorkspace?.prepareCommand ?? null
@@ -722,6 +788,8 @@ export async function createServicesProjectWithId(opts: {
       packageManager: "npm",
       hasServer: true,
       hasBuild: opts.hasBuild ?? false,
+      workloadType: "web", // has running containers/servers; keep the axis column in sync
+
       // services ⇒ docker runtime (same rule buildProductionProjectInput applies).
       runtimeMode: opts.runtimeMode === "bare" ? "bare" : "docker",
     });
@@ -991,13 +1059,21 @@ export async function ensureProject(
     if (data.startCommand !== undefined) update.startCommand = data.startCommand;
     if (data.buildImage !== undefined) update.buildImage = data.buildImage;
     if (data.port !== undefined) update.port = data.port;
-    if (data.productionMode !== undefined) update.productionMode = data.productionMode;
-    if (data.hasServer !== undefined) {
-      update.hasServer = data.hasServer;
-      if (data.productionMode === undefined && data.hasServer === false) {
-        update.productionMode = "static";
-      }
+    // Workload axis (workloadType / hasServer / productionMode) — one choke
+    // point keeps the three columns in lockstep (issue #538). Only written when
+    // the caller touched the axis.
+    const wl = resolveWorkloadColumns({
+      workloadType: data.workloadType,
+      hasServer: data.hasServer,
+      productionMode: data.productionMode as ProductionMode | undefined,
+    });
+    if (wl) {
+      update.workloadType = wl.workloadType;
+      update.hasServer = wl.hasServer;
+      update.productionMode = wl.productionMode;
     }
+    if (data.sourceKind !== undefined) update.sourceKind = data.sourceKind;
+    if (data.buildKind !== undefined) update.buildKind = data.buildKind;
     if (data.hasBuild !== undefined) update.hasBuild = data.hasBuild;
     if (data.projectType === "monorepo" && data.monorepoWorkspace !== undefined) {
       update.workspacePrepareCommand = data.monorepoWorkspace.prepareCommand ?? null;
@@ -2020,13 +2096,19 @@ export async function updateOptions(
   if (options.packageManager !== undefined) update.packageManager = options.packageManager;
   if (options.buildImage !== undefined) update.buildImage = options.buildImage;
   if (options.framework !== undefined) update.framework = options.framework;
-  if (options.productionMode !== undefined) update.productionMode = options.productionMode;
-  if (options.hasServer !== undefined) {
-    update.hasServer = options.hasServer;
-    if (options.productionMode === undefined && options.hasServer === false) {
-      update.productionMode = "static";
-    }
+  // Workload axis — same single choke point as the update path above (#538).
+  const optWorkload = resolveWorkloadColumns({
+    workloadType: options.workloadType as string | null | undefined,
+    hasServer: options.hasServer as boolean | undefined,
+    productionMode: options.productionMode as ProductionMode | undefined,
+  });
+  if (optWorkload) {
+    update.workloadType = optWorkload.workloadType;
+    update.hasServer = optWorkload.hasServer;
+    update.productionMode = optWorkload.productionMode;
   }
+  if (options.sourceKind !== undefined) update.sourceKind = options.sourceKind;
+  if (options.buildKind !== undefined) update.buildKind = options.buildKind;
   if (options.hasBuild !== undefined) update.hasBuild = options.hasBuild;
   // Runtime isolation mode (bare/docker) — editable in the Runtime tab; read by
   // buildConfigSnapshot so every deploy/redeploy respects the saved choice.

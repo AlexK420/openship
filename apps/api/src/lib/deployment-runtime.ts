@@ -16,6 +16,7 @@ import { repos } from "@repo/db";
 import {
   HOST_CHANNEL_UNAFFECTED,
   HostUnreachableError,
+  resolveWorkload,
   safeErrorMessage,
   type DeployTarget,
   type RuntimeMode,
@@ -131,9 +132,15 @@ export interface DeploymentMeta {
  */
 export function resolveDeploymentStaticRoot(
   deployment: Pick<Deployment, "containerId" | "meta">,
-  project: { hasServer?: boolean | null; outputDirectory?: string | null },
+  project: { hasServer?: boolean | null; workloadType?: string | null; outputDirectory?: string | null },
 ): string | null {
-  if (project.hasServer || !deployment.containerId) return null;
+  // Only a STATIC workload serves a release directory. A worker also has
+  // `hasServer=false` but its containerId is a real container, not a doc-root, so
+  // classify by workload — not the legacy boolean — or a worker's stop/start would
+  // dial a bogus static path (#538-B).
+  if (resolveWorkload(project.workloadType, project.hasServer) !== "static" || !deployment.containerId) {
+    return null;
+  }
   const meta = (deployment.meta ?? {}) as DeploymentMeta;
   const outputDirectory = meta.staticServeOutputDir ?? project.outputDirectory ?? "";
   try {

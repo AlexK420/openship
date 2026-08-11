@@ -313,10 +313,12 @@ export const EDGE_PORTS = new Set([80, 443]);
 
 /** Parse a compose "host:container[/proto]" (or bare "container") port spec.
  *  `host` is the published host port (null for a bare container port — no host
- *  publish). Single source of truth for both edge detection and stripping;
- *  tolerates an optional host IP ("127.0.0.1:80:80"). */
+ *  publish). `hostIp` is the pinned host interface when present
+ *  ("127.0.0.1:80:80" → "127.0.0.1"), undefined otherwise. Single source of
+ *  truth for edge detection, stripping, and external-exposure classification. */
 export function parseComposePort(spec: string): {
   host: number | null;
+  hostIp?: string;
   container: string;
   proto?: string;
 } {
@@ -324,7 +326,28 @@ export function parseComposePort(spec: string): {
   const parts = hostAndPorts.split(":");
   const container = parts[parts.length - 1];
   const host = parts.length >= 2 ? Number(parts[parts.length - 2]) : NaN;
-  return { host: Number.isFinite(host) ? host : null, container, proto };
+  // Everything before the trailing host:container pair is the interface the
+  // publish was pinned to (undefined when the short "host:container" form pins
+  // none). Joined with ":" so a bracketless IPv6 interface survives round-trip.
+  const hostIp = parts.length >= 3 ? parts.slice(0, parts.length - 2).join(":") : undefined;
+  return { host: Number.isFinite(host) ? host : null, hostIp, container, proto };
+}
+
+/** Host interfaces a publish pinned to that keep it ON the box — never
+ *  reachable from another host. */
+const LOOPBACK_HOST_IPS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/** Was a host publish reachable from OUTSIDE the box? Docker publishes on ALL
+ *  interfaces (0.0.0.0) when the short form pins no host IP, and on the named
+ *  interface otherwise — so only an explicit loopback interface keeps it on-box.
+ *  This is the security-meaningful signal when a migration strips the publish:
+ *  the service loses genuine external reachability, not just a port number. An
+ *  unrecognized interface is treated as external — the conservative choice, so a
+ *  strip never under-reports what the operator loses. */
+export function isExternalHostPublish(hostIp?: string): boolean {
+  const ip = hostIp?.trim();
+  if (!ip || ip === "0.0.0.0" || ip === "::") return true;
+  return !LOOPBACK_HOST_IPS.has(ip);
 }
 
 /** Host edge ports (80/443) a service publishes — the conflict signal. */

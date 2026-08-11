@@ -28,16 +28,17 @@ import {
   type AccessSelection,
   type DigestKey,
   type SummaryGroup,
-} from "@/components/permissions/mcp-access-templates";
-import { ResourceAvatar } from "@/components/permissions/ResourceAvatar";
+} from "./mcp-access-templates";
+import { ResourceAvatar } from "./ResourceAvatar";
 import { resourceTypeLabel, type ResourceType } from "@/lib/api";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 
-export function ScopeSummary({
+export function AccessScopeSummary({
   selection,
   orgName,
   labels,
   disabled,
+  showReadOnly = true,
   onRemove,
   onRemoveType,
   onReadOnly,
@@ -46,6 +47,8 @@ export function ScopeSummary({
   orgName: string;
   labels: ReadonlyMap<string, string>;
   disabled?: boolean;
+  /** Member grants hide it: read-only is a property of a TOKEN, not of a member. */
+  showReadOnly?: boolean;
   onRemove: (resourceType: ResourceType, resourceId: string) => void;
   onRemoveType: (resourceType: ResourceType) => void;
   onReadOnly: (on: boolean) => void;
@@ -153,6 +156,7 @@ export function ScopeSummary({
       </div>
 
       {/* ── Read-only modifier ── */}
+      {showReadOnly && (
       <div className="mt-4 border-t border-border/50 pt-4">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
@@ -208,6 +212,7 @@ export function ScopeSummary({
           </div>
         )}
       </div>
+      )}
 
       {/* ── Why Authorize is disabled ── */}
       {blocked && (

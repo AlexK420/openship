@@ -20,6 +20,7 @@ import { permission } from "../../lib/permission";
 import { audit, auditContextFrom } from "../../lib/audit";
 import { assertNotCloud } from "../../lib/controller-helpers";
 import { primeGeo, countryForIp } from "@/lib/geo-ip";
+import { execOnHost } from "../../lib/agent-exec";
 
 /** Public shape - what the controller returns to clients (no SSH secrets). */
 function serializeServer(s: Awaited<ReturnType<typeof repos.server.get>>) {
@@ -369,4 +370,82 @@ export async function deleteServer(c: Context) {
   });
 
   return c.json({ ok: true, unboundProjects });
+}
+
+/**
+ * POST /api/system/servers/:id/exec — run a command on this server's host.
+ *
+ * The sanctioned execution point for an agent, and the reason it exists: the only
+ * other way to run a command was a custom command JOB, whose `job` tag is an
+ * org-singleton — so that grant reaches EVERY server in the org and could not be
+ * narrowed to one. Here the permission is asserted on the server itself, so a
+ * `{server, <id>, [admin]}` grant confines an agent to exactly this box.
+ *
+ * `admin` rather than `write`: this is unrestricted shell as the server's SSH user
+ * (root in Openship's model), which is strictly more than any other `server:write`
+ * route can do. It is the same tier `/api/system/install` asserts, which is the
+ * closest existing capability.
+ */
+export async function execOnServer(c: Context) {
+  const cloudGuard = assertNotCloud(c); if (cloudGuard) return cloudGuard;
+
+  const id = c.req.param("id")!;
+  // Primary gate: permission resolver (404 on deny, IDOR-safe). Asserted BEFORE the
+  // row is read, so a caller without access cannot distinguish "no such server"
+  // from "not yours".
+  await permission.assert(getRequestContext(c), { resourceType: "server", resourceId: id, action: "admin" });
+  const ctx = getRequestContext(c);
+  const server = await repos.server.getInOrganization(id, ctx.organizationId);
+  if (!server) return c.json({ error: "Server not found" }, 404);
+
+  const body = await c.req.json<{
+    command?: string;
+    cwd?: string;
+    timeoutMs?: number;
+    maxOutputBytes?: number;
+  }>();
+  const command = body.command?.trim();
+  if (!command) return c.json({ error: "command required", code: "COMMAND_REQUIRED" }, 400);
+
+  const result = await sshManager
+    .withExecutor(id, (executor) =>
+      execOnHost(executor, {
+        command,
+        cwd: body.cwd,
+        timeoutMs: body.timeoutMs,
+        maxOutputBytes: body.maxOutputBytes,
+      }),
+    )
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      return { transportError: message };
+    });
+
+  if ("transportError" in result) {
+    return c.json(
+      { error: `Could not reach the server: ${result.transportError}`, code: "SERVER_UNREACHABLE" },
+      502,
+    );
+  }
+
+  // The command IS recorded, unlike the counts-only audit used elsewhere: an exec
+  // that ran is the single most important thing to be able to reconstruct later, and
+  // the operator who granted the access is entitled to see what was done with it.
+  // Output is NOT recorded — it is unbounded and may contain secrets the command read.
+  audit.recordAsync(auditContextFrom(c, ctx.organizationId, ctx.userId), {
+    eventType: "server.exec",
+    resourceType: "server",
+    resourceId: id,
+    after: {
+      command,
+      cwd: body.cwd ?? null,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      truncated: result.truncated,
+      durationMs: result.durationMs,
+      outputBytes: result.output.length,
+    },
+  });
+
+  return c.json({ data: result });
 }

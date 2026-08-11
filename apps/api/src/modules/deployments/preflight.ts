@@ -31,6 +31,7 @@ import { isCloudConnectedForOrg } from "../../lib/cloud/session";
 import { runCloudPreflight, type CloudPreflightData } from "../../lib/cloud-preflight";
 import { isStaticService, type DeployableService } from "../../lib/deployable-service";
 import { isFullyPinned, snapshotNeedsGitSource } from "./pinned-artifacts";
+import { snapshotToClass } from "./deployment-class";
 import { relayConfigEligible, resolveClonePlan } from "./clone-plan";
 import { hasLocalGitIdentity } from "../github/github.local-auth";
 import { isPublicRepo } from "../github/github.http";
@@ -497,7 +498,10 @@ async function checkPublicEndpoints(
 ): Promise<PreflightCheck[]> {
   const plat = platform();
   const effectiveTarget = resolveEffectiveTarget(plat.target, snapshot);
-  const isCloudStatic = effectiveTarget === "cloud" && !snapshot.hasServer;
+  // The workload decides which endpoint SHAPE is valid: a web app routes by port,
+  // a static site by path, a worker by nothing at all (#538-B).
+  const workload = snapshotToClass(snapshot).workload;
+  const isCloudStatic = effectiveTarget === "cloud" && workload === "static";
   // Whether we can reach the SaaS to verify slugs / custom domains.
   const canBridgeCloud = Boolean(cloud?.runtime.ok && ctx?.userId);
   const baseDomain = getRoutingBaseDomain();
@@ -562,8 +566,10 @@ async function checkPublicEndpoints(
       }
     }
 
-    // Target kind must match the deployment kind.
-    if (hasPortTarget && !snapshot.hasServer) {
+    // Target kind must match the workload. A worker is routed by nothing, so any
+    // endpoint on it is dropped downstream — don't fail it here with a
+    // static/server message that doesn't fit its shape.
+    if (workload === "static" && hasPortTarget) {
       checks.push(
         fail(
           idOf("shape"),
@@ -571,7 +577,7 @@ async function checkPublicEndpoints(
           "Static deployments cannot expose port-targeted routes. Use a static target path instead.",
         ),
       );
-    } else if (hasPathTarget && snapshot.hasServer) {
+    } else if (workload === "web" && hasPathTarget) {
       checks.push(
         fail(
           idOf("shape"),
@@ -973,10 +979,19 @@ function checkConfig(snapshot: DeploymentConfigSnapshot, opts?: PreflightOptions
     missing.push("install command");
   }
 
-  if (snapshot.hasServer) {
+  const cls = snapshotToClass(snapshot);
+  if (cls.workload === "web") {
+    // A web app is reached on a port and must declare how it starts and listens.
     if (!snapshot.startCommand) missing.push("start command");
     if (!snapshot.port) missing.push("port");
+  } else if (cls.workload === "worker") {
+    // A worker is a portless long-running container (#538-B): it needs a command
+    // to run but no port and no route. A dockerfile/prebuilt worker takes its
+    // command from the image CMD, so only a buildpack worker must supply one.
+    if (cls.build === "buildpack" && !snapshot.startCommand) missing.push("start command");
   }
+  // A static workload needs neither a start command nor a port — its output is
+  // served as files, so nothing is required here.
 
   if (missing.length > 0) {
     return {
@@ -991,7 +1006,11 @@ function checkConfig(snapshot: DeploymentConfigSnapshot, opts?: PreflightOptions
 }
 
 function checkStack(snapshot: DeploymentConfigSnapshot): PreflightCheck {
-  if (!snapshot.hasServer && snapshot.startCommand) {
+  // Only a STATIC workload ignores a start command (files are served by the edge).
+  // A worker also has `hasServer=false` but its start command is exactly what runs,
+  // so keying this on the workload — not the legacy boolean — stops it from telling
+  // a worker its command will be ignored (#538-B).
+  if (snapshotToClass(snapshot).workload === "static" && snapshot.startCommand) {
     return {
       id: "stack",
       label: "Stack configuration",
@@ -1481,10 +1500,11 @@ export async function runPreflightChecks(
   const clonesOnRemote =
     !repoIsPublic &&
     runtimeMode === "bare" &&
-    // Static apps now BUILD in a Docker sandbox (see build-pipeline's static
-    // flip) which clones on the orchestrator — never a remote bare clone — so
-    // they never need a remote clone credential even if runtimeMode is "bare".
-    snapshot.hasServer &&
+    // Only a WEB workload can build on a bare remote worker: static apps build
+    // in a Docker sandbox and workers build in Docker (both clone on the
+    // orchestrator), so neither ever needs a remote clone credential even when
+    // runtimeMode is "bare" (#538-B).
+    snapshotToClass(snapshot).workload === "web" &&
     effectiveTarget === "server" &&
     effectiveBuildStrategy !== "local";
 

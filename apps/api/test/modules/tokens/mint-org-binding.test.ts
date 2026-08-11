@@ -48,11 +48,22 @@ const mocks = vi.hoisted(() => ({
     readOnly: false,
     organizationId: args.organizationId,
   })),
+  // The binding + its grants are now written in ONE transaction, so the assertions
+  // below read the grants off this call rather than off a separate createMany.
+  upsertOAuthBindingWithGrants: vi.fn(async (args: { organizationId: string }) => ({
+    id: "binding1",
+    readOnly: false,
+    scoped: true,
+    organizationId: args.organizationId,
+  })),
+  // Consent looks the binding up too, for the org-rebind guard and the audit
+  // before-state. Null = not yet connected, which is the consent case.
+  findOAuthBinding: vi.fn(async () => null),
   createMany: vi.fn(async () => {}),
   deleteByToken: vi.fn(async () => {}),
 }));
 
-const { upsertOAuthBinding, createMany, deleteByToken } = mocks;
+const { upsertOAuthBindingWithGrants, findOAuthBinding } = mocks;
 
 vi.mock("@repo/db", () => ({
   repos: {
@@ -77,7 +88,16 @@ vi.mock("@repo/db", () => ({
       findForResource: vi.fn(async () => null),
       listByToken: vi.fn(async () => []),
     },
-    personalAccessToken: { upsertOAuthBinding: mocks.upsertOAuthBinding },
+    personalAccessToken: {
+      upsertOAuthBinding: mocks.upsertOAuthBinding,
+      upsertOAuthBindingWithGrants: mocks.upsertOAuthBindingWithGrants,
+      findOAuthBinding: mocks.findOAuthBinding,
+    },
+    organization: { findManyById: vi.fn(async () => []) },
+    oauth: { listApplicationsByClientIds: vi.fn(async () => []) },
+    // Authorizing now records an audit event. It is fire-and-forget and swallows its
+    // own errors, so this only keeps the run's output clean.
+    auditEvent: { create: vi.fn(async () => {}) },
     project: { findById: vi.fn(async () => null), findEnvVarById: vi.fn(async () => null) },
     server: { get: vi.fn(async () => null) },
     backupDestination: { findById: vi.fn(async () => null) },
@@ -156,9 +176,8 @@ async function authorize(activeOrg: string, body: unknown): Promise<Reply> {
 
 beforeEach(() => {
   mocks.state.grantsByOrg = {};
-  upsertOAuthBinding.mockClear();
-  createMany.mockClear();
-  deleteByToken.mockClear();
+  upsertOAuthBindingWithGrants.mockClear();
+  findOAuthBinding.mockClear();
 });
 
 describe("finding 1: grant width is checked in the org the binding is written to", () => {
@@ -182,8 +201,7 @@ describe("finding 1: grant width is checked in the org the binding is written to
     expect(r.status).toBe(403);
     expect(r.body.code).toBe("GRANT_EXCEEDS_ACCESS");
     // Nothing may be persisted — the binding is the durable authority.
-    expect(upsertOAuthBinding).not.toHaveBeenCalled();
-    expect(createMany).not.toHaveBeenCalled();
+    expect(upsertOAuthBindingWithGrants).not.toHaveBeenCalled();
   });
 
   it("still allows the same grants when the binding targets the org they hold them in", async () => {
@@ -195,7 +213,7 @@ describe("finding 1: grant width is checked in the org the binding is written to
 
     expect(r.status).toBe(200);
     expect(r.body.data).toMatchObject({ ok: true, scoped: true });
-    expect(upsertOAuthBinding).toHaveBeenCalledWith(
+    expect(upsertOAuthBindingWithGrants).toHaveBeenCalledWith(
       expect.objectContaining({ organizationId: OWNER_ORG }),
     );
   });
@@ -234,7 +252,7 @@ describe("finding 1: grant width is checked in the org the binding is written to
 
     expect(r.status).toBe(403);
     expect(r.body.code).toBe("GRANT_EXCEEDS_ACCESS");
-    expect(upsertOAuthBinding).not.toHaveBeenCalled();
+    expect(upsertOAuthBindingWithGrants).not.toHaveBeenCalled();
   });
 
   it("still allows that GitHub grant when bound to the org whose owner they are", async () => {
@@ -285,7 +303,7 @@ describe("finding 2: one repo under an owner is not authority over the owner", (
 
     expect(r.status).toBe(403);
     expect(r.body.code).toBe("GRANT_EXCEEDS_ACCESS");
-    expect(createMany).not.toHaveBeenCalled();
+    expect(upsertOAuthBindingWithGrants).not.toHaveBeenCalled();
   });
 
   it("still allows re-granting exactly the repo they hold", async () => {
@@ -295,7 +313,7 @@ describe("finding 2: one repo under an owner is not authority over the owner", (
       grants: [{ ...ONE_REPO }],
     });
     expect(r.status).toBe(200);
-    expect(createMany).toHaveBeenCalled();
+    expect(upsertOAuthBindingWithGrants).toHaveBeenCalled();
   });
 
   it("still allows an owner-wide grant when the caller actually holds the installation", async () => {

@@ -27,8 +27,10 @@ import {
   resolveBuildElapsedMs,
   syncPublicEndpointState,
   usesServiceDeployment,
+  workloadOf,
 } from "./types";
 import type { RawComposeService } from "./types";
+import type { WorkloadType } from "@repo/core";
 import {
   deployErrorCloudCapability,
   shouldPromptCloudConnect,
@@ -490,7 +492,9 @@ export function useDeploymentBuild(
       onProgress: handleProgressUpdate,
       onSuccess: (data) => {
         handleSuccessMessage(data);
-        if (config.options.hasServer) {
+        // A worker runs a container and streams logs like a web app; only a
+        // static (edge-served files) deploy has no container to stream (#538).
+        if (workloadOf(config.options) !== "static") {
           canStreamContainer.current = true;
         }
         buildStream.disconnect();
@@ -713,6 +717,9 @@ export function useDeploymentBuild(
                 : undefined,
             hasServer: config.options.hasServer,
             hasBuild: config.options.hasBuild,
+            // Runtime workload (#538). A worker is only expressible here — the
+            // backend re-syncs hasServer/productionMode from it.
+            workloadType: workloadOf(config.options),
             ...(config.runtimeMode === "bare" || config.runtimeMode === "docker"
               ? { runtimeMode: config.runtimeMode }
               : {}),
@@ -771,6 +778,8 @@ export function useDeploymentBuild(
           : undefined,
         hasServer: config.options.hasServer,
         hasBuild: config.options.hasBuild,
+        // Runtime workload (#538): the only way to create a portless worker.
+        workloadType: workloadOf(config.options),
         // Rollback retention chosen in the target panel. Only meaningful on a
         // FIRST deploy — for an existing project the panel already persisted it.
         ...(config.rollbackWindow !== undefined ? { rollbackWindow: config.rollbackWindow } : {}),
@@ -874,15 +883,17 @@ export function useDeploymentBuild(
           config.projectType === "services" || config.projectType === "monorepo"
             ? config.serviceDeploymentMode
             : undefined,
-        // Cloud resource tier only matters for a server-backed Oblien deploy.
-        // Static (Pages) deploys and non-cloud targets ignore it.
+        // Cloud resource tier sizes a long-lived container — a web app OR a
+        // worker (#538). Only a static (Pages) deploy has no workspace to size,
+        // so gate on the workload, not the legacy hasServer boolean (a worker
+        // shares hasServer=false with a static site).
         cloudResourceTier:
-          config.deployTarget === "cloud" && config.options.hasServer
+          config.deployTarget === "cloud" && workloadOf(config.options) !== "static"
             ? config.cloudResourceTier
             : undefined,
         cloudResourceCustom:
           config.deployTarget === "cloud" &&
-          config.options.hasServer &&
+          workloadOf(config.options) !== "static" &&
           config.cloudResourceTier === "custom"
             ? config.cloudResourceCustom
             : undefined,
@@ -1092,6 +1103,16 @@ export function useDeploymentBuild(
           const apiHasServer = apiConfig.hasServer !== undefined
             ? apiConfig.hasServer
             : config.options.hasServer;
+          // The frozen deployment's resolved workload (#538): a worker and a
+          // static site both carry hasServer=false, so this is what tells "Edit
+          // Configuration" to reopen a worker as a worker. Absent (older status
+          // payload) → undefined, i.e. derive from hasServer as before.
+          const apiWorkloadType: WorkloadType | undefined =
+            apiConfig.workloadType === "web" ||
+            apiConfig.workloadType === "worker" ||
+            apiConfig.workloadType === "static"
+              ? apiConfig.workloadType
+              : undefined;
           const normalizedEndpoints = ensurePublicEndpoints(
             apiConfig.publicEndpoints?.map((endpoint: {
               port?: string;
@@ -1174,6 +1195,7 @@ export function useDeploymentBuild(
               rootDirectory: apiConfig.rootDirectory || prev.options.rootDirectory,
               hasServer: apiHasServer,
               hasBuild: apiConfig.hasBuild !== undefined ? apiConfig.hasBuild : prev.options.hasBuild,
+              workloadType: apiWorkloadType,
             },
           })));
         }

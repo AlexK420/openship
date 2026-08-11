@@ -3,6 +3,7 @@ import { Inbox, Layers, ArrowRight, Pencil, KeyRound, Cpu } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { isServicesFramework } from "@repo/core";
 import { useProjectSettings } from "@/context/ProjectSettingsContext";
+import { workloadOf } from "@/context/deployment/types";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { encodeLocalSlug, encodeRepoSlug } from "@/utils/repoSlug";
 import { EnvVarsEditor } from "./EnvVarsEditor";
@@ -189,7 +190,11 @@ export const BuildSettings = () => {
   // BUILT in a Docker sandbox, so reporting "Sandboxed (container)" here mislabels a
   // build detail as a runtime one and contradicts the Start command row's "Static
   // (no server)". Say plainly there is no runtime instead.
-  const runtimeModeLabel = !buildData.hasServer
+  // A worker shares hasServer=false with a static site but DOES run a process
+  // (sandboxed like a web app), so classify via the resolved workload — only a
+  // static site has "no runtime" (#538).
+  const workload = workloadOf(buildData);
+  const runtimeModeLabel = workload === "static"
     ? t.projectSettings.build.runtime.modeStatic
     : projectData?.runtimeMode === "docker"
       ? t.projectSettings.build.runtime.modeSandboxed
@@ -229,8 +234,8 @@ export const BuildSettings = () => {
           )}
           <Row
             label={t.projectSettings.build.runtime.startCommand}
-            value={buildData.hasServer ? buildData.startCommand : t.projectSettings.build.runtime.staticNoServer}
-            mono={buildData.hasServer}
+            value={workload !== "static" ? buildData.startCommand : t.projectSettings.build.runtime.staticNoServer}
+            mono={workload !== "static"}
           />
         </div>
       </SectionCard>
@@ -239,12 +244,12 @@ export const BuildSettings = () => {
           reach for it BECAUSE a container just got OOM-killed, and routing that
           through the full re-deploy wizard is the wrong shape. Only meaningful
           for a project that actually runs a container. */}
-      {buildData.hasServer && <ResourceSettings />}
+      {workload !== "static" && <ResourceSettings />}
 
       {/* Storage — persistent paths + object storage. Editable in place (see the
           component's own note on why it doesn't route through the wizard). Only
           meaningful for a project with a running container. */}
-      {buildData.hasServer && <StorageSettings />}
+      {workload !== "static" && <StorageSettings />}
 
       {/* Environment variables — edited in place via a safe per-variable editor
           (diff-merge; untouched secrets are never re-sent), NOT the wizard. */}

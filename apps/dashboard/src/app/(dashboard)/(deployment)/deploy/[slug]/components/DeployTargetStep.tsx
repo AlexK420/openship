@@ -10,7 +10,7 @@ import {
 } from "@repo/core";
 import { BlurIp } from "@/components/BlurIp";
 import { useDeployment } from "@/context/DeploymentContext";
-import { usesServiceDeployment } from "@/context/deployment/types";
+import { usesServiceDeployment, workloadOf } from "@/context/deployment/types";
 import type { DeploymentConfig } from "@/context/deployment/types";
 import { useCloud } from "@/context/CloudContext";
 import { usePlatform } from "@/context/PlatformContext";
@@ -1064,13 +1064,14 @@ const DeployTargetStep: React.FC<DeployTargetStepProps> = ({ targets, onContinue
   useEffect(() => {
     if (config.projectId || runtimeDefaultedRef.current) return;
     if (config.deployTarget !== "server") return;
-    if (!config.options.hasServer || config.projectType === "docker" || isServiceDeployment) return;
+    if (workloadOf(config.options) === "static" || config.projectType === "docker" || isServiceDeployment) return;
     runtimeDefaultedRef.current = true;
     if (config.runtimeMode !== "docker") updateConfig({ runtimeMode: "docker" });
   }, [
     config.projectId,
     config.deployTarget,
     config.options.hasServer,
+    config.options.workloadType,
     config.projectType,
     isServiceDeployment,
     config.runtimeMode,
@@ -1505,10 +1506,10 @@ const DeployTargetStep: React.FC<DeployTargetStepProps> = ({ targets, onContinue
     showFullPicker && config.deployTarget === "server" && !!config.serverId;
   // Runtime-isolation (Sandbox/Direct) applies only to a self-hosted server APP
   // that runs a process: docker/compose always run sandboxed, and a static app
-  // (files served by the edge, hasServer=false) has nothing to isolate. Shown in
-  // the Advanced panel (right column).
+  // (files served by the edge) has nothing to isolate. A worker runs a process,
+  // so it isolates like a web app. Shown in the Advanced panel (right column).
   const showRuntimeIsolation =
-    config.options.hasServer &&
+    workloadOf(config.options) !== "static" &&
     config.projectType !== "docker" &&
     !isServiceDeployment;
   const showRightPanel = showCloudPicker || showServerAdvanced;
@@ -1656,7 +1657,7 @@ const DeployTargetStep: React.FC<DeployTargetStepProps> = ({ targets, onContinue
           buildStrategy={config.buildStrategy}
           serverName={summaryServerName}
           showBuildStrategy={showBuildStrategy}
-          hasServer={config.options.hasServer}
+          hasServer={workloadOf(config.options) !== "static"}
           runtimeMode={config.runtimeMode}
           isServices={config.projectType === "services" || config.serviceDeploymentMode === "services"}
           onEdit={() => setExpanded(true)}
@@ -1848,8 +1849,9 @@ const DeployTargetStep: React.FC<DeployTargetStepProps> = ({ targets, onContinue
                     enabled={advancedOpen}
                     // A static project (nothing runs as a process) retains built
                     // FILES, not images — the same distinction the "Static ·
-                    // edge-served" chip on the summary makes.
-                    artifactKind={!config.options.hasServer && !isServiceDeployment ? "files" : "image"}
+                    // edge-served" chip on the summary makes. A worker builds and
+                    // retains an image like any running workload.
+                    artifactKind={workloadOf(config.options) === "static" && !isServiceDeployment ? "files" : "image"}
                   />
 
                   {/* Clone location — docker/compose server deploys (sandboxed). */}

@@ -112,6 +112,21 @@ export type RuntimeCapability =
    */
   | "inContainerExec"
   /**
+   * The in-container executor is genuinely CONFINED to the deployment — a command
+   * run through it cannot see or touch the host.
+   *
+   * Deliberately separate from "inContainerExec", which only promises "runs in the
+   * deployment's context". For Bare that context IS the host (`inContainerExecutor`
+   * returns the host executor, since a bare deployment is a host process), which is
+   * fine for the advisory port probe that capability was added for — and a privilege
+   * escalation for anything that runs an arbitrary command, because a project-tier
+   * grant would reach the whole machine.
+   *
+   * Any consumer running caller-supplied commands must gate on THIS, not on
+   * "inContainerExec". Omitted ⇒ not confined, so a new runtime fails closed.
+   */
+  | "isolatedExec"
+  /**
    * Runtime can report a container's RESTART HISTORY and health, not just a
    * point-in-time status — the readings the post-deploy stabilization watch
    * needs to tell "up" from "bouncing" (`sampleStability`). Docker implements

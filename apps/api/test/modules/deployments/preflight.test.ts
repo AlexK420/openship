@@ -302,6 +302,78 @@ describe("runPreflightChecks", () => {
     expect(config?.message ?? "").not.toContain("api");
   });
 
+  // #538-B — the worker workload: a portless long-running container. It needs a
+  // run command but NO port and NO route, so preflight must not demand a port (as
+  // it does for a web app) nor warn that its start command will be ignored (as it
+  // does for a static site).
+  describe("worker workload (#538-B)", () => {
+    const workerBase = {
+      repoUrl: "https://github.com/acme/worker.git",
+      branch: "main",
+      buildImage: "node:22",
+      installCommand: "npm install",
+      buildCommand: "npm run build",
+      framework: "node",
+      hasBuild: true,
+      // Frozen triple on the snapshot — a worker is signalled explicitly.
+      workload: "worker",
+      deployTarget: "server",
+      organizationId: "org-1",
+    };
+    const opts = {
+      ctx: { userId: "user-1", organizationId: "org-1" } as any,
+      buildStrategy: "local" as const,
+      publicEndpoints: [] as any[],
+    };
+
+    it("passes with a run command and NO port (a worker publishes nothing)", async () => {
+      const result = await runPreflightChecks(
+        { ...workerBase, startCommand: "node worker.js" } as any,
+        opts,
+      );
+      const config = result.checks.find((c) => c.id === "config");
+      expect(config?.status).toBe("pass");
+      // Crucially it did NOT demand a port the way a web app would.
+      expect(config?.message ?? "").not.toContain("port");
+    });
+
+    it("a buildpack worker with no run command fails for the command, not the port", async () => {
+      const result = await runPreflightChecks(
+        { ...workerBase, startCommand: "" } as any,
+        opts,
+      );
+      const config = result.checks.find((c) => c.id === "config");
+      expect(config?.status).toBe("fail");
+      expect(config?.message ?? "").toContain("start command");
+      expect(config?.message ?? "").not.toContain("port");
+    });
+
+    it("does not warn that a worker's start command will be ignored (that's only static)", async () => {
+      const result = await runPreflightChecks(
+        { ...workerBase, startCommand: "node worker.js" } as any,
+        opts,
+      );
+      const stack = result.checks.find((c) => c.id === "stack");
+      expect(stack?.message ?? "").not.toContain("will be ignored");
+    });
+
+    it("a web app (no explicit workload) STILL requires a port", async () => {
+      const result = await runPreflightChecks(
+        {
+          ...workerBase,
+          workload: undefined,
+          hasServer: true,
+          startCommand: "node server.js",
+          // no port
+        } as any,
+        opts,
+      );
+      const config = result.checks.find((c) => c.id === "config");
+      expect(config?.status).toBe("fail");
+      expect(config?.message ?? "").toContain("port");
+    });
+  });
+
   // #427 follow-up — cloud isolation on self-hosted.
   //
   // The old preflight used the coarse `domainType !== "custom"` predicate

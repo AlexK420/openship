@@ -241,6 +241,28 @@ ordinary catalog app, and five new one-click apps.
 - **Reconcile and teardown are steadier** — record-only deletes, orphan GC
   scheduling, pending actions and port checks were tightened around the same
   runtime path.
+- **A project's source, build and runtime are three separate things** — two
+  boolean flags (`hasBuild`, `hasServer`) each stood in for two different
+  concerns, so a deploy could be accepted and then fail a stage later. A project
+  is now described by three orthogonal axes — where the code comes from (git, a
+  prebuilt image, or an upload), how it's built (Dockerfile, buildpack, static,
+  or nothing to build), and what runs afterward (web, worker, or static) —
+  resolved in one place that every stage reads. Existing projects classify
+  exactly as they did before.
+- **A private-repo Dockerfile app clones again** — a Dockerfile build runs no
+  buildpack step, so it naturally carried `hasBuild=false`, and the one gate that
+  decides whether to fetch a clone token keyed off that flag — dropping the token
+  and failing the clone on a private repo, even though the Dockerfile needs the
+  repo as its build context. Whether the code is fetched now depends only on
+  where it comes from, never on how it's built.
+- **A worker is a first-class deploy type** — a long-running process with no port
+  (a queue consumer, a bot, a cron loop) had nowhere to go: called a server it
+  failed preflight for a missing port, called static it was routed through
+  file-serving and failed for a missing docroot. `worker` is now its own
+  workload — built like any other app, run as an always-restart container with no
+  port and no route, and checked for a start command instead of a port. Choose it
+  from a project's Server / Worker / Static switch, or set `workload: worker` in
+  `openship.json`.
 
 ### Compose & install
 
@@ -257,6 +279,47 @@ ordinary catalog app, and five new one-click apps.
   contents are probed before a cluster is started on top of them.
 - **`openship doctor` and `repair` cover more** — the host channel, an
   unprovisioned install, and port conflicts, in the same run.
+- **Adopting a Compose stack no longer re-publishes its host ports** — a migrated
+  `5432:5432` would bind host `5432` on the next deploy and collide with whatever
+  already held it (often Openship's own Postgres), aborting the deploy. Adoption
+  keeps only the container port; the service is reached by name on the project
+  network and re-exposed from the Domains tab. The warning tells apart a port that
+  was published off-box — Docker's publish rule routes past the host firewall, so
+  it was genuinely reachable from the internet — from a loopback-only one, so you
+  know whether any external reach was actually given up.
+- **`stop_signal` and `stop_grace_period` are honored on redeploy** — a service
+  that asks for a longer shutdown window now gets a graceful stop, with its own
+  signal and grace period, before it's replaced or torn down, instead of being
+  `SIGKILL`ed mid-write by an immediate force-remove. A container that doesn't opt
+  in still stops the fast way, so there's no added redeploy latency.
+
+### Agents & access control
+
+- **Grant an automation a shell on one resource, not the whole organization** —
+  the only way to let something run a command was a custom-command job, whose
+  grant reaches every server in the org and can't be narrowed. Command execution
+  now hangs off each resource's own permission: a grant on one server
+  (`server:admin`) is a host shell confined to that box, and a grant on a project
+  (`project:service:write`) runs commands inside that project's service
+  containers — nothing wider. Every run is audited with its command, working
+  directory and result, and container exec is refused on a runtime that can't
+  isolate it.
+- **AI agents get exec over MCP** — two new MCP tools expose host and in-container
+  execution, each requiring the matching per-resource grant, with a hard timeout
+  and an output cap (the agent's call blocks on the reply and the whole body lands
+  in its context). Tools that only work on a self-hosted box are now hidden on the
+  hosted platform, instead of being advertised there and returning `404`.
+- **One access editor, and a live agent can be re-scoped** — the MCP consent
+  screen, personal-access-token scoping and member grants were three separate
+  editors and are now one. A connected agent's access can be edited in place from
+  Settings — narrowed, or widened (widening to unscoped asks first) — and applies
+  on its next request, with no disconnect-and-reconsent.
+- **The scopes you could always enforce are now grantable** — several platform
+  areas (jobs, notifications, analytics, settings, updates, cloud) could be
+  checked for but never handed out, so there was no middle ground between "deploy
+  only" and "the whole account"; they're grantable now, with billing and audit
+  marked sensitive. Listing a collection honors a wildcard grant too — a token
+  allowed to read a server by id no longer 404s when it tries to enumerate them.
 
 ### Desktop
 

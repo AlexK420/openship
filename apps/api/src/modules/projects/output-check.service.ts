@@ -12,6 +12,7 @@ import { assertResourceInOrg } from "../../lib/controller-helpers";
 import type { RequestContext } from "../../lib/request-context";
 import { resolveProjectRouteState } from "../domains/project-route.service";
 import { auditStaticOutput, staticOutputTargets } from "../deployments/output-audit.service";
+import { deploymentWorkload } from "../deployments/deployment-class";
 
 const silentLogger = { log() {} } as unknown as BuildLogger;
 
@@ -47,7 +48,9 @@ export async function checkProjectOutput(
 ): Promise<OutputCheckResult[]> {
   const project = await repos.project.findById(projectId);
   assertResourceInOrg(project, "Project", ctx.organizationId, projectId);
-  if (project.hasServer) return [];
+  // The static doc-root audit applies ONLY to a static site. A web app routes by
+  // port and a worker serves nothing — neither has a doc-root to probe (#538-B).
+  if (deploymentWorkload(project) !== "static") return [];
   if (!project.activeDeploymentId) return [];
 
   const deployment = await repos.deployment.findById(project.activeDeploymentId);

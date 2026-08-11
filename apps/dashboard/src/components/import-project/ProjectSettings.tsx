@@ -39,6 +39,9 @@ const ProjectSettings: React.FC = () => {
         startCommand: stackDef?.defaultStartCommand ?? "",
         productionPort: String(stackDef?.defaultPort ?? 3000),
         hasServer: !isStatic,
+        // Picking a framework is a web/static decision; clear any stale "worker"
+        // so the resolved workload matches hasServer (#538).
+        workloadType: isStatic ? "static" : "web",
       },
     });
   }, [updateConfig, config.options]);

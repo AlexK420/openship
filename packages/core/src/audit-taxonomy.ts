@@ -231,6 +231,14 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     tone: "success",
     description: "An outage ended and the container is healthy again.",
   },
+  "service.exec": {
+    category: "apps",
+    action: "ran a command in",
+    label: "Command executed in container",
+    tone: "warning",
+    description:
+      "A shell command was run inside a service's container. The command is recorded; its output is not, because output is unbounded and may contain secrets the command read.",
+  },
 
   /* ---------------- Domains & SSL ---------------- */
   "domain.added": {
@@ -324,6 +332,14 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     action: "removed the server",
     label: "Server removed",
     tone: "danger",
+  },
+  "server.exec": {
+    category: "servers",
+    action: "ran a command on the server",
+    label: "Command executed",
+    tone: "warning",
+    description:
+      "A shell command was run on the host. The command is recorded; its output is not, because output is unbounded and may contain secrets the command read.",
   },
   "server.unreachable": {
     category: "servers",
@@ -490,6 +506,21 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     label: "Permission replaced",
     tone: "warning",
     description: "An existing grant was overwritten with a different scope.",
+  },
+  "mcp.authorized": {
+    category: "members",
+    action: "authorized the MCP client",
+    label: "MCP client authorized",
+    tone: "info",
+    description: "An AI agent was connected and given a scope to act within.",
+  },
+  "mcp.scope_changed": {
+    category: "members",
+    action: "changed the access of the MCP client",
+    label: "MCP access changed",
+    tone: "warning",
+    description:
+      "A connected agent's scope was edited. It takes effect on the agent's next request — no reconnect.",
   },
   "grant.materialized": {
     category: "members",

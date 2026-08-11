@@ -270,6 +270,25 @@ export const project = pgTable(
      */
     runtimeMode: text("runtime_mode"),
     /**
+     * Deployment-class axes (see @repo/core deployment-class.ts). These
+     * deconflate the legacy `hasServer`/`hasBuild` booleans, which each mixed
+     * two independent concerns (issue #538). All three are EXPLICIT OVERRIDES:
+     * NULL means "derive from the legacy flags + framework + source", so every
+     * pre-existing row keeps classifying exactly as before and no backfill is
+     * needed. Snapshotted onto each deployment's config, like `runtimeMode`.
+     *
+     *  sourceKind   — "git" | "image" | "upload": where code comes from (git
+     *                 needs a clone token; the #538-A gate reads this).
+     *  buildKind    — "dockerfile" | "buildpack" | "static" | "prebuilt".
+     *  workloadType — "web" | "worker" | "static": the third runtime state
+     *                 (#538-B). "worker" = a portless long-running container
+     *                 (no listening port, no route); reachable only by setting
+     *                 this explicitly.
+     */
+    sourceKind: text("source_kind"),
+    buildKind: text("build_kind"),
+    workloadType: text("workload_type"),
+    /**
      * How many past releases stay restorable. Explicit operator override;
      * NULL = AUTO — use `rollbackWindowComputed` (sized from the deploy
      * host's free disk), falling back to

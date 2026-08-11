@@ -139,6 +139,11 @@ const ProjectGridCard: React.FC<{
             <Server className="size-3.5" />
             {t.projects.card.services}
           </span>
+        ) : project.workloadType === "worker" ? (
+          <span className="inline-flex items-center gap-1.5 text-xs">
+            <Server className="size-3.5" />
+            {t.projects.card.worker}
+          </span>
         ) : project.hasServer === false ? (
           <span className="inline-flex items-center gap-1.5 text-xs">
             <Globe className="size-3.5" />

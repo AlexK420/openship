@@ -9,7 +9,7 @@ import type { Service } from "@/lib/api/services";
 import { ApiError, getApiErrorMessage } from "@/lib/api/client";
 import { settingsApi } from "@/lib/api/settings";
 import type { BuildMode } from "@/lib/api/settings";
-import { STACKS, getBuildImage, type DeployTarget, type StackDefinition, type StackId } from "@repo/core";
+import { STACKS, getBuildImage, toWorkloadType, type DeployTarget, type StackDefinition, type StackId, type WorkloadType } from "@repo/core";
 import type { BuildStrategy, DeploymentConfig, DeploymentModeSnapshot, MonorepoAppConfig, MonorepoWorkspaceConfig, PublicEndpoint } from "./types";
 import {
   DEFAULT_CONFIG,
@@ -223,11 +223,20 @@ function buildSingleAppEndpoints(
 }
 
 function buildPreparedOptions(response: PrepareProjectResponse): DeploymentConfig["options"] {
-  // Declared productionMode wins: "static" is serverless; "host"/"standalone"
-  // always run a server. Absent → derive from the detected start command.
-  const hasServer = response.productionMode
-    ? response.productionMode !== "static"
-    : !!response.startCommand;
+  // An explicit declared workload (openship.json `workload`, #538) wins over
+  // everything and is the ONLY way to reach a worker. Otherwise fall back to the
+  // legacy collapse: productionMode "static" is serverless, "host"/"standalone"
+  // run a server, and an absent mode derives from the detected start command.
+  const declaredWorkload = toWorkloadType(response.workloadType);
+  const hasServer = declaredWorkload
+    ? declaredWorkload === "web"
+    : response.productionMode
+      ? response.productionMode !== "static"
+      : !!response.startCommand;
+  // A worker keeps its explicit type; web/static are equally described by
+  // hasServer, so derive (null) rather than pin a redundant value.
+  const workloadType: WorkloadType | undefined =
+    declaredWorkload && declaredWorkload !== "web" ? declaredWorkload : undefined;
   const hasBuild = !!response.buildCommand;
 
   return {
@@ -236,10 +245,12 @@ function buildPreparedOptions(response: PrepareProjectResponse): DeploymentConfi
     outputDirectory: response.outputDirectory ?? "",
     productionPaths: response.productionPaths.join(", "),
     startCommand: response.startCommand ?? "",
+    // A worker runs a process but binds no port — no productionPort.
     productionPort: hasServer ? String(response.port ?? "") : "",
     rootDirectory: response.rootDirectory || "./",
     hasServer,
     hasBuild,
+    workloadType,
   };
 }
 

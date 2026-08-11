@@ -37,6 +37,7 @@
     "services": "Services",
     "static": "Static",
     "standalone": "Standalone",
+    "worker": "Worker",
     "updateAvailable": "Update"
   },
   "hosting": {
@@ -242,6 +243,7 @@
     "modeStatic": "Static Site",
     "modeStandalone": "Standalone",
     "modeServer": "Server",
+    "modeWorker": "Worker",
     "infrastructure": "Infrastructure",
     "platform": "Platform",
     "mode": "Mode",

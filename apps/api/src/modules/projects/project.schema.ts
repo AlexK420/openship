@@ -373,6 +373,26 @@ export const CreateProjectBody = Type.Object({
   publicEndpoints: Type.Optional(Type.Array(PublicEndpointSchema, { maxItems: 20 })),
   hasServer: Type.Optional(Type.Boolean({ default: true })),
   hasBuild: Type.Optional(Type.Boolean({ default: true })),
+  /**
+   * Deployment-class overrides (issue #538). Each is an EXPLICIT override of the
+   * value otherwise derived from `framework`/source/`hasServer`; omit to derive.
+   * `workloadType` is the only way to ask for a portless `worker` (no port, no
+   * route) — the legacy `hasServer` boolean can't express it.
+   */
+  sourceKind: Type.Optional(
+    Type.Union([Type.Literal("git"), Type.Literal("image"), Type.Literal("upload")]),
+  ),
+  buildKind: Type.Optional(
+    Type.Union([
+      Type.Literal("dockerfile"),
+      Type.Literal("buildpack"),
+      Type.Literal("static"),
+      Type.Literal("prebuilt"),
+    ]),
+  ),
+  workloadType: Type.Optional(
+    Type.Union([Type.Literal("web"), Type.Literal("worker"), Type.Literal("static")]),
+  ),
   rollbackWindow: Type.Optional(Type.Number({ minimum: 0, maximum: 20 })),
   /**
    * Cloud archive strategy. Today only "inplace" is implemented
@@ -614,6 +634,13 @@ export const SetOptionsBody = Type.Object(
     productionMode: Type.Optional(Type.String({ description: "host | static | standalone." })),
     hasServer: Type.Optional(Type.Boolean()),
     hasBuild: Type.Optional(Type.Boolean()),
+    /** Deployment-class overrides (issue #538); omit to derive. `workloadType`
+     *  is the only way to select a portless `worker`. */
+    sourceKind: Type.Optional(Type.String({ description: "git | image | upload." })),
+    buildKind: Type.Optional(
+      Type.String({ description: "dockerfile | buildpack | static | prebuilt." }),
+    ),
+    workloadType: Type.Optional(Type.String({ description: "web | worker | static." })),
     runtimeMode: Type.Optional(Type.String({ description: "bare | docker." })),
   },
   { additionalProperties: true },

@@ -36,6 +36,7 @@
     "services": "Serviços",
     "static": "Estático",
     "standalone": "Autónomo",
+    "worker": "Worker",
     "updateAvailable": "Update",
     "appBadge": "App"
   },
@@ -194,6 +195,7 @@
     "modeStatic": "Site Estático",
     "modeStandalone": "Autónomo",
     "modeServer": "Servidor",
+    "modeWorker": "Worker",
     "infrastructure": "Infraestrutura",
     "platform": "Plataforma",
     "mode": "Modo",

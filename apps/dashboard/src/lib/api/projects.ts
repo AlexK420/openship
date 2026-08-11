@@ -1,6 +1,6 @@
 import { api } from "./client";
 import type { PrepareComposeService, PrepareProjectResponse } from "./deploy";
-import type { RoutingConfig, RouteRuleSpec, ProxySettings, OpenshipReadiness } from "@repo/core";
+import type { RoutingConfig, RouteRuleSpec, ProxySettings, OpenshipReadiness, WorkloadType } from "@repo/core";
 import { endpoints } from "./endpoints";
 
 /* ------------------------------------------------------------------ */
@@ -78,6 +78,9 @@ export interface ProjectOptionsBody {
   productionMode?: string;
   hasServer?: boolean;
   hasBuild?: boolean;
+  /** Runtime workload axis (#538) — the only way to persist a portless worker.
+   *  Omit to derive from hasServer (web/static, never worker). */
+  workloadType?: WorkloadType;
   runtimeMode?: "bare" | "docker";
 }
 
@@ -269,6 +272,8 @@ export const projectsApi = {
     }>;
     hasServer?: boolean;
     hasBuild?: boolean;
+    /** Runtime workload axis (#538) — persists a portless worker; omit to derive. */
+    workloadType?: WorkloadType;
     /** Project flavor - "monorepo" persists the sub-app + workspace fields below. */
     projectType?: "app" | "docker" | "services" | "monorepo";
     monorepoApps?: Array<{

@@ -52,6 +52,7 @@ import { resolveDeploymentRuntimeForRead } from "../../lib/deployment-runtime";
 import { getOpenRestyPaths } from "@/lib/openresty-paths";
 import * as domainService from "../domains/domain.service";
 import * as prepareService from "../deployments/prepare.service";
+import { deploymentWorkload } from "../deployments/deployment-class";
 import { sshManager } from "../../lib/ssh-manager";
 import { env } from "../../config";
 import { domainWebhookUrl } from "../../lib/public-url";
@@ -2075,6 +2076,11 @@ export async function getInfo(c: Context) {
   // (which already fetches `latest`) does show. One query on a detail read.
   const latestDeployment = await repos.deployment.findLatestByProject(id).catch(() => null);
   const hasServer = project.hasServer ?? project.productionMode === "host";
+  // The resolved runtime workload (web | worker | static). A worker and a web app
+  // both run a long-lived process (start command + volumes), but only a web app
+  // listens on a port; a static site does neither (#538-B).
+  const workloadType = deploymentWorkload(project);
+  const runsProcess = workloadType !== "static";
   const serviceRows = await repos.service.listByProject(id);
   const serviceCount = serviceRows.length;
   // Deployment shape, derived from the service rows (kind-discriminated) — not a
@@ -2098,9 +2104,10 @@ export async function getInfo(c: Context) {
     outputDirectory: project.outputDirectory ?? "",
     productionPaths: project.productionPaths ?? "",
     installCommand: project.installCommand ?? "",
-    startCommand: hasServer ? (project.startCommand ?? "") : "",
-    productionPort: hasServer ? String(project.port ?? 3000) : "",
+    startCommand: runsProcess ? (project.startCommand ?? "") : "",
+    productionPort: workloadType === "web" ? String(project.port ?? 3000) : "",
     hasServer,
+    workloadType,
     hasBuild: project.hasBuild ?? true,
     rootDirectory: project.rootDirectory ?? "./",
     // Two fields, because "" and "inherits the framework default" are different
@@ -2108,7 +2115,7 @@ export async function getInfo(c: Context) {
     // `resolvedVolumes` is what a deploy would actually mount, so the editor can
     // show the inherited value as a placeholder instead of pretending it's unset.
     volumes: (project.volumes as string[] | null) ?? null,
-    resolvedVolumes: hasServer
+    resolvedVolumes: runsProcess
       ? resolveProjectVolumes(project.volumes as string[] | null, project.framework)
       : [],
     isLoading: false,

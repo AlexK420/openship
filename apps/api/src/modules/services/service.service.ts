@@ -13,6 +13,7 @@ import {
   type RuntimeAdapter,
 } from "@repo/adapters";
 import { scopedVolumeName, type CommandExecutor } from "@repo/adapters";
+import { execInContainer } from "../../lib/agent-exec";
 import { encrypt, decrypt } from "../../lib/encryption";
 import { ENV_MASK, hasMaskedValue, maskDriftChanges, maskServiceEnv, unmaskEnv } from "../../lib/secret-env";
 import {
@@ -39,6 +40,7 @@ import { parseVolumeSpec, type VolumeKind } from "./volume-spec";
 import { sq } from "../migration/direct-transfer";
 import { bounded, duBytes, volumeBytes } from "../migration/migration-size";
 import { deployComposeServices } from "../deployments/compose/deploy.service";
+import { deploymentWorkload } from "../deployments/deployment-class";
 import { deriveProjectRouteState } from "../domains/project-route.service";
 import { registerStartupHook } from "../../lib/startup";
 import { buildServiceRouteDomains, serviceCustomHostnames } from "../../lib/routing-domains";
@@ -309,7 +311,9 @@ export async function keepServiceDrift(
  * projects and static/no-server apps are left alone.
  */
 async function materializeAppServiceRow(project: Project): Promise<void> {
-  if (!project.hasServer) return; // no long-running app container to keep
+  // A web app AND a worker are both long-running containers that must survive a
+  // sidecar being added; only a STATIC site has no container to keep (#538-B).
+  if (deploymentWorkload(project) === "static") return;
   // A catalog / self-managed app (appTemplateId set — e.g. the control plane's
   // own "openship" project) is NOT a source-built single app: its real units are
   // the compose rows linked by the app/self-app installer, never a slug-named
@@ -1686,6 +1690,51 @@ export async function getServiceRuntimeLogs(
   );
   try {
     return await runtime.getRuntimeLogs(containerId, tail);
+  } finally {
+    await runtime.dispose?.();
+  }
+}
+
+/**
+ * Run a command INSIDE a service's running container.
+ *
+ * Scoped by the ROUTE's `project:service:write` tag, so a `{project,<id>,[write]}`
+ * grant confines an agent to that project's services — the per-resource scope the
+ * jobs-based workaround could not express (its `job` tag is an org-singleton, so
+ * that grant reached every server in the org).
+ *
+ * `write` rather than `admin`: anyone who can deploy a service can already run code
+ * in it, so requiring a higher tier to *debug* what they can already *replace* would
+ * be incoherent. `admin` on a service is destruction (delete), which this is not.
+ *
+ * ── The isolation gate is load-bearing, not a stub check ────────────────────
+ * Gated on `supports("isolatedExec")`, NOT on `inContainerExecutor` being present.
+ * The BARE runtime implements that method by returning the HOST executor — a bare
+ * deployment is a host process, so "inside the instance" legitimately means the host
+ * for the advisory port probe the method was written for. For an arbitrary command it
+ * would be a privilege escalation: `project:service:write` is a project-tier grant,
+ * and it would reach the whole machine, which is what `server:admin` exists to gate.
+ *
+ * So the gate asks the question that actually matters — is this execution context
+ * CONFINED — and fails closed for any runtime that doesn't claim it. Docker (container
+ * namespaces) and Cloud (remote workspace over the Oblien API) claim it; Bare does not.
+ */
+export async function execInServiceContainer(
+  ctx: RequestContext,
+  projectId: string,
+  serviceId: string,
+  opts: { command: string; cwd?: string; timeoutMs?: number; maxOutputBytes?: number },
+) {
+  const { runtime, containerId } = await resolveServiceContainer(ctx, projectId, serviceId);
+  try {
+    if (!runtime.supports("isolatedExec") || !runtime.inContainerExecutor) {
+      throw new Error(
+        "This service does not run in an isolated container, so a command here would run on the host. " +
+          "Use the server exec endpoint (server:admin) if that is what you intend.",
+      );
+    }
+    const executor = await runtime.inContainerExecutor(containerId);
+    return await execInContainer(executor, opts);
   } finally {
     await runtime.dispose?.();
   }

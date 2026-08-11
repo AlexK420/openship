@@ -297,6 +297,20 @@ export type ComposeAdvanced = {
    * An alias existing is not exposure — publish stays loopback-only behind the edge.
    */
   alias?: string;
+  /**
+   * Compose `stop_signal` — the signal Docker sends to ask this container to shut
+   * down (`"SIGINT"`, `"SIGQUIT"`, a bare number). Absent ⇒ Docker's default
+   * `SIGTERM`. Maps to the container's top-level `StopSignal`.
+   */
+  stopSignal?: string;
+  /**
+   * Compose `stop_grace_period` — how long Docker waits after `stopSignal` before
+   * it `SIGKILL`s the container, kept as a compose duration string ("30s", "1m")
+   * the runtime rounds to whole seconds for the container's top-level
+   * `StopTimeout`. Absent ⇒ Docker's default (10s). Matters for workloads that
+   * flush or checkpoint on shutdown and need longer than the default.
+   */
+  stopGracePeriod?: string;
 };
 
 /**

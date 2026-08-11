@@ -2,6 +2,7 @@ import { repos } from "@repo/db";
 import type { LogEntry } from "@repo/adapters";
 import * as sessionManager from "./session-manager";
 import { loadDeployment, type DeploymentConfigSnapshot } from "./build.service";
+import { snapshotToClass } from "./deployment-class";
 import { STEP_INDEX, STEP_PROGRESS } from "./build-steps";
 import { isMultiServiceProject } from "./compose";
 import { serviceKind } from "../../lib/deployable-service";
@@ -213,6 +214,11 @@ export async function getBuildSessionStatus(deploymentId: string) {
       startCommand: snapshot?.startCommand,
       rootDirectory: snapshot?.rootDirectory,
       hasServer: snapshot?.hasServer ?? !!snapshot?.startCommand?.trim(),
+      // The resolved runtime workload (web/worker/static) so "Edit Configuration"
+      // rehydrates a worker as a worker, not as a static site (both carry
+      // hasServer=false). Derived from the frozen triple, or the snapshot's own
+      // legacy fields for a pre-#538 deployment (#538-B).
+      workloadType: snapshotToClass(snapshot ?? {}).workload,
       serviceDeploymentMode: snapshot?.serviceDeploymentMode,
     },
     progress,

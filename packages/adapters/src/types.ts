@@ -257,6 +257,14 @@ export interface DeployConfig {
   /** Port the application listens on */
   port: number;
   /**
+   * A WORKER: a long-running container that listens on no port and is reached by
+   * nothing (issue #538-B). When true the runtime publishes no host port, exposes
+   * no container port, and injects no `PORT` env — `port`/`hostPort` are ignored.
+   * A background consumer (queue/cron) with no HTTP surface; the value it produces
+   * is a side effect, so there is nothing to route or health-check on a port.
+   */
+  portless?: boolean;
+  /**
    * Pinned LOOPBACK host port to publish (docker: `127.0.0.1:<hostPort>:<port>`)
    * under the loopback-port route strategy. When unset, docker falls back to a
    * random loopback host port. Ignored by bare (the app owns 127.0.0.1:<port>).

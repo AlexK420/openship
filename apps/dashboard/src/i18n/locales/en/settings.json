@@ -407,7 +407,21 @@
     "toast": {
       "disconnected": "MCP client disconnected",
       "disconnectFailed": "Failed to disconnect"
-    }
+    },
+    "editAccess": "Edit access",
+    "editScopeTitle": "{client} access",
+    "editScopeSubtitle": "Changes apply on the agent's next request — it does not need to reconnect.",
+    "editScopeOrg": "In {org}",
+    "wasNResourcesOne": "currently 1 resource",
+    "wasNResourcesMany": "currently {count} resources",
+    "saveScope": "Save access",
+    "scopeSaved": "Access updated",
+    "scopeSaveFailed": "Could not update access",
+    "loadScopeFailed": "Could not load this client's access",
+    "scopeGrantRejected": "You can no longer grant {resource}, so it was removed. Save again to continue.",
+    "confirmWidenTitle": "This removes every restriction",
+    "confirmWidenBody": "The agent will act with your full access, effective immediately. Press again to confirm.",
+    "confirmWidenAction": "Remove all restrictions"
   },
   "team": {
     "heading": "Team",

@@ -12,7 +12,8 @@
 
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { internalAuth, localOnly, requireInstanceAdmin } from "../../middleware";
+import { internalAuth, requireInstanceAdmin } from "../../middleware";
+import { AgentExecBody } from "../../lib/agent-exec.schema";
 import { rateLimiterFor } from "../../middleware/rate-limiter";
 import { secureRouter } from "../../lib/secure-router";
 import * as fs from "./filesystem.controller";
@@ -33,9 +34,9 @@ import * as edgeOrphans from "./edge-orphans.controller";
 const r = secureRouter(new Hono(), {
   module: "system",
   basePath: "/api/system",
+  localOnly: true,
 });
 
-r.use("*", localOnly);
 
 /* ── Onboarding (first-run only, no auth) ───────────────────────── */
 r.public("get", "/onboarding", { reason: "First-run onboarding status check - no user exists yet" }, setup.onboardingStatus);
@@ -140,6 +141,25 @@ r.get("/servers/:id/reachability", { tag: "server:read" }, serversCtrl.probeReac
 r.post("/servers", { tag: "server:write", collection: true }, serversCtrl.createServer);
 r.patch("/servers/:id", { tag: "server:write" }, serversCtrl.updateServer);
 r.delete("/servers/:id", { tag: "server:admin" }, serversCtrl.deleteServer);
+// Host exec. `server:admin` on the id, so a {server,<id>,[admin]} grant confines an
+// agent to this one box — the per-resource scope the jobs-based workaround could not
+// express. MCP-exposed deliberately: this is the sanctioned agent execution point.
+r.post(
+  "/servers/:id/exec",
+  {
+    tag: "server:admin",
+    // Tighter than the default-authed 3000/min: each call opens a pooled SSH
+    // connection and runs an arbitrary command, so the generic read budget is the
+    // wrong shape for it.
+    rateLimit: "write-authed",
+    body: AgentExecBody,
+    mcp: {
+      description:
+        "Run a shell command on this server's host and return its exit code and combined output. Interpreted by `sh -c`, so pipes and redirects work; stderr is merged in. Times out (default 30s, max 120s) and truncates large output. Use this to inspect or repair a server; prefer the read-only endpoints when they answer the question.",
+    },
+  },
+  serversCtrl.execOnServer,
+);
 
 /* ── Per-server rate limiting (OpenResty level) ─────────────────── */
 r.get("/servers/:id/rate-limit", { tag: "server:read" }, rateLimit.getRateLimit);
