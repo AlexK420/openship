@@ -1,19 +1,19 @@
 {
   "time": {
-    "secondsAgo": "Ошвар0 лет назад",
-    "minutesAgo": "Ошвар0 лет назад",
-    "hoursAgo": "Ошвар0енд назад",
-    "daysAgo": "Ошвар0 лет назад",
-    "monthsAgo": "Ошвар0 лет назад",
-    "yearsAgo": "Ошвар0енды назад"
+    "secondsAgo": "{n}секунд назад",
+    "minutesAgo": "{n}месяцев назад",
+    "hoursAgo": "{n}часов назад",
+    "daysAgo": "{n}дней назад",
+    "monthsAgo": "{n}месяцев назад",
+    "yearsAgo": "{n}лет назад"
   },
   "header": {
     "title": "Развертывания",
     "loading": "Погрузка…",
-    "countProjectOne": "Развертывание {count}",
-    "countProjectOther": "Развертывания {count}",
-    "countAllOne": "Всего по проекту {deployments} итого по проекту {projects}",
-    "countAllOther": "Итого по проектам {deployments} итого по проектам {projects}"
+    "countProjectOne": "{count} развертывание",
+    "countProjectOther": "{count} развертывания",
+    "countAllOne": "{deployments} всего по проекту {projects}",
+    "countAllOther": "{deployments} итого по {projects} проектам"
   },
   "filters": {
     "searchPlaceholder": "Поиск развертываний...",
@@ -52,8 +52,8 @@
   },
   "stats": {
     "total": "Весь",
-    "projectCountOne": "Проект {count}",
-    "projectCountOther": "Проекты {count}",
+    "projectCountOne": "{count} проект",
+    "projectCountOther": "{count} проектов",
     "success": "Успех",
     "failed": "Неудачный",
     "inProgress": "в процессе",
@@ -94,8 +94,8 @@
     "snapshotted": "Моментальный снимок",
     "snapshottedTitle": "Артефакт заархивирован — к этой версии можно вернуться",
     "manualDeploy": "Ручное развертывание",
-    "serviceTitle": "ОШВАР0ЕНД: ОШВАР1ЕНД",
-    "serviceTitleReason": "ОШВАР0ЕНД: ОШВАР1ЕНД (ОШВАР2ЕНД)"
+    "serviceTitle": "{name}: {label}",
+    "serviceTitleReason": "{name}: {label} ({reason})"
   },
   "empty": {
     "filtered": {
@@ -169,25 +169,25 @@
     "unpinFailed": "Не удалось открепить развертывание",
     "rollbackModeInstant": "Мгновенное восстановление — повторно используется сохраненный образ этой версии, без перестройки.",
     "rollbackModeRebuild": "Перестроить — образа этой версии больше нет на хосте, поэтому его фиксация создается заново.",
-    "rollbackModeMixed": "В основном сервисы мгновенной отправки сообщений потеряли свой имидж и будут восстановлены."
+    "rollbackModeMixed": "В основном службы instant — {count} потеряли свой имидж и будут восстановлены."
   },
   "rollbackConfirm": {
     "title": "Вернуться к этой версии?",
     "dataUnchanged": "При этом восстанавливается только код приложения. База данных и объем данных не изменяются.",
     "envHeading": "Переменные среды",
-    "envSummaryOverlay": "Изменение переменных {count} — значения этого выпуска воспроизводятся поверх текущих.",
-    "envSummaryReplace": "Изменение переменных {count} — среда этого выпуска используется в точности так, как было записано.",
+    "envSummaryOverlay": "{count} изменение переменных — значения этого выпуска воспроизводятся поверх текущих.",
+    "envSummaryReplace": "{count} изменение переменных — среда этого выпуска используется в точности так, как было записано.",
     "envNoChanges": "Никакие переменные окружения не изменяются.",
     "envUnchanged": "Существующий контейнер перезапускается, а не создается заново, поэтому его среда остается нетронутой.",
     "envNoValues": "Значения здесь никогда не отображаются.",
-    "envTruncated": "Показываю {shown} из {total}.",
+    "envTruncated": "Отображается {shown} из {total}.",
     "dirFrozenWins": "возвращается к значению этого выпуска",
     "dirRemovedSince": "возвращается — удалено с момента выпуска",
     "dirAddedSinceKept": "сохранено в том виде, в каком оно есть сейчас — добавлено после этого выпуска",
     "dirAddedSinceDropped": "удалено — добавлено с момента выпуска",
     "scopeAmbiguous": "захватывается без привязки к области обслуживания, поэтому для каждой службы используется одно значение",
     "untouchedHeading": "Сервисы, добавленные после этого выпуска",
-    "untouchedNote": "Они продолжают работать, и их никто не трогает: {names}",
+    "untouchedNote": "Они продолжают работать и не затрагиваются: {names}",
     "confirm": "Откат назад",
     "cancel": "Отменить"
   }

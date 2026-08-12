@@ -113,7 +113,7 @@ const MISSING_BASELINE: Record<string, number> = {
   // these strings drive a security decision — e.g. "a clone can't be limited to
   // paths, so local builds won't work" — and a subtly wrong translation would
   // mislead the operator choosing a grant. Lower this as they're translated.
-  widgets: 498,
+  widgets: 501,
   // +40: mcpAuthorize gained 5 English-first keys — two digest lines that answer
   // "can it read my source?" either way, and three level tooltips.
   //

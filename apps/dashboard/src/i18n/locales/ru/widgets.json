@@ -15,23 +15,23 @@
       "repoNotFound": {
         "title": "Репозиторий не найден",
         "subtitle": "Мы не смогли найти хранилище, которое вы ищете.",
-        "hints": [
-          "Repository is private and you haven't granted access",
-          "Repository name or owner is misspelled",
-          "Repository has been deleted or moved",
-          "Your GitHub connection has expired"
-        ],
+        "hints": {
+          "0": "Хранилище является закрытым, и вы не предоставляли доступ к нему",
+          "1": "Имя или владелец хранилища написаны с ошибкой",
+          "2": "Хранилище было удалено или перемещено",
+          "3": "Срок действия вашего подключения к GitHub истек"
+        },
         "backToLibrary": "Вернуться в библиотеку",
         "importRepository": "Импорт репозитория"
       },
       "projectNotFound": {
         "title": "Проект не найден",
         "subtitle": "Проект, который вы ищете, не существует или был удален.",
-        "hints": [
-          "Project has been deleted",
-          "You don't have access to this project",
-          "The project URL is incorrect"
-        ],
+        "hints": {
+          "0": "Проект был удален",
+          "1": "У вас нет доступа к этому проекту",
+          "2": "Неверный URL-адрес проекта"
+        },
         "backToDashboard": "Вернуться к приборной панели",
         "createNewProject": "Создать новый проект"
       },
@@ -42,11 +42,11 @@
       "accessDenied": {
         "title": "доступ запрещен",
         "subtitle": "У вас нет разрешения на доступ к этому ресурсу.",
-        "hints": [
-          "You are not the project owner",
-          "Your account doesn't have the required permissions",
-          "Your team membership has changed"
-        ],
+        "hints": {
+          "0": "Вы не являетесь владельцем проекта",
+          "1": "У вашей учетной записи нет необходимых разрешений",
+          "2": "Изменился состав вашей команды"
+        },
         "backToDashboard": "Вернуться к приборной панели"
       }
     },
@@ -54,7 +54,7 @@
       "title": "Настройки машины",
       "configureFor": "Настройка вычислительных ресурсов для",
       "docs": "Доктора",
-      "cpu": "CPU",
+      "cpu": "ЦП",
       "memory": "Память",
       "storage": "Место хранения",
       "base": "Основа",
@@ -104,7 +104,7 @@
         "preparing": "Определение пункта назначения + услуга…",
         "snapshotting": "Создание артефактов (запуск перед подключением)…",
         "uploading": "Потоковая передача в пункт назначения…",
-        "verifying": "Написание манифеста…"
+        "verifying": "Составление манифеста…"
       }
     },
     "policyEditor": {
@@ -117,14 +117,14 @@
       "failedSave": "Не удалось сохранить политику",
       "rotateConfirm": "Повернуть токен webhook? Текущий URL-адрес перестанет работать.",
       "failedRotate": "Не удалось повернуть токен",
-      "editTitle": "Изменение политики резервного копирования",
+      "editTitle": "Изменить политику резервного копирования",
       "createTitle": "Создание политики резервного копирования",
-      "serviceLabel": "Сервис: {name}",
+      "serviceLabel": "Услуга: {name}",
       "projectLevel": "Политика на уровне проекта",
       "destination": "Место назначения",
       "selectOption": "— выберите —",
       "schedule": "График",
-      "cronPlaceholder": "Пользовательский cron (5 полей) или оставьте поле пустым для использования только вручную",
+      "cronPlaceholder": "Настраиваемый cron (5 полей) или оставьте поле пустым для использования только вручную",
       "retainCount": "Сохранить количество",
       "retainCountHint": "Сохранить N самых последних успешных запусков",
       "retainDays": "Сохраняйте дни",
@@ -153,7 +153,7 @@
       "methodVolumeDesc": "Тома моментальных снимков",
       "methodCustom": "Обычай",
       "methodCustomDesc": "Ваше собственное командование",
-      "detected": "Обнаружен {label} — Автоматическое резервное копирование его с помощью {method}.",
+      "detected": "Обнаружен {label} — Автоматически создается резервная копия с {method}.",
       "autoNoDb": "База данных не обнаружена — автоматически будет создан моментальный снимок томов этой службы.",
       "volumeHint": "Загружает все тома для этой службы. Работает в режиме реального времени, без сбоев.",
       "customCommandLabel": "Команда сброса",
@@ -163,22 +163,22 @@
       "summaryTitle": "Резюме",
       "summaryMethod": "Метод",
       "summaryScheduleManual": "Только вручную",
-      "summaryLogical": "Свалка ОШВАР0ЕНД",
+      "summaryLogical": "{label} дамп",
       "summaryVolume": "Моментальный снимок объема",
       "summaryCustom": "Пользовательская команда",
       "retentionUnlimited": "Неограниченный",
-      "keepN": "держать ОШВАР0ЕНД",
-      "olderThanN": "Крышка {n}d"
+      "keepN": "сохранить {n}",
+      "olderThanN": "{n}d ограничение"
     }
   },
   "cloud": {
     "connectionGate": {
-      "reconnect": "Повторно подключите Openship Cloud",
-      "deployedOn": "Этот проект развернут в Openship Cloud",
-      "sessionMissing": "Ваш сеанс в Openship Cloud отсутствует. Подключитесь для управления развертываниями, просмотра журналов и доступа к элементам управления во время выполнения {name}.",
+      "reconnect": "Переподключение __БРЕНДА__OPENSHIP__ Cloud",
+      "deployedOn": "Этот проект развернут в облаке Openship Cloud",
+      "sessionMissing": "Ваша облачная сессия Openship отсутствует. Подключитесь для управления развертываниями, просмотра журналов и доступа к элементам управления во время выполнения для {name}.",
       "thisProject": "этот проект",
       "connecting": "Связывающий…",
-      "connect": "Подключитесь к Openship Cloud",
+      "connect": "Подключитесь к облаку Openship Cloud",
       "readOnlyNote": "Вы по-прежнему можете просматривать эту страницу в режиме только для чтения, даже если вы отключены от сети."
     }
   },
@@ -208,12 +208,12 @@
   "permissions": {
     "resourcePicker": {
       "failedLoadResources": "Не удалось загрузить ресурсы",
-      "searchPlaceholder": "Найдите {type}...",
-      "allResources": "Все ОШВАР0ЕНД",
+      "searchPlaceholder": "Поиск {type}...",
+      "allResources": "Все {type}",
       "noMatch": "Ни один ресурс не соответствует вашему запросу.",
-      "noResourcesYet": "В этой организации пока нет ОШВАР0ЕНДА.",
-      "selectedSummaryOne": "Ресурс {count} выбран для всех типов.",
-      "selectedSummaryOther": "OSHVAR предоставляет ресурсы, выбранные для всех типов.",
+      "noResourcesYet": "В этой организации пока нет {type}.",
+      "selectedSummaryOne": "{count} ресурс выбран для всех типов.",
+      "selectedSummaryOther": "{count} ресурсы, выбранные для всех типов.",
       "wildcard": "подстановочный знак",
       "coveredByAll": "охваченный всеми",
       "failedLoadOrgs": "Не удалось загрузить файлы GitHub orgs",
@@ -222,15 +222,15 @@
       "collapse": "Коллапс",
       "expand": "Расширять",
       "entireOrg": "вся организация",
-      "repoCountOne": "Репо {count}",
-      "repoCountOther": "Репозитории {count}",
+      "repoCountOne": "{count} репозиторий",
+      "repoCountOther": "{count} репозитории",
       "coveredByOrg": "Покрывается за счет вышеуказанного гранта для всей организации.",
       "noRepos": "Никаких хранилищ.",
       "searchRepos": "Поиск репозиториев…"
     },
     "sourceAccess": {
       "title": "Доступ к источнику",
-      "subtitle": "Что этот токен может быть прочитан из {repo}",
+      "subtitle": "Что этот токен может считывать из {repo}",
       "tierDeploy": "Только для развертывания",
       "tierDeployHint": "Метаданные, ветви и обнаружение сборки. Содержимое файла отсутствует — это значение по умолчанию.",
       "tierContent": "Чтение файлов",
@@ -256,7 +256,7 @@
       "summaryCloneBlocked": "Никаких токенов клонирования — клон не может быть ограничен путями, поэтому локальные сборки работать не будут.",
       "apply": "Применять",
       "cancel": "Отменить",
-      "subtitleAccount": "Что этот токен может считывать из каждого репозитория в {repo}",
+      "subtitleAccount": "Что этот токен может считывать из каждого репозитория под {repo}",
       "searchPaths": "Поиск файлов и папок…",
       "treeLoading": "Загрузка репозитория…",
       "treeEmpty": "Это хранилище выглядит пустым.",
@@ -265,7 +265,7 @@
       "treeCovered": "{path} уже подпадает под действие более широкого правила, приведенного выше.",
       "browseIn": "Просматривать",
       "appliesToEveryRepo": "Пути применяются к каждому репозиторию под этой учетной записью.",
-      "selectedCount": "Выбран ОШВАР0ЕНД",
+      "selectedCount": "_Выбран _VAR_0__",
       "clearPaths": "Всё",
       "advancedPattern": "Или добавить узор",
       "assigningTo": "Присвоение",
@@ -283,14 +283,14 @@
       "allDomains": "Все домены"
     },
     "publicEndpoints": {
-      "mappedToPort": "Привязан к порту ОШВАР0ЕНД.",
+      "mappedToPort": "Сопоставлен с портом {port}.",
       "noPortYet": "Порт еще не выбран.",
-      "mappedTo": "Привязан к ОШВАР0ЕНДУ.",
+      "mappedTo": "Сопоставлен с {path}.",
       "exposedPort": "Открытый порт",
       "staticPath": "Статический путь",
       "auto": "Авто",
       "domain": "Домен",
-      "domainsRouted": "Удаляйте домены, перенаправленные на это приложение.",
+      "domainsRouted": "{count} домены, перенаправленные в это приложение.",
       "accessibleWhere": "Где будет доступен ваш сайт",
       "addDomain": "Добавить домен",
       "primaryDomain": "Основной домен",
@@ -363,7 +363,7 @@
       "viewRecords": "Просмотр записей",
       "redirectTo": "Перенаправлять",
       "redirectServeApp": "Ознакомьтесь с приложением здесь",
-      "redirectToHost": "→ ОШВАР0ЕНД",
+      "redirectToHost": "→ {hostname}",
       "redirectPermanent": "301 постоянный",
       "redirectTemporary": "302 временный",
       "exposedPort": "Открытый порт",
@@ -373,7 +373,7 @@
       "addRecordsFor": "Добавьте эти записи для {hostname}",
       "nameHost": "Имя / Хост",
       "valueTarget": "Ценность / Цель",
-      "dnsHintSelfhosted": "Добавьте запись A, указывающую на IP-адрес вашего сервера, а затем запись TXT для проверки.",
+      "dnsHintSelfhosted": "Добавьте запись A, указывающую на IP-адрес вашего сервера, затем запись TXT для проверки.",
       "dnsHintCloud": "Добавьте запись CNAME для маршрутизации, затем запись TXT для проверки.",
       "dnsPropagation": "Изменение DNS может занять до 48 часов."
     }
@@ -390,11 +390,11 @@
     "rerunInstall": "Повторно запустите установку, чтобы обновить свой автономный сервер.",
     "updateNow": "Обновите сейчас",
     "downloading": "Загрузка Openship {version}",
-    "installing": "Установка — Openship перезапустится",
+    "installing": "Установка — Openship будет перезапущена",
     "updateFailed": "Не удалось выполнить обновление",
     "retry": "Повторить попытку",
     "changelog": "Журнал изменений",
-    "updatedTo": "Обновлено до версии Openship {version}",
+    "updatedTo": "Обновлено до Openship {version}",
     "seeChanges": "Посмотрите, что изменилось в этом выпуске.",
     "onLatest": "Вы используете последнюю версию.",
     "whatsNew": "Что нового",

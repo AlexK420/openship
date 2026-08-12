@@ -36,12 +36,12 @@
     },
     "default": {
       "title": "Подключите GitHub для развертывания",
-      "descSelfHosted": "Выберите способ доступа Openship к вашим репозиториям.",
+      "descSelfHosted": "Выберите, каким образом Openship достигнет ваших репозиториев.",
       "descSaas": "Привяжите свою учетную запись на GitHub, чтобы просматривать репозитории и развертывать их при каждом нажатии.",
       "recommended": "Рекомендуемый",
-      "cloudApp": "Облачное приложение Openship на GitHub",
+      "cloudApp": "__БРЕНД_OPENSHIP__ Облачное приложение GitHub",
       "cloudAppDesc": "Управляемое приложение GitHub — развертывается на удаленных серверах с помощью токенов с коротким сроком службы.",
-      "connectCloud": "Подключите Openship Cloud",
+      "connectCloud": "Подключите __БРЕНД__OPENSHIP__ к облаку",
       "manual": "Ручное подключение к GitHub",
       "manualDesc": "Настройте в настройках — ваше собственное приложение на GitHub /OAuth или gh CLI этого экземпляра. Нет учетной записи Openship.",
       "manualCta": "Настроить в настройках",
@@ -69,10 +69,10 @@
     "backToStack": "Вернуться к выбору стека",
     "uploadTitle": "Загрузите свою папку {stack}",
     "uploadSubtitle": "Упаковано в вашем браузере — node_modules, .git и выходные данные сборки пропущены",
-    "dropTitle": "Выберите папку с проектом или нажмите для просмотра",
+    "dropTitle": "Выберите папку вашего проекта или нажмите для просмотра",
     "dropSubtitle": "Вся папка загружается и создается как приложение {stack}",
-    "filesSingular": "Файл {count}",
-    "filesPlural": "Файлы {count}",
+    "filesSingular": "{count} файл",
+    "filesPlural": "{count} файлов",
     "clearSelection": "Четкий выбор",
     "packing": "Упаковочная папка…",
     "uploading": "Загрузка…",
@@ -81,8 +81,8 @@
   "localProjects": {
     "title": "Местные проекты",
     "loading": "Загрузка...",
-    "projectCountSingular": "Проект {count}",
-    "projectCountPlural": "Проекты {count}",
+    "projectCountSingular": "{count} проект",
+    "projectCountPlural": "{count} проектов",
     "import": "Импорт",
     "empty": {
       "title": "Пока нет местных проектов",
@@ -140,9 +140,9 @@
     "privateBadge": "Частный",
     "localOnly": "Только местный",
     "localOnlyTooltip": "Приложение Openship не установлено на {owner}. Только локальные сборки — установите приложение на этого владельца, чтобы включить удаленное развертывание.",
-    "repoCountSingular": "Хранилище {count}",
-    "repoCountPlural": "Репозитории {count}",
-    "matching": "соответствующий \"{query}\"",
+    "repoCountSingular": "{count} репозиторий",
+    "repoCountPlural": "{count} репозитории",
+    "matching": "соответствие \"{query}\"",
     "pagination": {
       "previous": "Предыдущий",
       "next": "Следующий",
@@ -150,10 +150,10 @@
     },
     "time": {
       "justNow": "прямо сейчас",
-      "minutesAgo": "Ошвар0 лет назад",
-      "hoursAgo": "Ошвар0енд назад",
-      "daysAgo": "Ошвар0 лет назад",
-      "monthsAgo": "Ошвар0 лет назад"
+      "minutesAgo": "{n}месяцев назад",
+      "hoursAgo": "{n}часов назад",
+      "daysAgo": "{n}дней назад",
+      "monthsAgo": "{n}месяцев назад"
     }
   },
   "sidebar": {
@@ -164,12 +164,12 @@
     "quickTip": "Краткий совет",
     "quickTipDesc": "Выберите любой репозиторий, чтобы мгновенно развернуть его. Настройте автоматическое развертывание при каждом нажатии.",
     "connection": "Соединение",
-    "openshipGithubApp": "Приложение Openship GitHub",
+    "openshipGithubApp": "__БРЕНД_OPENSHIP__ Приложение на GitHub",
     "connected": "Связанный",
     "notConnected": "Не подключен",
     "ghCli": "gh CLI",
     "runGhAuth": "Запустите \"gh auth login\".",
-    "openshipCloudApp": "Облачное приложение Openship",
+    "openshipCloudApp": "__БРЕНД_OPENSHIP__ Облачное приложение",
     "checking": "Проверка…",
     "notConnectedManage": "Не подключен — управление в настройках",
     "optional": "Необязательный",
@@ -181,7 +181,7 @@
   "urlImport": {
     "invalidUrl": "Введите действительный URL-адрес репозитория GitHub",
     "title": "Импорт из Git URL",
-    "description": "Вставьте URL-адрес публичного репозитория для импорта. Подключение к GitHub не требуется.",
+    "description": "Вставьте URL-адрес общедоступного репозитория для импорта. Подключение к GitHub не требуется.",
     "importButton": "Импорт репозитория"
   }
 }

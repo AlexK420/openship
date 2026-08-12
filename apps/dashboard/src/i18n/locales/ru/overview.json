@@ -2,14 +2,14 @@
   "activity": {
     "title": "Деятельность",
     "thisWeek": "на этой неделе",
-    "deploymentSingular": "Развертывание {count}",
-    "deploymentPlural": "Развертывания {count}"
+    "deploymentSingular": "{count} развертывание",
+    "deploymentPlural": "{count} развертывания"
   },
   "apiRequests": {
     "title": "Запросы к API",
     "last7Days": "Последние 7 дней",
     "totalRequests": "Общее количество запросов",
-    "requestsTooltip": "Запросы {count}"
+    "requestsTooltip": "{count} запросов"
   },
   "credits": {
     "title": "Баланс кредитов",
@@ -19,9 +19,9 @@
   },
   "deployments": {
     "title": "Развертывания",
-    "lastNDays": "последние дни ОШВАР0ЭНДА",
-    "deploymentSingular": "Развертывание {count}",
-    "deploymentPlural": "Развертывания {count}"
+    "lastNDays": "последние {period} дней",
+    "deploymentSingular": "{count} развертывание",
+    "deploymentPlural": "{count} развертывания"
   },
   "homeTip": {
     "quickTip": "Краткий совет",
@@ -77,7 +77,7 @@
   },
   "welcome": {
     "title": "Запустите свой первый проект",
-    "subtitle": "Подключите репозиторий или начните с шаблона — Openship соберет его, отправит и предоставит вам URL-адрес в реальном времени за считанные минуты.",
+    "subtitle": "Подключите репозиторий или начните с шаблона — Openship создает его, отправляет и выдает вам реальный URL-адрес за считанные минуты.",
     "createProject": "Создать проект",
     "importGithub": "Импорт с GitHub",
     "tipPrefix": "Совет: нажмите",
@@ -87,7 +87,7 @@
     "goodMorning": "Доброе утро",
     "goodAfternoon": "Добрый день",
     "goodEvening": "Добрый вечер",
-    "greetingWithName": "ОШВАР0ЕНД, ОШВАР1ЕНД",
+    "greetingWithName": "{greeting}, {name}",
     "overview": "Обзор",
     "subtitle": "Контролируйте использование вашей платформы и управляйте ресурсами",
     "creditsBalance": "Баланс кредитов",
@@ -98,14 +98,14 @@
     "subtitle": "Использование токенов и запросы API",
     "tokens": "Жетоны",
     "requests": "Запросы",
-    "lastNDays": "Последние дни ОШВАР0ЭНДА",
+    "lastNDays": "Последние {period} дней",
     "agents": "Агенты",
     "environments": "Окружающая среда",
     "total": "Весь",
     "production": "Производство",
     "testing": "Тестирование",
-    "prodCount": "{count} произв.",
-    "testCount": "Тест {count}"
+    "prodCount": "{count} прод",
+    "testCount": "{count} тест"
   },
   "projects": {
     "title": "Проекты",
@@ -113,16 +113,16 @@
     "total": "Весь",
     "live": "Жить",
     "building": "Здание",
-    "needAttentionSingular": "Проект {count} требует внимания",
-    "needAttentionPlural": "Проекты {count} требуют внимания"
+    "needAttentionSingular": "{count} проект требует внимания",
+    "needAttentionPlural": "{count} проекты требуют внимания"
   },
   "sandboxes": {
     "title": "Песочницы",
     "developmentEnvironments": "Среды разработки",
     "totalSandboxes": "Всего песочниц",
     "active": "Активный",
-    "runningCount": "Запуск {count}",
-    "stoppedCount": "ОШВАР0ЕНД остановился"
+    "runningCount": "{count} выполняется",
+    "stoppedCount": "{count} остановлен"
   },
   "stats": {
     "creditsBalance": "Баланс кредитов",
@@ -131,14 +131,14 @@
     "apiRequests": "Запросы к API",
     "last7Days": "Последние 7 дней",
     "deployments": "Развертывания",
-    "successfulCount": "ОШВАР0 завершился успешно",
+    "successfulCount": "{count} успешно",
     "activeProjects": "Активные проекты",
     "sandboxes": "Песочницы",
-    "activeCount": "ОШВАР0 ОСТАЕТСЯ активным"
+    "activeCount": "{count} активен"
   },
   "tokenUsage": {
     "title": "Использование токена",
-    "lastNDays": "последние дни ОШВАР0ЭНДА",
-    "tokensTooltip": "Токены {count}"
+    "lastNDays": "последние {period} дней",
+    "tokensTooltip": "{count} токенов"
   }
 }
