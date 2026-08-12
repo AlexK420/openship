@@ -124,7 +124,7 @@
     "acceptedTitle": "Ты в деле",
     "acceptedRedirect": "Перенаправление на панель управления...",
     "errorTitle": "Не могу принять это приглашение",
-    "backToDashboard": "Вернуться к приборной панели"
+    "backToDashboard": "Вернуться к панели управления"
   },
   "cloudAuthorize": {
     "missingRedirect": "Отсутствует параметр перенаправления.",
