@@ -1,19 +1,19 @@
 {
   "time": {
-    "secondsAgo": "{n}секунд назад",
-    "minutesAgo": "{n}месяцев назад",
-    "hoursAgo": "{n}часов назад",
-    "daysAgo": "{n}дней назад",
-    "monthsAgo": "{n}месяцев назад",
-    "yearsAgo": "{n}лет назад"
+    "secondsAgo": "{n}s назад",
+    "minutesAgo": "{n}м назад",
+    "hoursAgo": "{n}h назад",
+    "daysAgo": "{n} назад",
+    "monthsAgo": "{n}mo назад",
+    "yearsAgo": "{n}y назад"
   },
   "header": {
     "title": "Развертывания",
     "loading": "Погрузка…",
     "countProjectOne": "{count} развертывание",
-    "countProjectOther": "{count} развертывания",
-    "countAllOne": "{deployments} всего по проекту {projects}",
-    "countAllOther": "{deployments} итого по {projects} проектам"
+    "countProjectOther": "Развертывания {count}",
+    "countAllOne": "{deployments} итого по проекту {projects}",
+    "countAllOther": "{deployments} итого по проектам {projects}"
   },
   "filters": {
     "searchPlaceholder": "Поиск развертываний...",
@@ -52,8 +52,8 @@
   },
   "stats": {
     "total": "Весь",
-    "projectCountOne": "{count} проект",
-    "projectCountOther": "{count} проектов",
+    "projectCountOne": "Проект {count}",
+    "projectCountOther": "Проекты {count}",
     "success": "Успех",
     "failed": "Неудачный",
     "inProgress": "в процессе",
@@ -175,12 +175,12 @@
     "title": "Вернуться к этой версии?",
     "dataUnchanged": "При этом восстанавливается только код приложения. База данных и объем данных не изменяются.",
     "envHeading": "Переменные среды",
-    "envSummaryOverlay": "{count} изменение переменных — значения этого выпуска воспроизводятся поверх текущих.",
-    "envSummaryReplace": "{count} изменение переменных — среда этого выпуска используется в точности так, как было записано.",
+    "envSummaryOverlay": "Изменение переменной(переменных) {count} — значения этого выпуска воспроизводятся поверх текущих.",
+    "envSummaryReplace": "Изменение переменных {count} — среда этого выпуска используется точно так же, как и в предыдущем случае.",
     "envNoChanges": "Никакие переменные окружения не изменяются.",
     "envUnchanged": "Существующий контейнер перезапускается, а не создается заново, поэтому его среда остается нетронутой.",
     "envNoValues": "Значения здесь никогда не отображаются.",
-    "envTruncated": "Отображается {shown} из {total}.",
+    "envTruncated": "Отображается {shown} вместо {total}.",
     "dirFrozenWins": "возвращается к значению этого выпуска",
     "dirRemovedSince": "возвращается — удалено с момента выпуска",
     "dirAddedSinceKept": "сохранено в том виде, в каком оно есть сейчас — добавлено после этого выпуска",

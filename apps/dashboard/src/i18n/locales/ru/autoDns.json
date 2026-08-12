@@ -19,7 +19,7 @@
   "actionAdopt": "Повторная точка",
   "actionInSync": "На месте",
   "actionConflict": "Конфликт",
-  "conflictNote": "Не поддерживается Openship — удалите его или установите эту запись вручную.",
+  "conflictNote": "Не управляется Openship — удалите его или установите эту запись вручную.",
   "outcomeApplied": "Прикладная",
   "outcomeSkipped": "Пропущенный",
   "outcomeFailed": "Неудачный",

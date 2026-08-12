@@ -3,13 +3,13 @@
     "title": "Деятельность",
     "thisWeek": "на этой неделе",
     "deploymentSingular": "{count} развертывание",
-    "deploymentPlural": "{count} развертывания"
+    "deploymentPlural": "Развертывания {count}"
   },
   "apiRequests": {
     "title": "Запросы к API",
     "last7Days": "Последние 7 дней",
     "totalRequests": "Общее количество запросов",
-    "requestsTooltip": "{count} запросов"
+    "requestsTooltip": "Запросы {count}"
   },
   "credits": {
     "title": "Баланс кредитов",
@@ -21,7 +21,7 @@
     "title": "Развертывания",
     "lastNDays": "последние {period} дней",
     "deploymentSingular": "{count} развертывание",
-    "deploymentPlural": "{count} развертывания"
+    "deploymentPlural": "Развертывания {count}"
   },
   "homeTip": {
     "quickTip": "Краткий совет",
@@ -77,7 +77,7 @@
   },
   "welcome": {
     "title": "Запустите свой первый проект",
-    "subtitle": "Подключите репозиторий или начните с шаблона — Openship создает его, отправляет и выдает вам реальный URL-адрес за считанные минуты.",
+    "subtitle": "Подключите репозиторий или начните с шаблона — Openship создает его, отправляет и выдает вам URL-адрес в реальном времени за считанные минуты.",
     "createProject": "Создать проект",
     "importGithub": "Импорт с GitHub",
     "tipPrefix": "Совет: нажмите",
@@ -105,7 +105,7 @@
     "production": "Производство",
     "testing": "Тестирование",
     "prodCount": "{count} прод",
-    "testCount": "{count} тест"
+    "testCount": "Тест {count}"
   },
   "projects": {
     "title": "Проекты",
@@ -113,15 +113,15 @@
     "total": "Весь",
     "live": "Жить",
     "building": "Здание",
-    "needAttentionSingular": "{count} проект требует внимания",
-    "needAttentionPlural": "{count} проекты требуют внимания"
+    "needAttentionSingular": "Проект {count} нуждается во внимании",
+    "needAttentionPlural": "Проекты {count} требуют внимания"
   },
   "sandboxes": {
     "title": "Песочницы",
     "developmentEnvironments": "Среды разработки",
     "totalSandboxes": "Всего песочниц",
     "active": "Активный",
-    "runningCount": "{count} выполняется",
+    "runningCount": "{count} запущен",
     "stoppedCount": "{count} остановлен"
   },
   "stats": {
@@ -131,7 +131,7 @@
     "apiRequests": "Запросы к API",
     "last7Days": "Последние 7 дней",
     "deployments": "Развертывания",
-    "successfulCount": "{count} успешно",
+    "successfulCount": "{count} прошел успешно",
     "activeProjects": "Активные проекты",
     "sandboxes": "Песочницы",
     "activeCount": "{count} активен"
@@ -139,6 +139,6 @@
   "tokenUsage": {
     "title": "Использование токена",
     "lastNDays": "последние {period} дней",
-    "tokensTooltip": "{count} токенов"
+    "tokensTooltip": "Токены {count}"
   }
 }

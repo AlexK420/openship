@@ -30,7 +30,7 @@
         "hints": {
           "0": "Проект был удален",
           "1": "У вас нет доступа к этому проекту",
-          "2": "Неверный URL-адрес проекта"
+          "2": "Указан неверный URL-адрес проекта"
         },
         "backToDashboard": "Вернуться к приборной панели",
         "createNewProject": "Создать новый проект"
@@ -119,7 +119,7 @@
       "failedRotate": "Не удалось повернуть токен",
       "editTitle": "Изменить политику резервного копирования",
       "createTitle": "Создание политики резервного копирования",
-      "serviceLabel": "Услуга: {name}",
+      "serviceLabel": "Сервис: {name}",
       "projectLevel": "Политика на уровне проекта",
       "destination": "Место назначения",
       "selectOption": "— выберите —",
@@ -153,7 +153,7 @@
       "methodVolumeDesc": "Тома моментальных снимков",
       "methodCustom": "Обычай",
       "methodCustomDesc": "Ваше собственное командование",
-      "detected": "Обнаружен {label} — Автоматически создается резервная копия с {method}.",
+      "detected": "Обнаружен {label} — автоматическое резервное копирование с помощью {method}.",
       "autoNoDb": "База данных не обнаружена — автоматически будет создан моментальный снимок томов этой службы.",
       "volumeHint": "Загружает все тома для этой службы. Работает в режиме реального времени, без сбоев.",
       "customCommandLabel": "Команда сброса",
@@ -163,22 +163,22 @@
       "summaryTitle": "Резюме",
       "summaryMethod": "Метод",
       "summaryScheduleManual": "Только вручную",
-      "summaryLogical": "{label} дамп",
+      "summaryLogical": "Дамп {label}",
       "summaryVolume": "Моментальный снимок объема",
       "summaryCustom": "Пользовательская команда",
       "retentionUnlimited": "Неограниченный",
       "keepN": "сохранить {n}",
-      "olderThanN": "{n}d ограничение"
+      "olderThanN": "Крышка {n}d"
     }
   },
   "cloud": {
     "connectionGate": {
-      "reconnect": "Переподключение __БРЕНДА__OPENSHIP__ Cloud",
-      "deployedOn": "Этот проект развернут в облаке Openship Cloud",
-      "sessionMissing": "Ваша облачная сессия Openship отсутствует. Подключитесь для управления развертываниями, просмотра журналов и доступа к элементам управления во время выполнения для {name}.",
+      "reconnect": "Повторно подключите облако Openship",
+      "deployedOn": "Этот проект развернут в облаке Openship",
+      "sessionMissing": "У вас отсутствует облачный сеанс Openship. Подключитесь для управления развертываниями, просмотра журналов и доступа к элементам управления временем выполнения {name}.",
       "thisProject": "этот проект",
       "connecting": "Связывающий…",
-      "connect": "Подключитесь к облаку Openship Cloud",
+      "connect": "Подключитесь к облаку Openship",
       "readOnlyNote": "Вы по-прежнему можете просматривать эту страницу в режиме только для чтения, даже если вы отключены от сети."
     }
   },
@@ -208,17 +208,17 @@
   "permissions": {
     "resourcePicker": {
       "failedLoadResources": "Не удалось загрузить ресурсы",
-      "searchPlaceholder": "Поиск {type}...",
+      "searchPlaceholder": "Выполните поиск {type}...",
       "allResources": "Все {type}",
       "noMatch": "Ни один ресурс не соответствует вашему запросу.",
       "noResourcesYet": "В этой организации пока нет {type}.",
-      "selectedSummaryOne": "{count} ресурс выбран для всех типов.",
-      "selectedSummaryOther": "{count} ресурсы, выбранные для всех типов.",
+      "selectedSummaryOne": "Ресурс {count} выбран для всех типов.",
+      "selectedSummaryOther": "Ресурсы {count}, выбранные для всех типов.",
       "wildcard": "подстановочный знак",
       "coveredByAll": "охваченный всеми",
       "failedLoadOrgs": "Не удалось загрузить файлы GitHub orgs",
       "failedLoadRepos": "Не удалось загрузить репозитории для {login}",
-      "noOrgs": "Ни одна организация с GitHub не подключена.",
+      "noOrgs": "Ни одна организация на GitHub не подключена.",
       "collapse": "Коллапс",
       "expand": "Расширять",
       "entireOrg": "вся организация",
@@ -251,7 +251,7 @@
       "summaryReadWholeRepo": "Читаю каждый файл.",
       "summaryReadScoped": "Только для чтения: {paths}",
       "summaryWriteWholeRepo": "Запись любого файла.",
-      "summaryWriteScoped": "Только для записи: {paths}",
+      "summaryWriteScoped": "Только запись: {paths}",
       "summaryCloneAllowed": "Клонируйте токены, чтобы локальные сборки работали.",
       "summaryCloneBlocked": "Никаких токенов клонирования — клон не может быть ограничен путями, поэтому локальные сборки работать не будут.",
       "apply": "Применять",
@@ -265,7 +265,7 @@
       "treeCovered": "{path} уже подпадает под действие более широкого правила, приведенного выше.",
       "browseIn": "Просматривать",
       "appliesToEveryRepo": "Пути применяются к каждому репозиторию под этой учетной записью.",
-      "selectedCount": "_Выбран _VAR_0__",
+      "selectedCount": "Выбран {count}",
       "clearPaths": "Всё",
       "advancedPattern": "Или добавить узор",
       "assigningTo": "Присвоение",
@@ -283,14 +283,14 @@
       "allDomains": "Все домены"
     },
     "publicEndpoints": {
-      "mappedToPort": "Сопоставлен с портом {port}.",
+      "mappedToPort": "Подключен к порту {port}.",
       "noPortYet": "Порт еще не выбран.",
       "mappedTo": "Сопоставлен с {path}.",
       "exposedPort": "Открытый порт",
       "staticPath": "Статический путь",
       "auto": "Авто",
       "domain": "Домен",
-      "domainsRouted": "{count} домены, перенаправленные в это приложение.",
+      "domainsRouted": "Домены {count}, подключенные к этому приложению.",
       "accessibleWhere": "Где будет доступен ваш сайт",
       "addDomain": "Добавить домен",
       "primaryDomain": "Основной домен",
@@ -390,7 +390,7 @@
     "rerunInstall": "Повторно запустите установку, чтобы обновить свой автономный сервер.",
     "updateNow": "Обновите сейчас",
     "downloading": "Загрузка Openship {version}",
-    "installing": "Установка — Openship будет перезапущена",
+    "installing": "Установка — Openship перезапустится",
     "updateFailed": "Не удалось выполнить обновление",
     "retry": "Повторить попытку",
     "changelog": "Журнал изменений",
