@@ -1,0 +1,220 @@
+{
+  "home": {
+    "goodMorning": "Доброе утро",
+    "goodAfternoon": "Добрый день",
+    "goodEvening": "Добрый вечер",
+    "subtitle": "Вот что происходит в ваших проектах",
+    "statsProjects": "Проекты",
+    "statsDeployments": "Деплои",
+    "statsSuccessful": "Успешные",
+    "statsFailed": "Неудачные",
+    "recentProjects": "Последние проекты",
+    "yourLatestActivity": "Ваша последняя активность",
+    "viewAll": "Посмотреть все",
+    "noProjectsYet": "Пока нет проектов",
+    "createFirstProject": "Создайте первый проект",
+    "justNow": "только что",
+    "minutesAgo": "{n} мин. назад",
+    "hoursAgo": "{n} ч. назад",
+    "daysAgo": "{n} дн. назад",
+    "monthsAgo": "{n} мес. назад",
+    "statusLive": "В работе",
+    "statusPaused": "Приостановлен",
+    "yourProjects": "Ваши проекты",
+    "loading": "Загрузка…",
+    "projectCountOne": "{count} проект",
+    "projectCountOther": "{count} проекта",
+    "viewAllProjects": "Посмотреть все {count} проектов →",
+    "viewAllApps": "Посмотреть все {count} приложений →",
+    "greetingName": "ОШВАР0ЕНД, ОШВАР1ЕНД",
+    "importGit": "Импорт из Git",
+    "importGitDesc": "Из репозитория",
+    "mcpDeploy": "Деплой через MCP",
+    "mcpDeployDesc": "Подключить AI-агента",
+    "settingsCard": "Настройки",
+    "settingsCardDesc": "Аккаунт и команда",
+    "docs": "Документация",
+    "docsDesc": "Узнать больше",
+    "activityTitle": "Активность",
+    "systemStatus": "Статус системы",
+    "operational": "Работает",
+    "oneIssue": "1 проблема",
+    "manyIssues": "{n} проблем",
+    "recentTitle": "Последние",
+    "activityEmpty": "Здесь появится ваша активность",
+    "appsEmptyTitle": "Пока нет приложений",
+    "appsEmptyDesc": "Один клик, полностью самостоятельное размещение — базы данных, автоматизация, аналитика, хранилища паролей и многое другое на ваших собственных серверах.",
+    "allSystemsOperational": "Все системы работают",
+    "runningSmoothly": "Ваши проекты работают стабильно",
+    "time": {
+      "justNow": "только что",
+      "minutes": "{n} мин. назад",
+      "hours": "{n} ч. назад",
+      "days": "{n} дн. назад",
+      "months": "{n} мес. назад"
+    }
+  },
+  "nav": {
+    "home": "Главная",
+    "new-project": "Новый проект",
+    "projects": "Проекты",
+    "apps": "Приложения",
+    "deployments": "Деплои",
+    "issues": "Проблемы",
+    "backups": "Резервные копии",
+    "domains": "Домены",
+    "monitoring": "Мониторинг",
+    "servers": "Серверы",
+    "emails": "Почта",
+    "jobs": "Задачи",
+    "settings": "Настройки",
+    "billing": "Тарифы и использование",
+    "mailSetup": "Настроить почту",
+    "mailSetupProgress": "Прогресс настройки",
+    "addMailbox": "Добавить почтовый ящик",
+    "webmail": "Веб-почта",
+    "sections": {
+      "main": "Основное",
+      "settings": "Настройки",
+      "infrastructure": "Инфраструктура",
+      "mail": "Почта",
+      "delivery": "Доставка",
+      "system": "Система",
+      "account": "Аккаунт"
+    }
+  },
+  "sidebar": {
+    "expand": "Развернуть боковую панель",
+    "collapse": "Свернуть боковую панель"
+  },
+  "user": {
+    "logout": "Выйти",
+    "loggingOut": "Выход…",
+    "profile": "Профиль",
+    "preferences": "Предпочтения"
+  },
+  "pages": {
+    "apps": {
+      "title": "Приложения",
+      "description": "Управляемые сервисы в один клик — установите и запустите Convex, WordPress, почту и другие.",
+      "createButton": "Установить приложение",
+      "loading": "Загрузка приложений…",
+      "countOne": "{count} приложение установлено",
+      "countOther": "{count} приложений установлено",
+      "emptyTitle": "Установите первое приложение",
+      "emptyDescription": "Запустите Convex, n8n, Ghost и другие — один клик, полностью самостоятельное размещение. Выберите одно, чтобы начать.",
+      "popular": "Популярные приложения",
+      "alsoDeploy": "Также можно деплоить",
+      "browseAll": "Посмотреть все приложения",
+      "moreApps": "+{count} ещё",
+      "catalogTitle": "Установить приложение",
+      "catalogDescription": "Управляемые сервисы в один клик. Выберите одно, чтобы установить его как приложение.",
+      "catalogSearchPlaceholder": "Поиск приложений…",
+      "catalogNoResults": "Нет приложений, соответствующих вашему запросу.",
+      "categories": {
+        "all": "Все",
+        "backend": "Бэкенд",
+        "database": "Базы данных",
+        "cms": "CMS",
+        "analytics": "Аналитика",
+        "automation": "Автоматизация",
+        "mail": "Почта",
+        "other": "Инструменты"
+      },
+      "installing": "Установка…",
+      "install": "Установить",
+      "cancel": "Отмена",
+      "nameLabel": "Название",
+      "configTitle": "Настроить {app}",
+      "comingSoon": "Скоро"
+    },
+    "projects": {
+      "title": "Проекты",
+      "description": "Разворачивайте и управляйте вашими приложениями без лишних усилий",
+      "createButton": "Создать проект",
+      "stats": {
+        "totalProjects": "Всего проектов",
+        "liveNow": "Сейчас в работе",
+        "avgPerDay": "В среднем в день",
+        "successRate": "Успешность"
+      },
+      "searchPlaceholder": "Поиск проектов…",
+      "pinnedProjects": "Закреплённые проекты",
+      "otherProjects": "Другие проекты",
+      "noResultsFound": "Не найдено проектов, соответствующих запросу «{query}»",
+      "emptyState": {
+        "title": "Создайте первый проект",
+        "description": "Импортируйте Git-репозиторий, используйте шаблон или деплойте через CLI. Ваши проекты появятся здесь.",
+        "createProject": "Создать проект",
+        "browseTemplates": "Посмотреть шаблоны",
+        "zeroConfig": "Деплой без конфигурации",
+        "instant": "Мгновенно",
+        "instantDesc": "Деплой за секунды",
+        "global": "Глобально",
+        "globalDesc": "Более 100 регионов по всему миру",
+        "previews": "Превью",
+        "previewsDesc": "URL для каждой ветки",
+        "rollbacks": "Откаты",
+        "rollbacksDesc": "Откат в один клик",
+        "commandPalette": "Или нажмите {key}, чтобы открыть командную палитру"
+      },
+      "view": {
+        "label": "Вид",
+        "list": "Список",
+        "grid": "Сетка"
+      }
+    },
+    "deployments": {
+      "title": "Деплои",
+      "description": "Просматривайте и управляйте историей деплоев."
+    },
+    "domains": {
+      "title": "Домены",
+      "description": "Управляйте пользовательскими доменами и DNS-записями."
+    },
+    "monitoring": {
+      "title": "Мониторинг",
+      "description": "Логи, метрики и проверки работоспособности для ваших сервисов."
+    },
+    "servers": {
+      "title": "Серверы",
+      "description": "Управляйте серверами для деплоев и инфраструктурой."
+    },
+    "settings": {
+      "title": "Настройки",
+      "description": "Настройки аккаунта, команды и платформы."
+    },
+    "billing": {
+      "title": "Тарифы и использование",
+      "description": "Управляйте подпиской, использованием и способами оплаты."
+    }
+  },
+  "quickLinks": {
+    "title": "Быстрые действия",
+    "subtitle": "Перейдите к частым задачам",
+    "deployProject": {
+      "title": "Деплой проекта",
+      "description": "Импорт из Git"
+    },
+    "projects": {
+      "title": "Проекты",
+      "description": "Все проекты"
+    },
+    "deployments": {
+      "title": "Деплои",
+      "description": "История сборок"
+    },
+    "settings": {
+      "title": "Настройки",
+      "description": "Управление доступом"
+    },
+    "domains": {
+      "title": "Домены",
+      "description": "Пользовательские домены"
+    },
+    "billing": {
+      "title": "Тарифы и использование",
+      "description": "Использование и тарифы"
+    }
+  }
+}
