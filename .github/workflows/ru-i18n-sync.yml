@@ -1,0 +1,19 @@
+name: Russian i18n sync
+
+on:
+  push:
+    branches:
+      - sync-russian-i18n-2026-09-17
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Audit Russian dictionary
+        run: node scripts/ru-i18n-audit.mjs
