@@ -22,12 +22,8 @@ concurrency:
 
 jobs:
   build:
-    name: macOS ${{ matrix.arch }}
+    name: Build macOS arm64 + x64
     runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [arm64, x64]
 
     steps:
       - name: Checkout fork
@@ -35,20 +31,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read Bun version
-        id: bun-version
-        shell: bash
-        run: echo "version=$(cat .bun-version)" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ steps.bun-version.outputs.version }}
-
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
           node-version: '24'
+
+      # Avoid third-party GitHub Actions so this workflow also works when the
+      # repository policy allows only GitHub-owned actions. Bun publishes its
+      # native CLI through npm; pin it to the repository's .bun-version.
+      - name: Install Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "bun@$(cat .bun-version)"
+          bun --version
 
       - name: Restore Bun cache
         uses: actions/cache@v6
@@ -61,37 +57,42 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Match the macOS commands used by the upstream release workflow: build the
-      # staged desktop bundle first, then invoke Electron Forge for one target arch.
+      # Mirror the proven commands from the release workflow. One native arm64
+      # runner can package both Apple Silicon and Intel Electron targets.
       - name: Build Openship for macOS
         shell: bash
         run: |
           set -euo pipefail
           cd apps/desktop
           bun run build
-          bunx electron-forge make --arch=${{ matrix.arch }}
+          bunx electron-forge make --arch=arm64
+          bunx electron-forge make --arch=x64
 
-      - name: Collect DMG
+      - name: Collect DMGs
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          DMG="apps/desktop/out/make/Openship-${{ matrix.arch }}.dmg"
-          if [ ! -f "$DMG" ]; then
-            echo "Expected DMG not found: $DMG"
-            find apps/desktop/out/make -maxdepth 6 -type f -print || true
-            exit 1
-          fi
-          OUT="dist/Openship-RU-macOS-${{ matrix.arch }}.dmg"
-          cp "$DMG" "$OUT"
-          shasum -a 256 "$OUT" > "$OUT.sha256"
+          for arch in arm64 x64; do
+            DMG="apps/desktop/out/make/Openship-${arch}.dmg"
+            if [ ! -f "$DMG" ]; then
+              echo "Expected DMG not found: $DMG"
+              find apps/desktop/out/make -maxdepth 6 -type f -print || true
+              exit 1
+            fi
+            OUT="dist/Openship-RU-macOS-${arch}.dmg"
+            cp "$DMG" "$OUT"
+            shasum -a 256 "$OUT" > "$OUT.sha256"
+          done
 
-      - name: Upload installer
+      - name: Upload installers
         uses: actions/upload-artifact@v7
         with:
-          name: Openship-RU-macOS-${{ matrix.arch }}
+          name: Openship-RU-macOS
           path: |
-            dist/Openship-RU-macOS-${{ matrix.arch }}.dmg
-            dist/Openship-RU-macOS-${{ matrix.arch }}.dmg.sha256
+            dist/Openship-RU-macOS-arm64.dmg
+            dist/Openship-RU-macOS-arm64.dmg.sha256
+            dist/Openship-RU-macOS-x64.dmg
+            dist/Openship-RU-macOS-x64.dmg.sha256
           if-no-files-found: error
           retention-days: 30
