@@ -1,0 +1,91 @@
+name: Build macOS RU
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-ru.yml'
+      - 'apps/desktop/**'
+      - 'apps/dashboard/**'
+      - 'packages/core/**'
+      - 'packages/onboarding/**'
+      - 'bun.lock'
+      - '.bun-version'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-ru-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read Bun version
+        id: bun-version
+        shell: bash
+        run: echo "version=$(cat .bun-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ steps.bun-version.outputs.version }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Restore Bun cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: macos-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            macos-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Openship for macOS
+        shell: bash
+        run: bun run --cwd apps/desktop make -- --arch=${{ matrix.arch }}
+
+      - name: Collect DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          DMG="apps/desktop/out/make/Openship-${{ matrix.arch }}.dmg"
+          if [ ! -f "$DMG" ]; then
+            echo "Expected DMG not found: $DMG"
+            find apps/desktop/out/make -type f -maxdepth 6 -print || true
+            exit 1
+          fi
+          OUT="dist/Openship-RU-macOS-${{ matrix.arch }}.dmg"
+          cp "$DMG" "$OUT"
+          shasum -a 256 "$OUT" > "$OUT.sha256"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: Openship-RU-macOS-${{ matrix.arch }}
+          path: |
+            dist/Openship-RU-macOS-${{ matrix.arch }}.dmg
+            dist/Openship-RU-macOS-${{ matrix.arch }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 30
