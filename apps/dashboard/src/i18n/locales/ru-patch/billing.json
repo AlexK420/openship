@@ -1,6 +1,6 @@
 {
   "_delete": [
-    "usage.upgradeToPro"
+    "overview.upgradeToPro"
   ],
   "capacity": {
     "runningServices": "Запущенные сервисы",
