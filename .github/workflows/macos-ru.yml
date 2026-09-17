@@ -61,9 +61,15 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Match the macOS commands used by the upstream release workflow: build the
+      # staged desktop bundle first, then invoke Electron Forge for one target arch.
       - name: Build Openship for macOS
         shell: bash
-        run: bun run --cwd apps/desktop make -- --arch=${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          cd apps/desktop
+          bun run build
+          bunx electron-forge make --arch=${{ matrix.arch }}
 
       - name: Collect DMG
         shell: bash
@@ -73,7 +79,7 @@ jobs:
           DMG="apps/desktop/out/make/Openship-${{ matrix.arch }}.dmg"
           if [ ! -f "$DMG" ]; then
             echo "Expected DMG not found: $DMG"
-            find apps/desktop/out/make -type f -maxdepth 6 -print || true
+            find apps/desktop/out/make -maxdepth 6 -type f -print || true
             exit 1
           fi
           OUT="dist/Openship-RU-macOS-${{ matrix.arch }}.dmg"
