@@ -38,7 +38,7 @@ openship update
 Например:
 
 ```sh
-OPENSHIP_REF=main curl -fsSL https://raw.githubusercontent.com/AlexK420/openship/main/scripts/install-ru.sh | sh
+curl -fsSL https://raw.githubusercontent.com/AlexK420/openship/main/scripts/install-ru.sh | OPENSHIP_REF=main sh
 ```
 
 Можно также переопределить источник и каталоги:
