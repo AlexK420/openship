@@ -28,7 +28,7 @@ import {
   type MailSSEEvent,
   type PortConflict,
 } from "@/lib/api";
-import { relayProvider } from "@repo/core";
+import { relayProvider, mailHostname } from "@repo/core";
 import { mailProvider } from "@/lib/mail-providers";
 import type { ServerOption } from "@/components/shared/ServerSelector";
 import { PageContainer } from "@/components/ui/PageContainer";
@@ -47,6 +47,7 @@ import { MailAdminPanel } from "./admin/admin-panel";
 import { MailServerList, type MailServerListItem } from "./mail-server-list";
 import { resolveMailView } from "../_lib/view-gate";
 import { getMailSectionHeading, useMailRailOwnsTabs } from "../_lib/mail-section";
+import { canonicalMailTab } from "@/lib/mail-tabs";
 import { invalidateMailScope } from "@/lib/mail-scope-bus";
 
 /** Identity the mail rail is built from: which servers exist and whether each
@@ -281,7 +282,7 @@ function MailConsoleInner() {
             setPtrPending({
               ipv4,
               ipv6,
-              target: `mail.${s.domain}`,
+              target: mailHostname(s.domain),
               resumeStep: s.resumeStep ?? 12,
             });
           }
@@ -759,7 +760,7 @@ function MailConsoleInner() {
         setPtrPending({
           ipv4,
           ipv6,
-          target: `mail.${domain}`,
+          target: mailHostname(domain),
           resumeStep: next,
         });
       } else {
@@ -871,7 +872,7 @@ function MailConsoleInner() {
   const railOwnsTabs = useMailRailOwnsTabs(selectedServer?.id ?? null);
   const sectionHeading =
     showAdmin && railOwnsTabs
-      ? getMailSectionHeading(searchParams.get("tab") ?? "overview", t)
+      ? getMailSectionHeading(canonicalMailTab(searchParams.get("tab")), t)
       : null;
   const headerTitle = sectionHeading?.title ?? t.emails.page.title;
   const headerSubtitle = sectionHeading

@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   dockerPsPorts: "",
   /** Postgres data volumes this box already has, by full volume name. */
   dbVolumes: new Set<string>(),
+  volumeInspectError: null as string | null,
   /** `docker manifest inspect <ref>` result per ref. Default: the tag exists (#486). */
   manifestInspect: (_ref: string) => ({ status: 0, stdout: "{}", stderr: "" }),
   /**
@@ -46,6 +47,21 @@ const h = vi.hoisted(() => ({
     stdout: "LISTEN 0      128                0.0.0.0:22         0.0.0.0:*",
     stderr: "",
   }),
+  /**
+   * The verification dial that proves sshd ACCEPTS the key we just authorized (#527), and
+   * measures whether `sudo -n` works from that same session. Default: both do — so the
+   * refusal warning only fires for the tests that ask for it, the same convention
+   * `listeners` follows.
+   *
+   * The `openship-sudo=ok` marker is the contract, not decoration: the remote script ends
+   * in `exit 0` so a refused SUDO can't be read as a refused LOGIN, which means the marker
+   * — never the exit code — is what says the dial got through.
+   *
+   * Declared explicitly rather than left to the mock's status-0 fallthrough: a check
+   * whose default answer is an accident is a check that stops being exercised the moment
+   * the fallthrough changes.
+   */
+  channelAuth: () => ({ status: 0, stdout: "openship-sudo=ok\n", stderr: "" }),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -57,7 +73,8 @@ vi.mock("node:child_process", () => ({
     // `docker volume inspect <name>`. Empty by default, so the password-reconcile path
     // stays out of the compose sequences most of these tests assert on.
     if (cmd === "docker" && args[0] === "volume") {
-      return { status: h.dbVolumes.has(String(args[2])) ? 0 : 1, stdout: "", stderr: "" };
+      if (h.volumeInspectError) return { status: 1, stdout: "", stderr: h.volumeInspectError };
+      return { status: h.dbVolumes.has(String(args[2])) ? 0 : 1, stdout: "", stderr: `Error: No such volume: ${args[2]}` };
     }
     // Only the published-ports query (composeHeldPorts), not the label sweep below.
     if (cmd === "docker" && args[0] === "ps" && args.some((a) => a.includes("{{.Ports}}"))) {
@@ -68,6 +85,8 @@ vi.mock("node:child_process", () => ({
     // Host-channel provisioning: the keypair, then the sshd prerequisite (#509).
     if (cmd === "ssh-keygen") return h.keygen();
     if (cmd === "ss" || cmd === "netstat") return h.listeners();
+    // ...then the dial that asks sshd whether the key actually works (#527).
+    if (cmd === "ssh") return h.channelAuth();
     // #486 preflight: registry manifest probe. Driven per-ref by h.manifestInspect.
     if (cmd === "docker" && args[0] === "manifest" && args[1] === "inspect") {
       return h.manifestInspect(String(args[2]));
@@ -87,6 +106,7 @@ vi.mock("node:fs", () => ({
   chmodSync: () => undefined,
   existsSync: (p: string) => h.existing.has(String(p)),
   mkdirSync: () => undefined,
+  realpathSync: (p: string) => String(p),
   rmSync: (p: string) => {
     h.written.delete(String(p));
     h.existing.delete(String(p));
@@ -141,6 +161,7 @@ vi.mock("@repo/adapters", async () => {
 });
 
 import {
+  canonicalComposeHostPath,
   composeEnvPorts,
   composeHeldPorts,
   composePaths,
@@ -248,6 +269,7 @@ beforeEach(() => {
   h.composeCalls = [];
   h.dockerPsPorts = "";
   h.dbVolumes = new Set();
+  h.volumeInspectError = null;
   h.manifestInspect = () => ({ status: 0, stdout: "{}", stderr: "" });
   h.pgProbe = () => ({ status: 0, stdout: "sub", stderr: "" });
   h.psAll = "";
@@ -363,6 +385,31 @@ describe("the host alias is overridable in the compose file", () => {
     expect(yaml).toContain(
       'extra_hosts: ["host.docker.internal:${OPENSHIP_HOST_GATEWAY:-host-gateway}"]',
     );
+  });
+});
+
+describe("macOS edge bind sources (#692)", () => {
+  it("resolves through the closest existing symlinked ancestor", () => {
+    const realpath = (path: string): string => {
+      if (path === "/var") return "/private/var";
+      throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+    };
+
+    expect(
+      canonicalComposeHostPath(
+        "/var/lib/openship/edge/sites-enabled",
+        "darwin",
+        realpath,
+      ),
+    ).toBe("/private/var/lib/openship/edge/sites-enabled");
+  });
+
+  it("does not rewrite Linux mount paths", () => {
+    const realpath = vi.fn(() => "/should-not-be-read");
+    expect(canonicalComposeHostPath("/var/lib/openship/edge", "linux", realpath)).toBe(
+      "/var/lib/openship/edge",
+    );
+    expect(realpath).not.toHaveBeenCalled();
   });
 });
 
@@ -1261,16 +1308,16 @@ describe("composeUp — OPENSHIP_PGDATA is read from the volume, not guessed (#4
     expect(writtenEnv().OPENSHIP_PGDATA).toBe("/var/lib/postgresql/data/pgdata");
   });
 
-  it("falls back to the subdir when docker can't probe (status != 0 → unknown)", async () => {
-    // An inconclusive probe must never guess the root — the subdir is the non-crashing
-    // choice, and the compose default besides.
+  it("refuses without rewriting configuration when Docker cannot read the layout", async () => {
     seedEnv(CONFIGURED);
     h.dbVolumes.add("openship_postgres_data");
     h.pgProbe = () => ({ status: 1, stdout: "", stderr: "cannot connect to the Docker daemon" });
 
+    const before = h.written.get(composePaths.env);
     const res = await composeUp({});
-    expect(res.ok).toBe(true);
-    expect(writtenEnv().OPENSHIP_PGDATA).toBe("/var/lib/postgresql/data/pgdata");
+    expect(res).toMatchObject({ ok: false, refused: true });
+    expect(h.written.get(composePaths.env)).toBe(before);
+    expect(h.composeCalls).toEqual([]);
   });
 
   it("reuses a pinned OPENSHIP_PGDATA verbatim, without probing", async () => {
@@ -1321,6 +1368,72 @@ describe("composeUp — refuses to guess OPENSHIP_PGDATA on an unrecognized volu
 
   it("does not fire on a first install — there is no volume", async () => {
     expect((await composeUp({})).ok).toBe(true);
+  });
+});
+
+describe("database inspection failures preserve configuration (#487, #488)", () => {
+  it("does not classify an unreachable Docker daemon as a fresh installation", () => {
+    h.volumeInspectError = "Cannot connect to the Docker daemon";
+    expect(() => composePlan({})).toThrow(/Cannot inspect database volume/);
+    expect(h.written.size).toBe(0);
+  });
+
+  it("cannot overwrite missing secrets when the existence of old data is unknown", () => {
+    seedEnv({ COMPOSE_PROJECT_NAME: "openship", OPENSHIP_PGDATA: "/var/lib/postgresql/data/pgdata" });
+    const before = h.written.get(composePaths.env);
+    h.volumeInspectError = "permission denied while connecting to the Docker socket";
+    expect(() => composePrefetch({})).toThrow(/Cannot inspect database volume/);
+    expect(h.written.get(composePaths.env)).toBe(before);
+    expect(h.composeCalls).toEqual([]);
+  });
+
+  it("refuses foreign data during prefetch, before that path can replace the env file", () => {
+    seedEnv(CONFIGURED);
+    const before = h.written.get(composePaths.env);
+    h.dbVolumes.add("openship_postgres_data");
+    h.pgProbe = () => ({ status: 0, stdout: "foreign", stderr: "" });
+    expect(composePrefetch({})).toEqual({ ok: false, envChanged: false });
+    expect(h.written.get(composePaths.env)).toBe(before);
+    expect(h.composeCalls).toEqual([]);
+  });
+
+  it("revalidates the layout at the write boundary and refuses a later probe failure", async () => {
+    seedEnv(CONFIGURED);
+    const before = h.written.get(composePaths.env);
+    h.dbVolumes.add("openship_postgres_data");
+    let calls = 0;
+    h.pgProbe = () => ++calls === 1
+      ? { status: 0, stdout: "sub", stderr: "" }
+      : { status: 1, stdout: "", stderr: "probe access failed" };
+    await expect(composeUp({})).rejects.toThrow(/data directory could not be inspected/);
+    expect(h.written.get(composePaths.env)).toBe(before);
+    expect(h.composeCalls).toEqual([]);
+  });
+
+  it("uses one layout observation for both the preview value and its verdict", () => {
+    seedEnv(CONFIGURED);
+    h.dbVolumes.add("openship_postgres_data");
+    let calls = 0;
+    h.pgProbe = () => {
+      calls++;
+      return { status: 0, stdout: "sub", stderr: "" };
+    };
+    const plan = composePlan({});
+    expect(calls).toBe(1);
+    expect(plan.pgDataRisk).toBeNull();
+    expect(plan.settings.find((row) => row.key === "OPENSHIP_PGDATA")?.value).toBe("/var/lib/postgresql/data/pgdata");
+  });
+
+  it("reports an unknown layout without claiming a path or a foreign cluster", () => {
+    seedEnv(CONFIGURED);
+    h.dbVolumes.add("openship_postgres_data");
+    h.pgProbe = () => ({ status: 1, stdout: "", stderr: "image pull failed" });
+    const plan = composePlan({ resetSecrets: true });
+    expect(plan.pgDataRisk).toMatchObject({ volume: "openship_postgres_data", reason: "unavailable" });
+    expect(plan.settings.find((row) => row.key === "OPENSHIP_PGDATA")?.value).toBe("<unresolved>");
+    const message = renderPgDataRefusal(plan.pgDataRisk!, { dryRun: true });
+    expect(message).toContain("image pull failed");
+    expect(message).not.toContain("neither present");
   });
 });
 
@@ -1535,6 +1648,141 @@ describe("composeUp — the host channel is provisioned out loud (#509)", () => 
 
     expect(writtenEnv().OPENSHIP_HOST_SSH_HOST).toBe("host.docker.internal");
     expect(warned.join("\n")).not.toContain("listening for SSH");
+  });
+
+  /**
+   * #527: a LISTENER is not an accepted key.
+   *
+   * The reporter's box passed every check above — key generated, `authorized_keys`
+   * written, sshd listening on 22 — and the install said host control was on. The channel
+   * was refused on every dial, which they discovered weeks later through an unrelated
+   * feature, worded as their own stored credentials being wrong. The only thing that can
+   * settle it is asking sshd, and nothing did.
+   */
+  it("does NOT write a channel sshd refuses on every account it could try", async () => {
+    seedHostKey();
+    h.channelAuth = () => ({
+      status: 255,
+      stdout: "",
+      stderr: "root@127.0.0.1: Permission denied (publickey).",
+    });
+
+    const res = await composeUp({});
+
+    // Not fatal — a degraded install is not a failed one — but the channel is NOT written.
+    // Writing it was the second half of #527: `.env` pointed the api at a refusal it would
+    // hit on every dial for the life of the install, and every surface downstream read that
+    // as a configured, working channel.
+    expect(res.ok).toBe(true);
+    expect(writtenEnv().OPENSHIP_HOST_SSH_HOST).toBeUndefined();
+    const msg = warned.join("\n");
+    expect(msg).toContain("REFUSED the channel's key");
+    expect(msg).toContain("Permission denied (publickey).");
+    // The three things that actually fix it. The reporter had none of them: every surface
+    // said "re-run `openship up`", which on their box reproduced the same refusal.
+    expect(msg).toContain("--host-ssh-user");
+    expect(msg).toContain("PermitRootLogin prohibit-password");
+    expect(msg).toContain("--no-host-control");
+    expect(msg).toContain("Ordinary deploys to this box still work");
+  });
+
+  it("reports a connect failure as an address problem, not a refused key", async () => {
+    // sshd is listening (the default `listeners`) and yet the dial never reached auth, so
+    // the one thing this cannot be is the key. Every non-zero `ssh` exit used to be
+    // reported as a refusal, which pointed at an authorized_keys sshd had never read.
+    seedHostKey();
+    h.channelAuth = () => ({
+      status: 255,
+      stdout: "",
+      stderr: "ssh: connect to host 127.0.0.1 port 22: Connection refused",
+    });
+
+    await composeUp({});
+
+    const msg = warned.join("\n");
+    expect(msg).toContain("ADDRESS problem, not a key problem");
+    expect(msg).toContain("ListenAddress");
+    expect(msg).not.toContain("REFUSED the channel's key");
+    // The address is the fault, not the account, so the channel still stands.
+    expect(writtenEnv().OPENSHIP_HOST_SSH_HOST).toBe("host.docker.internal");
+  });
+
+  it("warns about root ops when the dialed session's own sudo is refused", async () => {
+    // The measurement `hasPasswordlessSudo()` cannot make: a cached sudo ticket in the
+    // operator's terminal answered yes for a box with no NOPASSWD rule, so this warning was
+    // suppressed on exactly the installs that needed it — and the same stale yes authorized
+    // the revoke that stripped their working root grant.
+    seedHostKey();
+    h.channelAuth = () => ({ status: 0, stdout: "openship-sudo=refused\n", stderr: "" });
+
+    await composeUp({});
+
+    // A working channel, so it IS written — just one with no route to root.
+    expect(writtenEnv().OPENSHIP_HOST_SSH_HOST).toBe("host.docker.internal");
+    expect(warned.join("\n")).toContain("no route to it");
+  });
+
+  it("pins the account with --host-ssh-user and records the pin separately", async () => {
+    seedHostKey();
+
+    await composeUp({ hostSshUser: "ops" });
+
+    const env = writtenEnv();
+    expect(env.OPENSHIP_HOST_SSH_USER).toBe("ops");
+    // Two keys, deliberately: _USER records what provisioning SETTLED on and _USER_PIN what
+    // the operator ASKED for. Conflating them would freeze the account a box happens to
+    // have — including the refused `root` on every install #527 broke — and the fallback
+    // that repairs those could never run.
+    expect(env.OPENSHIP_HOST_SSH_USER_PIN).toBe("ops");
+  });
+
+  it("carries a pin across a re-run that passes no flag", async () => {
+    // Deliberately NOT the CONFIGURED fixture: it sets OPENSHIP_HOST_CONTROL=false, so
+    // there would be no channel to pin an account for.
+    seedEnv({ OPENSHIP_HOST_SSH_USER_PIN: "ops" });
+    seedHostKey();
+
+    await composeUp({});
+
+    expect(writtenEnv().OPENSHIP_HOST_SSH_USER).toBe("ops");
+    expect(writtenEnv().OPENSHIP_HOST_SSH_USER_PIN).toBe("ops");
+  });
+
+  it("keeps the pin even on the run where the pinned account is refused", async () => {
+    // The run that loses the pin must not be the one where it matters: a pin whose account
+    // sshd refuses yields no channel, and dropping the key there would send the NEXT run
+    // (after the operator fixed sshd) back to deciding for itself.
+    seedEnv({ OPENSHIP_HOST_SSH_USER_PIN: "ops" });
+    seedHostKey();
+    h.channelAuth = () => ({
+      status: 255,
+      stdout: "",
+      stderr: "ops@127.0.0.1: Permission denied (publickey).",
+    });
+
+    await composeUp({});
+
+    expect(writtenEnv().OPENSHIP_HOST_SSH_HOST).toBeUndefined();
+    expect(writtenEnv().OPENSHIP_HOST_SSH_USER_PIN).toBe("ops");
+    // A pin is the one candidate: it must not fall back to root behind the operator's back.
+    // Asserted on the accounts-tried clause (whitespace-normalized, since the note is
+    // wrapped to the terminal) rather than on the word "root" anywhere — the remedies below
+    // it legitimately mention `PermitRootLogin`.
+    const msg = warned.join("\n").replace(/\s+/g, " ");
+    expect(msg).toContain("authorized for `ops` and sshd is listening");
+    expect(msg).not.toContain("`root` then");
+  });
+
+  it("stays quiet when the verification dial can't run at all", async () => {
+    // No `ssh` client: the question was never asked, and answering "refused" would fail
+    // an install that is fine — the mirror of the ss-not-installed case above.
+    seedHostKey();
+    h.channelAuth = () => ({ status: null, stdout: "", stderr: "", error: Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" }) });
+
+    await composeUp({});
+
+    expect(writtenEnv().OPENSHIP_HOST_SSH_HOST).toBe("host.docker.internal");
+    expect(warned.join("\n")).not.toContain("REFUSED");
   });
 });
 

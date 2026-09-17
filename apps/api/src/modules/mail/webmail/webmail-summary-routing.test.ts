@@ -44,6 +44,8 @@ const h = vi.hoisted(() => ({
   project: null as Record<string, unknown> | null,
   /** null = the read REJECTED; an array = rows we actually have. */
   rows: [] as Array<Record<string, unknown>> | null,
+  /** Service rows, consulted only when the project has no domain row at all. */
+  services: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("@repo/db", () => ({
@@ -53,11 +55,12 @@ vi.mock("@repo/db", () => ({
       findFirstBySlug: vi.fn(async () => null),
     },
     mailServer: { setWebmailProject: vi.fn(async () => {}) },
-    deployment: { findById: vi.fn(async () => ({ status: "ready" })) },
+    service: { listByProject: vi.fn(async () => h.services) },
+    deployment: { findById: vi.fn(async () => ({ id: h.project?.activeDeploymentId, projectId: h.project?.id, organizationId: "org1", status: "ready" })) },
   },
 }));
 
-vi.mock("../../domains/project-route.service", () => ({
+vi.mock("@repo/platform/engine/modules/domains/project-route.service", () => ({
   listProjectRouteRows: vi.fn(async () => {
     if (h.rows === null) throw new Error("db unreachable");
     return h.rows;
@@ -67,19 +70,20 @@ vi.mock("../../domains/project-route.service", () => ({
 // Module-scope imports of the service under test, stubbed because nothing here runs
 // an install. `pickCanonicalDomainRow` is deliberately NOT mocked — the verified/primary
 // precedence is half of what's being asserted.
-vi.mock("../../../lib/ssh-manager", () => ({ sshManager: { withExecutor: vi.fn() } }));
-vi.mock("../../projects/project-teardown", () => ({ teardownProject: vi.fn() }));
-vi.mock("../../apps/catalog-source", () => ({ getTemplateForOrg: vi.fn(async () => null) }));
-vi.mock("../../apps/app-install.service", () => ({
+vi.mock("@repo/platform/engine/lib/ssh-manager", () => ({ sshManager: { withExecutor: vi.fn() } }));
+vi.mock("@repo/platform/engine/modules/projects/project-teardown", () => ({ teardownProject: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/apps/catalog-source", () => ({ getTemplateForOrg: vi.fn(async () => null) }));
+vi.mock("@repo/platform/engine/modules/apps/app-install.service", () => ({
   installApp: vi.fn(),
   planInstallRouting: vi.fn(() => new Map()),
+  ensureGeneratedAppSecrets: vi.fn(async () => []),
 }));
-vi.mock("../../apps/app-settings.service", () => ({ updateAppProjectSettings: vi.fn() }));
-vi.mock("../../deployments/build.service", () => ({ requestBuildAccess: vi.fn() }));
-vi.mock("../../services/service.service", () => ({ updateService: vi.fn() }));
-vi.mock("../mail-state", () => ({ readState: vi.fn(), mutateState: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/apps/app-settings.service", () => ({ updateAppProjectSettings: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/deployments/build.service", () => ({ requestBuildAccess: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/services/service.service", () => ({ updateService: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/mail/mail-state", () => ({ readState: vi.fn(), mutateState: vi.fn() }));
 
-import { resolveWebmailSummary } from "./webmail-install.service";
+import { resolveWebmailSummary } from "@repo/platform/engine/modules/mail/webmail/webmail-install.service";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -135,6 +139,8 @@ describe("webmail summary routing", () => {
     h.project = SELF_WEBMAIL;
     const server = { ...MAIL_SERVER, webmailProjectId: SELF_WEBMAIL.id };
 
+    // No domain row AND no routed service: genuinely addressless.
+    h.services = [];
     h.rows = [];
     const unrouted = await resolveWebmailSummary("org1", server);
     h.rows = null;
@@ -149,11 +155,50 @@ describe("webmail summary routing", () => {
     // The proxy variant is cloud-only, so `mail.<domain>` must not appear here in
     // either direction — the failed-read path and the empty-list path agree.
     h.project = SELF_WEBMAIL;
+    h.services = [];
     const server = { ...MAIL_SERVER, webmailProjectId: SELF_WEBMAIL.id };
 
     expect(await resolveWebmailSummary("org1", server)).toMatchObject({ hostname: "", url: "" });
 
     h.rows = null;
     expect(await resolveWebmailSummary("org1", server)).toMatchObject({ hostname: "", url: "" });
+  });
+
+  /**
+   * A webmail on the mail server's OWN hostname owns no domain row on purpose — that row
+   * belongs to the mail install's certificate renewal (#566). Without this fallback the
+   * card reads a deployed, serving webmail as "not installed" and offers to deploy it
+   * again.
+   */
+  it("reads the address off the service when the mail host owns no domain row", async () => {
+    h.project = SELF_WEBMAIL;
+    h.rows = [];
+    h.services = [
+      {
+        name: "webmail",
+        exposed: true,
+        publicEndpoints: [{ port: 4080, domainType: "custom", customDomain: "mail.example.com" }],
+      },
+    ];
+
+    expect(await resolveWebmailSummary("org1", { ...MAIL_SERVER, webmailProjectId: SELF_WEBMAIL.id }))
+      .toMatchObject({ hostname: "mail.example.com", url: "https://mail.example.com" });
+  });
+
+  it("still refuses to guess when the route read failed", async () => {
+    // routingUnknown must win over the service fallback: an unreadable domain list is
+    // not evidence that the service's hostname is the live one.
+    h.project = SELF_WEBMAIL;
+    h.rows = null;
+    h.services = [
+      {
+        name: "webmail",
+        exposed: true,
+        publicEndpoints: [{ port: 4080, domainType: "custom", customDomain: "mail.example.com" }],
+      },
+    ];
+
+    expect(await resolveWebmailSummary("org1", { ...MAIL_SERVER, webmailProjectId: SELF_WEBMAIL.id }))
+      .toMatchObject({ hostname: "", routingUnknown: true });
   });
 });

@@ -7,12 +7,12 @@ import {
 } from "@repo/adapters";
 import { isDevWatchReload } from "@repo/db";
 import { app } from "./app";
-import { cloudRuntimeTarget, cloudRuntimeTargetId, env, runtimeTargetId } from "./config/env";
-import { getAuthMode } from "./lib/auth-mode";
-import { edgeBuildSpec, pinnedEdgeImage } from "./lib/edge-image";
+import { cloudRuntimeTarget, cloudRuntimeTargetId, env, runtimeTargetId } from "@repo/platform/engine/config/env";
+import { getAuthMode } from "@repo/platform/engine/lib/auth-mode";
+import { edgeBuildSpec, pinnedEdgeImage } from "@repo/platform/engine/lib/edge-image";
 import { reportHostChannelAtBoot } from "./lib/host-channel-banner";
-import { mailBuildSpec, pinnedMailImage } from "./lib/mail-image";
-import { getJobRunner } from "./lib/job-runner";
+import { mailBuildSpec, pinnedMailImage } from "@repo/platform/engine/lib/mail-image";
+import { getJobRunner } from "@repo/platform/engine/lib/job-runner/index";
 import { enforceRouteScanAtBoot } from "./lib/route-scanner";
 import { attachTunnelingLifecycle, type TunnelingLifecycle } from "./modules/tunneling";
 
@@ -169,7 +169,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   // boot anyway, and the OS reclaims the sockets when we exit.
   if (!fastReload) {
     try {
-      const { stopAllTunnels } = await import("./lib/ssh-tunnel-manager");
+      const { stopAllTunnels } = await import("@repo/platform/engine/lib/ssh-tunnel-manager");
       await stopAllTunnels();
     } catch (err) {
       console.warn("[shutdown] port-forward close failed:", err);
@@ -182,7 +182,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     // the tunnels: the successor's first poll tick re-subscribes.
     try {
       const { stopAllContainerEventWatchers } = await import(
-        "./modules/monitoring/container-events"
+        "@repo/platform/engine/modules/monitoring/container-events"
       );
       await stopAllContainerEventWatchers();
     } catch (err) {
@@ -210,6 +210,12 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   // For embedded PGlite this frees the single-instance lock so the next start
   // opens the data dir cleanly instead of racing a not-yet-released lock.
   try {
+    const { closeDeviceFlows } = await import("@repo/platform/engine/modules/github/github.local-auth");
+    await closeDeviceFlows();
+  } catch (err) {
+    console.warn("[shutdown] GitHub device authorization close failed:", err);
+  }
+  try {
     const { closeDb } = await import("@repo/db");
     await closeDb();
   } catch (err) {
@@ -222,7 +228,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   // daemonized process that would otherwise linger on the remote host past
   // this process's exit. Bounded internally, so it can't outrun the deadline.
   try {
-    const { sshManager } = await import("./lib/ssh-manager");
+    const { sshManager } = await import("@repo/platform/engine/lib/ssh-manager");
     await sshManager.destroy();
   } catch (err) {
     console.warn("[shutdown] ssh pool close failed:", err);

@@ -30,8 +30,6 @@ state of that version:
 - **Snapshotted** — Openship still has this version's finished build saved, so rolling back to it skips the build entirely.
 - **Pinned** — this version is kept safe forever and will never be cleaned up (more on this below).
 
-<Callout title="Screenshot">Project → **Deployments** tab: the "Deploy Latest Changes" card on top and the deploy history list below, showing the **Active** / **Snapshotted** / **Pinned** labels on rows. *(screenshot pending)*</Callout>
-
 ## Roll back to a version that worked
 
 <Steps>
@@ -66,8 +64,6 @@ and reminds you what rollback does either way:
 
 Confirm, and Openship brings that version back as a new entry in your history. Rolling back doesn't erase
 anything: the version you rolled away from stays in the list, so you can roll forward again the same way.
-
-<Callout title="Screenshot">The row **⋮** menu open, with **Rollback to this version** highlighted and the confirmation dialog. *(screenshot pending)*</Callout>
 
 </Step>
 
@@ -154,7 +150,7 @@ You can pin up to **10** deploys per project. Pin your last reliable release bef
 that way rollback is always one click away, no rebuild required.
 </Callout>
 
-## Prefer the terminal?
+## CLI
 
 Every action above works from the CLI. First list the deploys to get their IDs:
 
@@ -190,7 +186,7 @@ To simply ship the latest commit of the whole project (the terminal equivalent o
 *specific* deploy from the history.
 </Callout>
 
-## If something goes wrong
+## Troubleshooting
 
 <Callout title="“This deployment is already active”" type="error">
 You're trying to roll back to the version that's already live. Pick a *different* row from the history — the
@@ -208,7 +204,7 @@ bad data change or a migration, rolling back the code won't undo it. You'll need
 backup or fix it directly.
 </Callout>
 
-## What next?
+## Related guides
 
 <Cards>
   <Card title="Auto-deploy on push" href="/docs/guides/auto-deploy" description="Ship every commit automatically — and roll back just as easily when one misbehaves." />

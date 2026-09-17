@@ -13,7 +13,7 @@ import {
   openshipFileExists,
   readOpenshipFile,
   writeOpenshipFile,
-} from "./openship-server-store";
+} from "@repo/platform/engine/lib/openship-server-store";
 
 /**
  * Privilege for the server state store.

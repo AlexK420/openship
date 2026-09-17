@@ -1,7 +1,7 @@
 /**
  * Pre-flight checks for the "move to my own server" migration path.
  *
- * Three independent verifications, run in parallel so the wizard can
+ * Three infrastructure verifications, run in parallel so the wizard can
  * paint the readiness checklist in one round-trip:
  *
  *   1. SSH connectivity — can we actually log into the chosen server?
@@ -23,7 +23,8 @@
  */
 
 import { repos } from "@repo/db";
-import { sshManager } from "../../../lib/ssh-manager";
+import { SERVER_MIGRATION_UNAVAILABLE } from "./migrate-instance.service";
+import { sshManager } from "@repo/platform/engine/lib/ssh-manager";
 import { resolveOpenshipDistDirOrNull } from "./openship-dist";
 
 export type DomainChoice =
@@ -37,13 +38,14 @@ export interface PreflightInput {
 }
 
 export interface PreflightResult {
-  /** True iff EVERY check passed. */
+  /** Includes the deployment capability, currently unavailable. */
   ready: boolean;
   /** Independent per-check status so the wizard can paint a checklist. */
   checks: {
     ssh: { ok: boolean; detail: string };
     releaseDist: { ok: boolean; detail: string };
     domain: { ok: boolean; detail: string };
+    deployment: { ok: boolean; detail: string };
   };
 }
 
@@ -56,8 +58,13 @@ export async function runPreflight(input: PreflightInput): Promise<PreflightResu
   ]);
 
   return {
-    ready: ssh.ok && releaseDist.ok && domain.ok,
-    checks: { ssh, releaseDist, domain },
+    ready: false,
+    checks: {
+      ssh,
+      releaseDist,
+      domain,
+      deployment: { ok: false, detail: SERVER_MIGRATION_UNAVAILABLE },
+    },
   };
 }
 

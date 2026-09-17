@@ -35,7 +35,7 @@ import {
 import { isValidEmail } from "@repo/core";
 import { startService, normalizeUrl } from "./up";
 import {
-  ensureInternalToken,
+  internalFetch,
   internalGet,
   internalPost,
   bootstrapAdmin,
@@ -231,10 +231,11 @@ async function streamProvision(
   // on 80/443, or a cert issue) reports WHY instead of a generic "not ready".
   let detail: string | undefined;
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/system/self-register/stream?id=${sessionId}`, {
-      headers: { "X-Internal-Token": ensureInternalToken() },
+    const call = await internalFetch(port, `/api/system/self-register/stream?id=${sessionId}`, {
       signal: AbortSignal.timeout(300_000),
     });
+    if (call.kind !== "response") return { ok: false, detail: call.detail };
+    const res = call.res;
     if (!res.ok || !res.body) return { ok: false };
     const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
@@ -919,10 +920,18 @@ export async function runWizard(): Promise<void> {
         migratedCertPems,
         migratedStaticRootOverrides,
       );
-      if (!imported.ok) {
+      // A PARTIAL import is not a total failure: `importMigratedSites` returns
+      // ok:false when even one site missed, so keying the warning off `ok` and
+      // printing `migratedSites.length` claimed every site was dark one line after
+      // the import itself said "Migrated 3/4". Report only the real shortfall, and
+      // leave the retry advice to the import — it's the only layer that knows
+      // whether the cause was transient (edge still starting) or a config it will
+      // reject identically on every re-run.
+      const missed = migratedSites.length - imported.registered.length;
+      if (missed > 0) {
         log.warn(
-          `Your ${migratedSites.length} existing site${migratedSites.length === 1 ? "" : "s"} ` +
-            "aren't served yet — re-run `openship up` to retry the import.",
+          `${missed} of your ${migratedSites.length} existing site${migratedSites.length === 1 ? "" : "s"} ` +
+            `${missed === 1 ? "isn't" : "aren't"} served yet — see the import output above.`,
         );
       }
     }

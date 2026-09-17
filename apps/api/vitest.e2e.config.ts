@@ -22,8 +22,17 @@ import { sharedTestOptions, testAlias } from "./vitest.config";
  * cross-platform and there is exactly one entry point to run these locally.
  */
 const HEAVY = "test/e2e/rollback-build-restore.e2e.test.ts";
+/**
+ * `update` is its own scope because it needs things a checkout does not have: the
+ * PREVIOUS release's published images, and an api image for the new side. CI runs it
+ * between `build-images` and `merge-images` in docker-images.yml, where the new image
+ * exists as a pushed digest — so it is excluded from every other scope, INCLUDING the
+ * local default, rather than silently pulling a release on someone's laptop.
+ */
+const UPDATE = "test/e2e/update-from-previous-release.e2e.test.ts";
 const scope = process.env.E2E_SCOPE;
-const include = scope === "heavy" ? [HEAVY] : ["test/e2e/**/*.e2e.test.ts"];
+const include =
+  scope === "heavy" ? [HEAVY] : scope === "update" ? [UPDATE] : ["test/e2e/**/*.e2e.test.ts"];
 
 /**
  * The sandbox `backup-volume-roundtrip` puts its destination inside, read back
@@ -54,7 +63,12 @@ export default defineConfig({
       BACKUP_ALLOW_LOCAL_DESTINATION: "true",
       BACKUP_LOCAL_ROOT: BACKUP_ROOT,
     },
-    exclude: [...configDefaults.exclude, ...(scope === "fast" ? [HEAVY] : [])],
+    exclude: [
+      ...configDefaults.exclude,
+      ...(scope === "fast" ? [HEAVY] : []),
+      // Opt-in only: `E2E_SCOPE=update` is the sole way to run it (see UPDATE above).
+      ...(scope === "update" ? [] : [UPDATE]),
+    ],
     // Pulling and building images and streaming volumes all happen in
     // beforeAll. There is no sane default here, which is why every E2E hook
     // currently passes its own timeout inline.

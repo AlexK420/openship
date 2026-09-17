@@ -35,6 +35,8 @@ interface ServiceSettingsFormProps {
   /** Names of the OTHER services in this project, for the depends-on picker. */
   siblingServiceNames?: string[];
   onSubmit: (data: Partial<ServiceInput>) => Promise<void>;
+  /** The same form can stage a topology edit before the deployment review. */
+  submitLabel?: string;
 }
 
 /** Backend per-item caps (service.schema.ts ComposeFieldsBlock) surfaced here so
@@ -56,7 +58,7 @@ const splitList = (value: string) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
-export function ServiceSettingsForm({ service, siblingServiceNames = [], onSubmit }: ServiceSettingsFormProps) {
+export function ServiceSettingsForm({ service, siblingServiceNames = [], onSubmit, submitLabel }: ServiceSettingsFormProps) {
   const { t } = useI18n();
   const f = t.projectDetail.services.settingsForm;
   const isMonorepo = serviceKind(service) === "monorepo";
@@ -82,6 +84,7 @@ export function ServiceSettingsForm({ service, siblingServiceNames = [], onSubmi
   const [hcTimeout, setHcTimeout] = useState("");
   const [hcRetries, setHcRetries] = useState("");
   const [hcStartPeriod, setHcStartPeriod] = useState("");
+  const [monitoringEnabled, setMonitoringEnabled] = useState(true);
   /** Per-service readiness gate. undefined = inherit the project's (which is
    *  itself off by default). */
   const [readiness, setReadiness] = useState<OpenshipReadiness | undefined>(undefined);
@@ -118,6 +121,7 @@ export function ServiceSettingsForm({ service, siblingServiceNames = [], onSubmi
     setHcTimeout(hc?.timeout ?? "");
     setHcRetries(hc?.retries != null ? String(hc.retries) : "");
     setHcStartPeriod(hc?.startPeriod ?? "");
+    setMonitoringEnabled(service.advanced?.monitoringEnabled !== false);
     setReadiness(service.advanced?.readiness);
     setEnabled(service.enabled ?? true);
     setRootDirectory(service.rootDirectory ?? "");
@@ -190,7 +194,12 @@ export function ServiceSettingsForm({ service, siblingServiceNames = [], onSubmi
       );
       // Empty → null so a cleared alias removes the stored key (mergeAdvanced
       // treats null as "delete"). Server normalizes + collision-checks it.
-      return { healthcheck, readiness: readiness ?? null, alias: alias.trim() || null };
+      return {
+        healthcheck,
+        readiness: readiness ?? null,
+        alias: alias.trim() || null,
+        monitoringEnabled,
+      };
     };
 
     // Show-both source resolution: a build context or Dockerfile means "build
@@ -480,6 +489,13 @@ export function ServiceSettingsForm({ service, siblingServiceNames = [], onSubmi
       </SectionCard>
 
       <SectionCard icon={HeartPulse} title={f.sections.health} description={f.sections.healthHint}>
+        <label className="mb-4 flex items-start gap-3 rounded-xl border border-border/50 bg-muted/20 p-3">
+          <Checkbox checked={monitoringEnabled} onCheckedChange={(value) => setMonitoringEnabled(value === true)} />
+          <span>
+            <span className="block text-sm font-medium text-foreground">Watch this service for outages</span>
+            <span className="block text-xs leading-relaxed text-muted-foreground">Uses the shared server event stream and reconciliation sweep. Turn off only for intentionally unmanaged or disposable services.</span>
+          </span>
+        </label>
         {!isMonorepo && (
           <Field label={f.healthcheck}>
             <input
@@ -537,7 +553,7 @@ export function ServiceSettingsForm({ service, siblingServiceNames = [], onSubmi
           className="inline-flex h-11 items-center gap-2 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
         >
           {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-          {f.saveChanges}
+          {submitLabel ?? f.saveChanges}
         </button>
       </div>
     </form>

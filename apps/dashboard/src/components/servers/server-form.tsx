@@ -20,6 +20,7 @@ import { getApiErrorMessage, systemApi } from "@/lib/api";
 import type { ServerInfo, SshProbeInput } from "@/lib/api/system";
 import { useToast } from "@/context/ToastContext";
 import { useI18n } from "@/components/i18n-provider";
+import { usePlatform } from "@/context/PlatformContext";
 
 const INPUT =
   "w-full px-3.5 py-2.5 rounded-xl border border-border/50 bg-muted/30 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none transition-all focus:ring-2 focus:ring-primary/20";
@@ -57,6 +58,7 @@ export function ServerForm({
 }: ServerFormProps) {
   const { showToast } = useToast();
   const { t } = useI18n();
+  const { deployMode } = usePlatform();
   const isEditing = !!server;
 
   const [saving, setSaving] = useState(false);
@@ -87,6 +89,26 @@ export function ServerForm({
   const [sshKeyMode, setSshKeyMode] = useState<"paste" | "path">(
     server?.sshKeyPath ? "path" : "paste",
   );
+  /**
+   * Is a host path even a coherent answer here?
+   *
+   * Only where the browser and the API read the same filesystem — the desktop
+   * shell. Everywhere else the path is resolved by `readFileSync` inside the API
+   * process (apps/api/src/lib/ssh-manager.ts), and on a compose install that
+   * process is a container whose volume list carries the docker socket, the edge
+   * tree and the host-channel key — no `~/.ssh` (apps/cli/src/lib/compose.ts).
+   * So `/root/.ssh/id_ed25519` typed on a VPS resolves in the container, finds
+   * nothing, and buildSshConfig returns null: "Invalid auth configuration" for a
+   * key the operator can `cat` on the host.
+   *
+   * A row that ALREADY stores a path keeps the toggle regardless of mode. Hiding
+   * it would drop such a row into paste mode, where a save sends
+   * `sshKeyPath: null` with no material to replace it — a rename would silently
+   * strip the only credential the server has.
+   */
+  const pathModeOffered = deployMode === "desktop" || !!server?.sshKeyPath;
+  /** The mode actually in force — `sshKeyMode` is only meaningful when offered. */
+  const keyMode: "paste" | "path" = pathModeOffered ? sshKeyMode : "paste";
   // Whether the server already has an encrypted pasted key stored. Lets edit mode
   // say "a key is stored — paste to replace" and skip the require-a-key check.
   const hasStoredKey = !!server?.hasStoredKeyMaterial;
@@ -156,7 +178,7 @@ export function ServerForm({
     }
 
     if (sshAuthMethod === "key") {
-      if (sshKeyMode === "paste") {
+      if (keyMode === "paste") {
         // Pasted material is required unless we're editing a server that already
         // has a key stored (blank = keep the stored one).
         if (!sshPrivateKey.trim() && !hasStoredKey) {
@@ -186,7 +208,7 @@ export function ServerForm({
         data.sshPassword = sshPassword;
       }
       if (sshAuthMethod === "key") {
-        if (sshKeyMode === "paste") {
+        if (keyMode === "paste") {
           // Only send material when the user actually typed/uploaded one — an
           // empty value would WIPE the stored key. Clear any stale host path.
           if (sshPrivateKey.trim()) data.sshPrivateKey = sshPrivateKey;
@@ -228,7 +250,7 @@ export function ServerForm({
     }
 
     if (sshAuthMethod === "key") {
-      if (sshKeyMode === "paste") {
+      if (keyMode === "paste") {
         // A stored key can't be tested — the client never receives it — so a
         // paste-mode test always needs freshly entered material.
         if (!sshPrivateKey.trim()) {
@@ -254,7 +276,7 @@ export function ServerForm({
         payload.sshPassword = sshPassword;
       }
       if (sshAuthMethod === "key") {
-        if (sshKeyMode === "paste") {
+        if (keyMode === "paste") {
           if (sshPrivateKey.trim()) payload.sshPrivateKey = sshPrivateKey;
         } else if (sshKeyPath) {
           payload.sshKeyPath = sshKeyPath;
@@ -502,37 +524,41 @@ export function ServerForm({
             </div>
           ) : (
             <div className="space-y-[18px]">
-              {/* Sub-mode: paste/upload the key in the browser (works on a
-                  remote instance where the key lives on the operator's laptop,
-                  not the API host) vs. a path to a file on the API host. */}
-              <div className="flex gap-1 bg-muted/50 rounded-[10px] p-[3px]">
-                <button
-                  type="button"
-                  onClick={() => setSshKeyMode("paste")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 text-[13px] font-medium rounded-lg transition-all ${
-                    sshKeyMode === "paste"
-                      ? "bg-card text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground/70"
-                  }`}
-                >
-                  <ClipboardPaste className="size-3.5" />
-                  {t.servers.form.keyModePaste}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSshKeyMode("path")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 text-[13px] font-medium rounded-lg transition-all ${
-                    sshKeyMode === "path"
-                      ? "bg-card text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground/70"
-                  }`}
-                >
-                  <FolderOpen className="size-3.5" />
-                  {t.servers.form.keyModePath}
-                </button>
-              </div>
+              {/* Sub-mode: paste/upload the key in the browser vs. a path to a
+                  file on the API host. Only rendered where a path can resolve —
+                  see `pathModeOffered`. With one option there is no choice to
+                  present, so paste/upload stands alone rather than as a lone
+                  segment in a segmented control. */}
+              {pathModeOffered && (
+                <div className="flex gap-1 bg-muted/50 rounded-[10px] p-[3px]">
+                  <button
+                    type="button"
+                    onClick={() => setSshKeyMode("paste")}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 text-[13px] font-medium rounded-lg transition-all ${
+                      keyMode === "paste"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground/70"
+                    }`}
+                  >
+                    <ClipboardPaste className="size-3.5" />
+                    {t.servers.form.keyModePaste}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSshKeyMode("path")}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 text-[13px] font-medium rounded-lg transition-all ${
+                      keyMode === "path"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground/70"
+                    }`}
+                  >
+                    <FolderOpen className="size-3.5" />
+                    {t.servers.form.keyModePath}
+                  </button>
+                </div>
+              )}
 
-              {sshKeyMode === "paste" ? (
+              {keyMode === "paste" ? (
                 <div>
                   <label className={LABEL}>{t.servers.form.keyPaste}</label>
                   <textarea

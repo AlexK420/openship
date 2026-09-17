@@ -20,7 +20,7 @@ import { Hono } from "hono";
 import { secureRouter } from "../../lib/secure-router";
 import { requireRole } from "../../middleware";
 import * as ctrl from "./dns.controller";
-import { AddDnsCredentialBody, VerifyZoneBody } from "./dns.schema";
+import { AddDnsCredentialBody, VerifyZoneBody } from "@repo/contracts";
 
 const r = secureRouter(new Hono(), {
   module: "dns",
@@ -45,7 +45,7 @@ r.get(
 r.post(
   "/credentials",
   {
-    tag: "settings:admin",
+    tag: "settings:admin", auditHandledByOperation: true,
     body: AddDnsCredentialBody,
     mcp: { description: "Connect a DNS provider credential (Cloudflare API token)." },
   },
@@ -54,7 +54,7 @@ r.post(
 );
 r.delete(
   "/credentials/:id",
-  { tag: "settings:admin", mcp: { description: "Disconnect a DNS provider credential." } },
+  { tag: "settings:admin", auditHandledByOperation: true, mcp: { description: "Disconnect a DNS provider credential." } },
   requireRole("admin"),
   ctrl.removeCredential,
 );

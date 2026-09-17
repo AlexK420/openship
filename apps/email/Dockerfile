@@ -95,9 +95,18 @@ RUN cp /opt/openship-mail/build-config /opt/iRedMail-engine/config \
 # an image that passes this test is guaranteed to have something to put on :25.
 # NB: Debian's amavisd-new package ships the daemon as /usr/sbin/amavisd (there is
 # no `amavisd-new` executable), which is why supervisord invokes /usr/sbin/amavisd.
+#
+# `doveadm` is not a supervisord program but is gated with them anyway, because three
+# separate paths are dead without it: db-bootstrap.sh hashes the postmaster password,
+# and the control plane hashes on every mailbox create and postmaster rotation. It
+# arrives only as a transitive dependency of the dovecot packages iRedMail installs
+# (packages.sh names dovecot-imapd/pop3d/lmtpd/managesieved/sieve/pgsql, never
+# dovecot-core), so nothing guaranteed it was here. Its absence used to surface as a
+# postmaster row with an EMPTY password and a 500 on mailbox create (GH-562) — a
+# runtime mystery for a property the build can simply assert.
 RUN set -eu; \
     missing=""; \
-    for b in /usr/sbin/postfix /usr/sbin/dovecot /usr/sbin/amavisd \
+    for b in /usr/sbin/postfix /usr/sbin/dovecot /usr/bin/doveadm /usr/sbin/amavisd \
              /usr/sbin/clamd /usr/bin/freshclam /usr/sbin/spamd \
              /usr/bin/fail2ban-server /opt/iredapd/iredapd.py; do \
       [ -e "$b" ] || missing="$missing $b"; \
@@ -107,7 +116,12 @@ RUN set -eu; \
       echo "The openship-mail image would ship with no mail stack (issue #493)." >&2; \
       exit 1; \
     fi; \
-    echo "openship-mail: all mail daemons present ->$(echo ' postfix dovecot amavisd clamd freshclam spamd fail2ban iredapd')"
+    doveadm pw -s SSHA512 -p build-smoke-test | grep -q '^{SSHA512}' || { \
+      echo "FATAL: doveadm is present but cannot produce an SSHA512 hash." >&2; \
+      echo "Mailbox creation and the postmaster seed both depend on it (GH-562)." >&2; \
+      exit 1; \
+    }; \
+    echo "openship-mail: all mail daemons present ->$(echo ' postfix dovecot doveadm amavisd clamd freshclam spamd fail2ban iredapd')"
 
 # Runtime prerequisites the installer does not leave in place under our stubbed-
 # init build (its late service/DB steps abort — see the `|| true` above):
@@ -135,7 +149,50 @@ RUN mkdir -p /opt/openship-mail/seed \
     && cp -a /etc/postfix       /opt/openship-mail/seed/postfix      2>/dev/null || true \
     && cp -a /etc/dovecot       /opt/openship-mail/seed/dovecot      2>/dev/null || true \
     && cp -a /etc/amavis/conf.d /opt/openship-mail/seed/amavis-confd 2>/dev/null || true \
-    && chmod +x /opt/openship-mail/entrypoint.sh
+    && chmod +x /opt/openship-mail/entrypoint.sh /opt/openship-mail/postfix-chroot-etc.sh
+
+# ClamAV signatures, fetched into the SEED dir (issue #565).
+#
+# /var/lib/clamav is a host bind mount at runtime, so a database written there during
+# the build is hidden the moment the container starts: clamd finds an empty database
+# directory and exits 1. That is not a degraded scanner — amavis's only scanner is
+# clamd and @av_scanners_backup is empty, so every inbound message fails its virus
+# check and defers. Seeding from here means a fresh install scans with no network and
+# no multi-hundred-MB wait during setup.
+#
+# Fetched here rather than moved out of /var/lib/clamav after the installer: layers are
+# additive, so a `mv` in a later layer keeps the originals in the installer's layer and
+# ships them twice. build-config turns the installer's own freshclam off, which is why
+# the image's /var/lib/clamav is now intentionally EMPTY — unmounted debugging
+# (`docker run --entrypoint sh`) gets a clamd with no database.
+#
+# The retry is not defensive coding: database.clamav.net rate-limits CI egress, and the
+# gate below is a hard build failure, so one 429 would block an entire release. Each
+# attempt resumes into the same datadir. freshclam folds mirror and "could not notify
+# clamd" warnings into its exit status, so the FILE CHECK is the real gate.
+RUN set -eu; \
+    getent passwd clamav >/dev/null || { \
+      echo "FATAL: no clamav user — clamav-base did not install (issue #565)." >&2; \
+      exit 1; \
+    }; \
+    install -d -o clamav -g clamav /var/log/clamav /opt/openship-mail/seed/clamav; \
+    for attempt in 1 2 3; do \
+      if freshclam --datadir=/opt/openship-mail/seed/clamav; then break; fi; \
+      echo "openship-mail: freshclam attempt ${attempt} failed, retrying in 30s" >&2; \
+      sleep 30; \
+    done; \
+    seeded=""; \
+    for db in main.cvd main.cld daily.cvd daily.cld; do \
+      [ -s "/opt/openship-mail/seed/clamav/$db" ] || continue; \
+      seeded="$seeded $db"; \
+    done; \
+    if [ -z "$seeded" ]; then \
+      echo "FATAL: no ClamAV signature database in /opt/openship-mail/seed/clamav." >&2; \
+      echo "freshclam fetched neither main nor daily, so the image would ship a clamd" >&2; \
+      echo "that cannot start and an amavis that defers all inbound mail (issue #565)." >&2; \
+      exit 1; \
+    fi; \
+    echo "openship-mail: ClamAV signature seed ->$seeded"
 
 # Mail protocol ports (bound on the host via --network host at runtime):
 #   25 SMTP  465 SMTPS  587 submission  143 IMAP  993 IMAPS  110/995 POP3  4190 sieve

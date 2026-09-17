@@ -19,10 +19,27 @@ import {
 import { readTokenAudience } from "../../lib/mcp-token";
 import { resolveActiveOrganizationId } from "../../middleware/active-organization";
 import { resolveBearerIdentity } from "../../middleware/auth";
+import { recordToolCall } from "./mcp-audit";
 import { handleMcpMessage, jsonRpcError } from "./mcp-server";
 import type { McpPrincipal } from "./mcp-tools";
 
 const r = secureRouter(new Hono(), { module: "mcp", basePath: "/api/mcp" });
+
+/**
+ * The caller, as this endpoint needs them: their effective capability plus the
+ * identity facts the audit trail is written from.
+ */
+interface McpCaller {
+  principal: McpPrincipal;
+  /** Canonical principal id — `oauth:<clientId>` / `pat:<tokenId>`. */
+  principalId: string;
+  userId: string;
+  /** Org the call acts in, default-resolved. Null → the user has none. */
+  organizationId: string | null;
+  /** A real personal_access_token row backs this caller (usage is countable). */
+  hasBinding: boolean;
+  tokenId: string;
+}
 
 /**
  * Resolve the caller's effective capability for `tools/list` filtering. NOT the
@@ -31,7 +48,7 @@ const r = secureRouter(new Hono(), { module: "mcp", basePath: "/api/mcp" });
  * advertise tools the token can't use. Returns null on an invalid credential
  * (→ 401). Mirrors how authMiddleware resolves a bearer principal (same repos).
  */
-async function resolveMcpPrincipal(token: string, headers: Headers): Promise<McpPrincipal | null> {
+async function resolveMcpCaller(token: string, headers: Headers): Promise<McpCaller | null> {
   // Same credential→identity lookup authMiddleware uses — one resolver, no fork.
   const id = await resolveBearerIdentity(token, headers);
   if (!id) return null;
@@ -83,12 +100,19 @@ async function resolveMcpPrincipal(token: string, headers: Headers): Promise<Mcp
   }
 
   return {
-    role,
-    readOnly: id.readOnly,
-    grantedRootTypes,
-    wildcardGrants,
-    canCreateProjects,
-    sourceCapabilities,
+    principal: {
+      role,
+      readOnly: id.readOnly,
+      grantedRootTypes,
+      wildcardGrants,
+      canCreateProjects,
+      sourceCapabilities,
+    },
+    principalId: id.principalId,
+    userId: id.userId,
+    organizationId,
+    hasBinding: id.hasBinding,
+    tokenId: id.tokenId,
   };
 }
 
@@ -141,8 +165,8 @@ r.public("get", "/", { reason: PUBLIC_REASON, rateLimit: "mcp" }, async (c) => {
   if (!audienceAccepted(token, c.req.raw)) {
     return unauthorized(c, "Access token was issued for a different resource");
   }
-  const principal = await resolveMcpPrincipal(token, c.req.raw.headers);
-  if (!principal) return unauthorized(c, "Missing or invalid access token");
+  const caller = await resolveMcpCaller(token, c.req.raw.headers);
+  if (!caller) return unauthorized(c, "Missing or invalid access token");
   return c.body(null, 405);
 });
 
@@ -162,8 +186,8 @@ r.public("post", "/", { reason: PUBLIC_REASON, rateLimit: "mcp" }, async (c) => 
   // filtering AND gates the request (null → 401). It is NOT the per-tool
   // authorization — the real check runs on the dispatched sub-request through
   // authMiddleware (see tryPatAuth / tryOAuthMcpAuth); tools/call re-auths.
-  const principal = await resolveMcpPrincipal(token, c.req.raw.headers);
-  if (!principal) return unauthorized(c, "Missing or invalid access token");
+  const caller = await resolveMcpCaller(token, c.req.raw.headers);
+  if (!caller) return unauthorized(c, "Missing or invalid access token");
 
   let payload: unknown;
   try {
@@ -177,7 +201,41 @@ r.public("post", "/", { reason: PUBLIC_REASON, rateLimit: "mcp" }, async (c) => 
     return c.json(jsonRpcError(null, -32600, "Batch requests are not supported"), 400);
   }
 
-  const res = await handleMcpMessage(payload as Parameters<typeof handleMcpMessage>[0], token, principal);
+  const message = payload as Parameters<typeof handleMcpMessage>[0];
+
+  // Usage is stamped HERE for everything that does NOT dispatch — `initialize`,
+  // `tools/list`, `prompts/*`, `ping`. Those never reach authMiddleware (this route
+  // is public and resolves the credential itself, side-effect free), so a client
+  // that connected and read the catalog used its credential and still read as
+  // never-used in Settings. `tools/call` is excluded because its sub-request stamps
+  // it in authMiddleware — counting both would double every tool call.
+  if (caller.hasBinding && message?.method !== "tools/call") {
+    void repos.personalAccessToken.touchLastUsed(caller.tokenId).catch(() => {});
+  }
+
+  // Read off the OUTER request — a real HTTP request from the real client. The
+  // in-process sub-request has no peer and no browser, so this is the only place
+  // the assistant's own address and user agent exist.
+  const clientIp = c.var.clientIp ?? null;
+  const userAgent = c.req.header("user-agent") ?? null;
+
+  const res = await handleMcpMessage(message, {
+    bearerToken: token,
+    principal: caller.principal,
+    origin: { principalId: caller.principalId, clientIp, userAgent },
+    onToolCall: (record) =>
+      recordToolCall(
+        {
+          organizationId: caller.organizationId,
+          userId: caller.userId,
+          clientId: caller.principalId,
+          tokenId: caller.tokenId,
+          ipAddress: clientIp,
+          userAgent,
+        },
+        record,
+      ),
+  });
   // Notification (no id) → 202 Accepted with no body (per JSON-RPC).
   if (!res) return c.body(null, 202);
   return c.json(res);

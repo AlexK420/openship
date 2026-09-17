@@ -1,0 +1,105 @@
+/** Server HTTP adapters, shared by the system router and operation parity tests. */
+import { Hono } from "hono";
+import { Type } from "@sinclair/typebox";
+import { ResourceIdSchema, CheckServerInputSchema, ServerComponentInputSchema, InstallServerComponentsInputSchema, ServerInstallResponseInputSchema } from "@repo/contracts";
+import * as serverCheck from "./server-check.controller";
+import { AgentExecBody, CreateServerInputSchema, UpdateServerInputSchema, UpdateServerRateLimitSchema } from "@repo/contracts";
+import { secureRouter } from "../../lib/secure-router";
+import * as serversCtrl from "./servers.controller";
+import * as rateLimit from "./rate-limit.controller";
+import * as serverContainers from "./server-containers.controller";
+import * as serverModules from "./server-modules.controller";
+import * as tunnels from "./tunnels.controller";
+import { SaveServerTunnelInputSchema } from "@repo/contracts";
+
+const r = secureRouter(new Hono(), { module: "system", basePath: "/api/system", localOnly: true });
+
+r.get("/servers/:id/tunnels", { tag: "server:read", authorizationHandledByOperation: true }, tunnels.listTunnels);
+r.post("/servers/:id/tunnels", { tag: "server:write", body: SaveServerTunnelInputSchema, authorizationHandledByOperation: true, auditHandledByOperation: true }, tunnels.saveTunnel);
+r.post("/servers/:id/tunnels/:tunnelId/start", { tag: "server:write", authorizationHandledByOperation: true, auditHandledByOperation: true }, tunnels.startTunnelHandler);
+r.post("/servers/:id/tunnels/:tunnelId/stop", { tag: "server:write", authorizationHandledByOperation: true, auditHandledByOperation: true }, tunnels.stopTunnelHandler);
+r.delete("/servers/:id/tunnels/:tunnelId", { tag: "server:write", authorizationHandledByOperation: true, auditHandledByOperation: true }, tunnels.deleteTunnel);
+
+r.get("/servers", { tag: "server:list" }, serversCtrl.listServers);
+r.get("/servers/:id", { tag: "server:read" }, serversCtrl.getServer);
+r.get("/servers/:id/reachability", { tag: "server:read" }, serversCtrl.probeReachability);
+// Read-only blast-radius snapshot for the removal confirm: which projects and apps
+// this box currently runs, and which server-scoped records go with it.
+r.get("/servers/:id/deletion-preview", { tag: "server:read" }, serversCtrl.serverDeletionPreview);
+// Create has no :id in the URL — org scope comes from the request and the
+// row is created in the active org. collection:true keeps the permission
+// middleware from demanding a (nonexistent) :id param.
+r.post("/servers", { tag: "server:write", collection: true, body: CreateServerInputSchema, auditHandledByOperation: true }, serversCtrl.createServer);
+r.patch("/servers/:id", { tag: "server:write", body: UpdateServerInputSchema, auditHandledByOperation: true }, serversCtrl.updateServer);
+r.delete("/servers/:id", { tag: "server:admin", auditHandledByOperation: true }, serversCtrl.deleteServer);
+// Host exec. `server:admin` on the id, so a {server,<id>,[admin]} grant confines an
+// agent to this one box — the per-resource scope the jobs-based workaround could not
+// express. MCP-exposed deliberately: this is the sanctioned agent execution point.
+r.post(
+  "/servers/:id/exec",
+  {
+    tag: "server:admin",
+    // Tighter than the default-authed 3000/min: each call opens a pooled SSH
+    // connection and runs an arbitrary command, so the generic read budget is the
+    // wrong shape for it.
+    rateLimit: "write-authed",
+    body: AgentExecBody,
+    mcp: {
+      description:
+        "Run a shell command on this server's host and return its exit code and combined output. Interpreted by `sh -c`, so pipes and redirects work; stderr is merged in. Times out (default 30s, max 120s) and truncates large output. Use this to inspect or repair a server; prefer the read-only endpoints when they answer the question.",
+    },
+  },
+  serversCtrl.execOnServer,
+);
+
+/* ── Per-server rate limiting (OpenResty level) ─────────────────── */
+r.get("/servers/:id/rate-limit", { tag: "server:read" }, rateLimit.getRateLimit);
+r.patch("/servers/:id/rate-limit", { tag: "server:admin", body: UpdateServerRateLimitSchema, auditHandledByOperation: true }, rateLimit.updateRateLimit);
+
+// ── Native-module versioning + migration (OpenResty, …). The `:id` server is
+//    the permission resource; handlers hard-guard cloud + org-scope. ──
+r.get("/servers/:id/modules", { tag: "server:read" }, serverModules.listServerModules);
+r.post("/servers/:id/modules/scan", { tag: "server:write", auditHandledByOperation: true }, serverModules.scanServerModules);
+r.post("/servers/:id/modules/:module/apply", { tag: "server:write", auditHandledByOperation: true }, serverModules.applyServerModuleUpdate);
+
+r.post("/servers/:id/ports/scan", { tag: "server:read", readOnly: true }, serverCheck.scanExposedPorts);
+r.post("/test-connection", { tag: "server:write", collection: true, body: CreateServerInputSchema, auditHandledByOperation: true }, serverCheck.testConnection);
+r.post("/check", { tag: "server:admin", body: Type.Object({ ...CheckServerInputSchema.properties, serverId: ResourceIdSchema }, { additionalProperties: false }), authorizationHandledByOperation: true, auditHandledByOperation: true }, serverCheck.checkServer);
+r.post("/install", { tag: "server:admin", authorizationHandledByOperation: true, body: Type.Object({ ...ServerComponentInputSchema.properties, serverId: ResourceIdSchema }, { additionalProperties: false }), auditHandledByOperation: true }, serverCheck.installComponent);
+r.post("/remove", { tag: "server:admin", authorizationHandledByOperation: true, body: Type.Object({ ...ServerComponentInputSchema.properties, serverId: ResourceIdSchema }, { additionalProperties: false }), auditHandledByOperation: true }, serverCheck.removeComponent);
+r.post("/install/stream", { tag: "server:admin", authorizationHandledByOperation: true, body: Type.Object({ ...InstallServerComponentsInputSchema.properties, serverId: ResourceIdSchema }, { additionalProperties: false }), auditHandledByOperation: true }, serverCheck.installStream);
+r.post("/install/respond", { tag: "server:admin", authorizationHandledByOperation: true, body: ServerInstallResponseInputSchema, auditHandledByOperation: true }, serverCheck.installRespond);
+r.get("/install/stream", { tag: "server:read", authorizationHandledByOperation: true }, serverCheck.attachInstallStream);
+r.get("/install/session", { tag: "server:read", authorizationHandledByOperation: true }, serverCheck.getInstallSession);
+r.get("/monitor/stream", { tag: "server:read", authorizationHandledByOperation: true }, serverCheck.monitorStream);
+
+// ── Managed CONTAINER versioning (edge / mail images pinned to APP_VERSION).
+//    Same `:id`-server permission resource + cloud/org guards as modules; apply
+//    STREAMS the rollback-guarded image swap. ──
+// Org-wide drift count for the home nudge — no :id, so collection:true scopes
+// the permission check to the active org (like /install/stream, /monitor/stream)
+// instead of demanding a server param.
+r.get("/containers/behind", { tag: "server:read", collection: true }, serverContainers.containersBehind);
+r.get("/containers/issues", { tag: "server:read", collection: true }, serverContainers.containerIssues);
+// Global infra view — every server × component. No :id, so collection:true scopes
+// the check to the active org (same as /containers/behind). Scan is detect-only.
+r.get("/containers", { tag: "server:read", collection: true }, serverContainers.listAllContainers);
+// Live progress for the fleet view: what's queued/running right now (cached rows ×
+// in-memory sessions) plus what just settled, which is the only place an outcome
+// lives — a finished row clears its drift and its in-progress flag together.
+r.get("/containers/applying", { tag: "server:read", collection: true }, serverContainers.listApplyingContainers);
+r.post("/containers/scan", { tag: "server:write", collection: true, auditHandledByOperation: true }, serverContainers.scanAllContainers);
+// Fleet bulk apply — targets are derived from the cache server-side, so the body
+// only carries which intents to run ("update" swaps, "repair" restarts).
+r.post("/containers/apply-all", { tag: "server:write", collection: true, auditHandledByOperation: true }, serverContainers.applyAllContainers);
+r.get("/servers/:id/containers", { tag: "server:read" }, serverContainers.listServerContainers);
+r.post("/servers/:id/containers/scan", { tag: "server:write", auditHandledByOperation: true }, serverContainers.scanServerContainers);
+r.post("/servers/:id/containers/:component/apply/stream", { tag: "server:write", auditHandledByOperation: true }, serverContainers.applyServerContainerStream);
+// Read-only siblings of the POST apply stream, for page reloads: /session hands
+// back a running swap's id, /stream (GET) re-attaches to it. Neither can start a
+// run, so they stay on server:read while the POST keeps server:write.
+r.get("/servers/:id/containers/:component/apply/session", { tag: "server:read" }, serverContainers.getServerContainerApplySession);
+r.get("/servers/:id/containers/:component/apply/stream", { tag: "server:read" }, serverContainers.attachServerContainerStream);
+
+
+export const serverManagementRoutes = r.hono;

@@ -3,6 +3,8 @@
     "title": "Capacidade e uso",
     "subtitle": "Capacidade incluída no seu plano e quanto você usou. Os números ao vivo são sincronizados do Openship Cloud.",
     "routes": "Rotas gratuitas",
+    "runningServices": "Serviços em execução",
+    "projects": "Projetos",
     "workspaces": "Espaços de trabalho",
     "unlimited": "Ilimitado",
     "used": "usado",
@@ -11,12 +13,12 @@
   },
   "topupsComingSoon": "As recargas de crédito avulsas chegarão em breve — aqui você poderá adicionar créditos além da sua franquia mensal.",
   "header": {
-    "credits": "Credits",
-    "creditsSuffix": "of {limit}",
-    "overQuota": "Over quota",
+    "credits": "Créditos",
+    "creditsSuffix": "de {limit}",
+    "overQuota": "Cota excedida",
     "bandwidth": "Bandwidth",
-    "bandwidthNote": "combined in + out",
-    "build": "Build time",
+    "bandwidthNote": "entrada e saída combinadas",
+    "build": "Tempo de compilação",
     "min": "min",
     "capacity": "Capacity",
     "workspaces": "workspaces",
@@ -33,9 +35,10 @@
     "invoices": "Faturas"
   },
   "portal": {
-    "openButton": "Abrir portal do Stripe",
+    "openButton": "Abrir portal de cobrança",
     "errorMissingUrl": "URL do portal ausente na resposta",
-    "errorOpenFailed": "Falha ao abrir o portal do Stripe"
+    "errorOpenFailed": "Falha ao abrir o portal do Stripe",
+    "supportButton": "Contatar suporte"
   },
   "unavailable": {
     "notConnected": {
@@ -65,7 +68,10 @@
     "loadError": "Falha ao carregar os planos",
     "genericError": "Algo deu errado",
     "tryAgain": "Tentar novamente",
-    "checkoutError": "Falha ao iniciar o checkout"
+    "checkoutError": "Falha ao iniciar o checkout",
+    "replacementNotice": "Alterar o plano ou o intervalo de cobrança inicia um novo ciclo pelo preço integral selecionado após o pagamento. Não há ajuste proporcional automático.",
+    "changeViaSupport": "Entre em contato com o suporte para alterar sua assinatura atual.",
+    "billingUnavailable": "As compras ainda não estão disponíveis para esta conta."
   },
   "pricing": {
     "custom": "Personalizado",
@@ -73,21 +79,26 @@
     "currentPlan": "Plano atual",
     "contactSales": "Falar com vendas",
     "freeForever": "Grátis para sempre",
-    "upgrade": "Fazer upgrade"
+    "upgrade": "Fazer upgrade",
+    "comingSoon": "Em breve",
+    "billingInterval": "Intervalo de cobrança",
+    "monthly": "Mensal",
+    "annual": "Anual",
+    "billedAnnually": "Cobrança anual"
   },
   "topups": {
     "loadError": "Falha ao carregar os pacotes de recarga",
     "title": "Recarregar créditos",
-    "description": "Pacotes de crédito avulsos cobrados via Stripe. Os créditos nunca expiram e se acumulam sobre a sua franquia mensal.",
+    "description": "Pacotes de créditos de compra única são adicionados ao saldo do Cloud após o pagamento.",
     "tryAgain": "Tentar novamente",
-    "credits": "créditos",
+    "credits": "Créditos",
     "redirecting": "Redirecionando…",
     "buy": "Comprar",
     "empty": "Nenhum pacote de recarga disponível no momento.",
     "receiptsTitle": "Recargas recentes",
-    "receiptsDescription": "Os recibos são gerenciados no Stripe — abra o portal de cobrança para ver seu histórico de faturas e baixar os recibos.",
+    "receiptsDescription": "Consulte ou solicite recibos das suas compras de créditos.",
     "opening": "Abrindo…",
-    "openPortal": "Abrir portal do Stripe",
+    "openPortal": "Abrir portal de cobrança",
     "checkoutError": "Falha ao iniciar o checkout",
     "portalError": "Falha ao abrir o portal de cobrança"
   },
@@ -99,7 +110,6 @@
     "resetsInDay": "Em {n} dia",
     "resetsInDays": "Em {n} dias",
     "none": "—",
-    "upgradeToPro": "Fazer upgrade para o Pro",
     "recentActivity": "Atividade recente",
     "last7Days": "Últimos 7 dias",
     "viewFullUsage": "Ver uso completo",
@@ -121,7 +131,7 @@
       "balance": "Saldo",
       "balanceSuffix": "de {limit} créditos",
       "consumed": "Consumido neste período",
-      "credits": "créditos",
+      "credits": "Créditos",
       "burnRate": "Taxa de consumo",
       "burnRateSuffix": "créditos/dia (últimos 7d)",
       "projected": "Projeção de fim de período",
@@ -146,10 +156,22 @@
       "empty": "Nenhum uso no intervalo selecionado."
     },
     "resources": {
-      "cpu": { "label": "Tempo de CPU", "units": "vCPU-horas" },
-      "memory": { "label": "Memória", "units": "GB-horas" },
-      "disk": { "label": "IO de disco", "units": "GB" },
-      "network": { "label": "Rede", "units": "GB" }
+      "cpu": {
+        "label": "Tempo de CPU",
+        "units": "vCPU-horas"
+      },
+      "memory": {
+        "label": "Memória",
+        "units": "GB-horas"
+      },
+      "disk": {
+        "label": "IO de disco",
+        "units": "GB"
+      },
+      "network": {
+        "label": "Rede",
+        "units": "GB"
+      }
     },
     "toolbar": {
       "workspace": "Espaço de trabalho",
@@ -187,14 +209,37 @@
       "incomplete_expired": "Expirado",
       "unpaid": "Não pago",
       "paused": "Pausado"
-    }
+    },
+    "includedTitle": "O que está incluído",
+    "perYear": "${price}/ano"
   },
   "paymentPanel": {
     "title": "Forma de pagamento",
-    "description": "Cartões, contas bancárias e detalhes de cobrança são gerenciados no Portal do Cliente do Stripe. Abra o portal para adicionar, remover ou atualizar suas formas de pagamento."
+    "description": "Gerencie os métodos de pagamento e os dados de cobrança."
   },
   "invoicesPanel": {
     "title": "Faturas",
-    "description": "Faturas e recibos ficam no Portal do Cliente do Stripe. Abra o portal para ver seu histórico de cobrança e baixar as faturas em PDF."
+    "description": "Consulte ou solicite seu histórico de cobrança e suas faturas."
+  },
+  "subscription": {
+    "title": "Assinatura",
+    "renewsOn": "Renova em {date}",
+    "endsOn": "Renovação interrompida. Sua assinatura termina em {date}.",
+    "endsAtPeriodEnd": "Renovação interrompida. Sua assinatura termina no fim do período pago.",
+    "renewalEnabled": "A renovação automática está ativada.",
+    "ended": "Assinatura encerrada. Escolha um plano para assinar novamente.",
+    "billedMonthly": "Cobrança mensal",
+    "cancel": "Cancelar assinatura",
+    "resume": "Retomar renovação",
+    "cancelNotice": "A renovação será interrompida no fim do período pago. Sua assinatura permanece em vigor até lá.",
+    "confirmCancel": "Interromper renovação",
+    "keepPlan": "Manter assinatura",
+    "error": "Não foi possível atualizar sua assinatura. Tente novamente."
+  },
+  "checkout": {
+    "checking": "Atualizando seu plano e saldo do Cloud. O pagamento pode levar um momento para ser processado.",
+    "active": "Seu plano do Cloud está ativo.",
+    "pending": "Seu pagamento ainda pode estar sendo processado. Atualize esta página para verificar seu plano e saldo. Contate o suporte se um pagamento concluído não aparecer.",
+    "support": "Contatar suporte"
   }
 }

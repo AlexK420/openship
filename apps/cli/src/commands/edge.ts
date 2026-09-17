@@ -37,7 +37,7 @@ import chalk from "chalk";
 import ora, { type Ora } from "ora";
 import { intro, outro, select, isCancel, note, text, password, confirm, log } from "@clack/prompts";
 
-import { apiRaw, apiRequest, ApiError, paginate } from "../lib/api-client";
+import { getRemoteClient, ApiError } from "../lib/ship-client";
 import { getApiUrl } from "../lib/config";
 import { printJson, printTable, isJsonMode, ok, err, info } from "../lib/output";
 import { storedApiPort } from "../lib/ports";
@@ -379,7 +379,7 @@ function renderPanelError(e: unknown): void {
  */
 async function apiLivePing(): Promise<boolean> {
   try {
-    const res = await apiRaw("/health", { signal: AbortSignal.timeout(1500) });
+    const res = await getRemoteClient().http.raw("/health", { signal: AbortSignal.timeout(1500) });
     return res.ok;
   } catch {
     return false;
@@ -389,7 +389,7 @@ async function apiLivePing(): Promise<boolean> {
 /** Resolve (and cache) the local server id — GET /system/servers → the isLocal row. */
 async function resolveLocalServerId(): Promise<string | null> {
   if (localServerId) return localServerId;
-  const rows = await apiRequest<ServerRow[]>("/system/servers");
+  const rows = await getRemoteClient().http.request<ServerRow[]>("/system/servers");
   const local = rows.find((r) => r.isLocal === true) ?? rows.find((r) => r.name === "This Server");
   localServerId = local?.id ?? null;
   return localServerId;
@@ -403,10 +403,10 @@ async function resolveLocalServerId(): Promise<string | null> {
  */
 async function loadDomains(): Promise<DomainEntry[]> {
   const entries: DomainEntry[] = [];
-  for await (const p of paginate<Record<string, unknown>>("/projects")) {
+  for await (const p of getRemoteClient().http.paginate<Record<string, unknown>>("/projects")) {
     const projectId = String(p.id);
     const projectPort = typeof p.port === "number" ? p.port : null;
-    const res = await apiRequest<{ data: DomainRow[] }>(
+    const res = await getRemoteClient().http.request<{ data: DomainRow[] }>(
       `/domains?projectId=${encodeURIComponent(projectId)}`,
     ).catch(() => ({ data: [] as DomainRow[] }));
     for (const d of res.data ?? []) {
@@ -522,7 +522,7 @@ async function panelTraffic(entry: DomainEntry): Promise<void> {
   }
   const sp = spin(`Loading traffic for ${entry.hostname}…`);
   try {
-    const res = await apiRequest<{ data: ServerBucket[] }>(
+    const res = await getRemoteClient().http.request<{ data: ServerBucket[] }>(
       `/analytics/server/${encodeURIComponent(serverId)}${query({ domain: entry.hostname })}`,
     );
     sp?.stop();
@@ -567,7 +567,7 @@ async function panelAnalytics(entry: DomainEntry): Promise<void> {
   }
   const sp = spin(`Loading analytics for ${entry.hostname}…`);
   try {
-    const res = await apiRequest<{ data: ServerGeoRow }>(
+    const res = await getRemoteClient().http.request<{ data: ServerGeoRow }>(
       `/analytics/server/${encodeURIComponent(serverId)}/geo${query({ domain: entry.hostname })}`,
     );
     sp?.stop();
@@ -619,7 +619,7 @@ async function panelTrafficOverview(): Promise<void> {
     let requests = 0;
     let bwOut = 0;
     try {
-      const res = await apiRequest<{ data: ServerBucket[] }>(
+      const res = await getRemoteClient().http.request<{ data: ServerBucket[] }>(
         `/analytics/server/${encodeURIComponent(serverId)}${query({ domain: d.hostname })}`,
       );
       for (const b of res.data ?? []) {
@@ -681,7 +681,7 @@ async function panelAddRule(entry: DomainEntry): Promise<void> {
 
   const sp = spin("Adding rule…");
   try {
-    const res = await apiRequest<{ rule: RouteRuleRow }>(
+    const res = await getRemoteClient().http.request<{ rule: RouteRuleRow }>(
       `/projects/${encodeURIComponent(entry.projectId)}/route-rules`,
       { method: "POST", body: JSON.stringify({ domainId: entry.id, pathPrefix: null, spec, enabled: true }) },
     );
@@ -702,7 +702,7 @@ async function panelRemoveRule(entry: DomainEntry, rules: RouteRuleRow[]): Promi
   if (isCancel(pick) || pick === "__cancel") return;
   const sp = spin("Deleting rule…");
   try {
-    await apiRequest(
+    await getRemoteClient().http.request(
       `/projects/${encodeURIComponent(entry.projectId)}/route-rules/${encodeURIComponent(String(pick))}`,
       { method: "DELETE" },
     );
@@ -718,7 +718,7 @@ async function panelRules(entry: DomainEntry): Promise<void> {
     const sp = spin("Loading route rules…");
     let rules: RouteRuleRow[];
     try {
-      const res = await apiRequest<{ rules: RouteRuleRow[] }>(
+      const res = await getRemoteClient().http.request<{ rules: RouteRuleRow[] }>(
         `/projects/${encodeURIComponent(entry.projectId)}/route-rules`,
       );
       rules = res.rules ?? [];
@@ -787,7 +787,7 @@ async function panelRegisterDomain(): Promise<void> {
   const sp = spin(`Registering ${hostname}…`);
   try {
     const res = await registerDomainCore(hostname, opts);
-    sp?.succeed(res.verified ? `${hostname} verified & serving` : `Registered ${hostname}`);
+    sp?.succeed(res.verified ? `DNS verified for ${hostname}` : `Registered ${hostname}`);
     if (res.verified) {
       if (res.sslStatus) info(`  SSL: ${res.sslStatus}`);
     } else if (res.records) {
@@ -806,7 +806,7 @@ async function panelRemoveDomain(entry: DomainEntry): Promise<boolean> {
   if (isCancel(go) || !go) return false;
   const sp = spin(`Removing ${entry.hostname}…`);
   try {
-    await apiRequest(`/domains/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+    await getRemoteClient().http.request(`/domains/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
     sp?.succeed(`Removed ${entry.hostname}`);
     return true;
   } catch (e) {
@@ -883,7 +883,7 @@ async function panelDomains(): Promise<void> {
 function edgeHeader(diag: EdgeDiagnosis | null, apiLive: boolean, domainsLabel: string): string {
   return [
     `Edge:      ${diag ? describeDiagnosis(diag) : chalk.dim("host ops unavailable (not Linux)")}`,
-    `API:       ${apiLive ? chalk.green(`reachable · ${getApiUrl()}`) : chalk.dim(`unreachable · ${getApiUrl()}`)}`,
+    `API:       ${apiLive ? chalk.green(`reachable · ${getRemoteClient().http.apiUrl}`) : chalk.dim(`unreachable · ${getRemoteClient().http.apiUrl}`)}`,
     `Domains:   ${domainsLabel}`,
   ].join("\n");
 }
@@ -935,7 +935,7 @@ async function edgePanel(): Promise<void> {
     // absent (API down) or restricted (real auth needed).
     if (!apiLive) {
       note(
-        `The Openship API isn't answering at ${getApiUrl()}.\n` +
+        `The Openship API isn't answering at ${getRemoteClient().http.apiUrl}.\n` +
           "Domains, traffic & analytics need it — start the stack with `openship up`.",
         "API offline",
       );
@@ -987,7 +987,7 @@ const rulesList = new Command("list")
   .requiredOption("-p, --project <id>", "Project ID")
   .action(async (opts) => {
     try {
-      const res = await apiRequest<{ rules: RouteRuleRow[] }>(
+      const res = await getRemoteClient().http.request<{ rules: RouteRuleRow[] }>(
         `/projects/${encodeURIComponent(opts.project)}/route-rules`,
       );
       const rules = res.rules ?? [];
@@ -1047,7 +1047,7 @@ const rulesAdd = new Command("add")
 
     const sp = spin("Adding route rule…");
     try {
-      const res = await apiRequest<{ rule: RouteRuleRow }>(
+      const res = await getRemoteClient().http.request<{ rule: RouteRuleRow }>(
         `/projects/${encodeURIComponent(opts.project)}/route-rules`,
         {
           method: "POST",
@@ -1074,7 +1074,7 @@ const rulesRm = new Command("rm")
   .action(async (ruleId: string, opts) => {
     const sp = spin("Deleting route rule…");
     try {
-      await apiRequest(`/projects/${encodeURIComponent(opts.project)}/route-rules/${encodeURIComponent(ruleId)}`, {
+      await getRemoteClient().http.request(`/projects/${encodeURIComponent(opts.project)}/route-rules/${encodeURIComponent(ruleId)}`, {
         method: "DELETE",
       });
       sp?.succeed(`Deleted rule ${ruleId}`);
@@ -1132,7 +1132,7 @@ const domainsList = new Command("list")
   .requiredOption("-p, --project <id>", "Project ID")
   .action(async (opts) => {
     try {
-      const res = await apiRequest<{ data: DomainRow[] }>(
+      const res = await getRemoteClient().http.request<{ data: DomainRow[] }>(
         `/domains?projectId=${encodeURIComponent(opts.project)}`,
       );
       const rows = res.data ?? [];
@@ -1200,14 +1200,14 @@ async function registerDomainCore(hostname: string, opts: DomainAddOpts): Promis
 
   let projectId = opts.project;
   if (hasPort) {
-    const created = await apiRequest<{ data: { id: string; name: string } }>("/projects", {
+    const created = await getRemoteClient().http.request<{ data: { id: string; name: string } }>("/projects", {
       method: "POST",
       body: JSON.stringify({ name: host, port: opts.port }),
     });
     projectId = created.data.id;
   }
 
-  const added = await apiRequest<{ data: DomainRow; records: RecordsResult }>("/domains", {
+  const added = await getRemoteClient().http.request<{ data: DomainRow; records: RecordsResult }>("/domains", {
     method: "POST",
     body: JSON.stringify({ projectId, hostname: host, isPrimary: !!opts.primary }),
   });
@@ -1216,7 +1216,7 @@ async function registerDomainCore(hostname: string, opts: DomainAddOpts): Promis
   let verified = false;
   let sslStatus: string | undefined;
   if (opts.verify !== false) {
-    const vr = await apiRaw(`/domains/${encodeURIComponent(domain.id)}/verify`, { method: "POST" });
+    const vr = await getRemoteClient().http.raw(`/domains/${encodeURIComponent(domain.id)}/verify`, { method: "POST" });
     const vbody = (await vr.json().catch(() => ({}))) as {
       verified?: boolean;
       sslStatus?: string;
@@ -1238,7 +1238,7 @@ async function runDomainAdd(hostname: string, opts: DomainAddOpts): Promise<void
   const sp = spin(`Registering ${host}…`);
   try {
     const res = await registerDomainCore(hostname, opts);
-    sp?.succeed(res.verified ? `${host} verified & serving` : `Registered ${host}`);
+    sp?.succeed(res.verified ? `DNS verified for ${host}` : `Registered ${host}`);
     if (isJsonMode()) {
       printJson({ domain: res.domain, records: res.records, verified: res.verified, sslStatus: res.sslStatus, projectId: res.projectId });
       return;
@@ -1260,14 +1260,14 @@ async function runDomainRm(hostname: string, opts: { project: string }): Promise
   const host = hostname.trim().toLowerCase();
   const sp = spin(`Removing ${host}…`);
   try {
-    const res = await apiRequest<{ data: DomainRow[] }>(`/domains?projectId=${encodeURIComponent(opts.project)}`);
+    const res = await getRemoteClient().http.request<{ data: DomainRow[] }>(`/domains?projectId=${encodeURIComponent(opts.project)}`);
     const match = (res.data ?? []).find((d) => d.hostname.toLowerCase() === host);
     if (!match) {
       sp?.fail("Not found");
       err(`  No domain ${host} on project ${opts.project}.`);
       process.exit(1);
     }
-    await apiRequest(`/domains/${encodeURIComponent(match.id)}`, { method: "DELETE" });
+    await getRemoteClient().http.request(`/domains/${encodeURIComponent(match.id)}`, { method: "DELETE" });
     sp?.succeed(`Removed ${host}`);
     if (isJsonMode()) printJson({ success: true, id: match.id, hostname: host });
   } catch (e) {
@@ -1339,7 +1339,7 @@ const logsCommand = new Command("logs")
   .action(async (opts) => {
     const path = `/projects/${encodeURIComponent(opts.project)}/server-logs/recent?limit=${encodeURIComponent(String(opts.limit))}`;
     try {
-      const res = await apiRequest<{ logs: ServerLogRow[] }>(path);
+      const res = await getRemoteClient().http.request<{ logs: ServerLogRow[] }>(path);
       const rows = res.logs ?? [];
       if (isJsonMode()) {
         printJson(rows);
@@ -1355,7 +1355,7 @@ const logsCommand = new Command("logs")
       info(chalk.dim("\n  Following — Ctrl-C to stop.\n"));
       for (;;) {
         await new Promise((r) => setTimeout(r, 2000));
-        const next = await apiRequest<{ logs: ServerLogRow[] }>(path).catch(() => ({ logs: [] as ServerLogRow[] }));
+        const next = await getRemoteClient().http.request<{ logs: ServerLogRow[] }>(path).catch(() => ({ logs: [] as ServerLogRow[] }));
         const fresh = (next.logs ?? []).filter((r) => !seen.has(logKey(r)));
         for (const r of fresh) seen.add(logKey(r));
         if (fresh.length) printLogRows(fresh);
@@ -1394,7 +1394,7 @@ interface TrafficOpts {
 
 async function runTraffic(opts: TrafficOpts): Promise<void> {
   try {
-    const res = await apiRequest<{ data: { summary: TrafficSummary; periods: TrafficPeriod[] } }>(
+    const res = await getRemoteClient().http.request<{ data: { summary: TrafficSummary; periods: TrafficPeriod[] } }>(
       `/analytics/overview${query({ projectId: opts.project, domain: opts.domain, from: opts.from, to: opts.to })}`,
     );
     if (isJsonMode()) {
@@ -1468,7 +1468,7 @@ interface GeoOpts {
 
 async function runGeo(opts: GeoOpts): Promise<void> {
   try {
-    const res = await apiRequest<{ data: GeoResult }>(
+    const res = await getRemoteClient().http.request<{ data: GeoResult }>(
       `/analytics/geo${query({ projectId: opts.project, domain: opts.domain, from: opts.from, to: opts.to })}`,
     );
     const g = res.data;

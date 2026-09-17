@@ -29,20 +29,20 @@ vi.mock("../../../src/lib/controller-helpers", () => ({
   platform: () => ({ target: "desktop" }),
 }));
 
-vi.mock("../../../src/lib/cloud/client", () => ({ cloudClient }));
-vi.mock("../../../src/lib/cloud/session", () => ({
+vi.mock("@repo/platform/engine/lib/cloud/client", () => ({ cloudClient }));
+vi.mock("@repo/platform/engine/lib/cloud/session", () => ({
   isCloudConnectedForOrg: vi.fn().mockResolvedValue(true),
 }));
-vi.mock("../../../src/lib/cloud-preflight", () => ({ runCloudPreflight }));
-vi.mock("../../../src/lib/dns-resolver", () => ({
+vi.mock("@repo/platform/engine/lib/cloud-preflight", () => ({ runCloudPreflight }));
+vi.mock("@repo/platform/engine/lib/dns-resolver", () => ({
   resolveRecords: vi.fn().mockResolvedValue([]),
   lookupAddresses: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("../../../src/lib/host-capacity", () => ({ getTrustedHostCapacity }));
-vi.mock("../../../src/modules/apps/catalog-source", () => ({ getTemplateForOrg }));
+vi.mock("@repo/platform/engine/lib/host-capacity", () => ({ getTrustedHostCapacity }));
+vi.mock("@repo/platform/engine/modules/apps/catalog-source", () => ({ getTemplateForOrg }));
 
-import { runPreflightChecks, PREFLIGHT_ERROR_CODES } from "../../../src/modules/deployments/preflight";
+import { runPreflightChecks, PREFLIGHT_ERROR_CODES } from "@repo/platform/engine/modules/deployments/preflight";
 
 /** A catalog app's snapshot: a compose project, so the framework build fields
  *  (build image / start command) aren't required and `config` passes. */
@@ -194,3 +194,12 @@ describe("preflight host-capacity", () => {
     expect(capacityCheck(result)).toBeUndefined();
   });
 });
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/platform-config", () => ({
+  platform: () => ({ target: "desktop" }),
+}));
+
+vi.mock("@repo/platform/engine/lib/resource-access", () => ({
+  platform: () => ({ target: "desktop" }),
+}));

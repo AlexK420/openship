@@ -67,7 +67,7 @@ function rowToGrant(row: ResourceGrantRow): ResourceGrant {
   };
 }
 
-export function createResourceGrantRepo(db: Database) {
+export function createResourceGrantRepo(db: Pick<Database, "select" | "insert" | "delete">) {
   return {
     /** All grants for a single (org, user) pair — powers the member detail panel. */
     async listByMember(organizationId: string, userId: string): Promise<ResourceGrant[]> {

@@ -26,22 +26,23 @@
  * a "public" signal into them.
  */
 
+import { findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
 import { repos, type Project, type Deployment } from "@repo/db";
 import { BareRuntime } from "@repo/adapters";
 import { safeErrorMessage, UNLIMITED_RESOURCES } from "@repo/core";
-import { env } from "../../config/env";
-import { registerStartupHook } from "./index";
+import { env } from "@repo/platform/engine/config/env";
+import { registerStartupHook } from "@repo/platform/engine/lib/startup/index";
 import { ensureSelfEdgeInfra, type SelfEdgeOptions } from "./self-edge";
-import { linkSelfAppServices } from "./self-services";
+import { linkSelfAppServices } from "@repo/platform/engine/lib/startup/self-services";
 import {
   createQueuedDeployment,
   type DeploymentConfigSnapshot,
-} from "../../modules/deployments/build.service";
-import { onSuccess } from "../../modules/deployments/deployment-lifecycle";
-import type { DeploymentMeta } from "../deployment-runtime";
-import { reapplyProjectLiveRoutes } from "../../modules/domains/project-route.service";
-import { describeTlsIssuedElsewhere, manageDomainSsl, tlsIssuedElsewhere } from "../domain-ssl";
-import { refreshSelfAppPublicUrl } from "../public-url";
+} from "@repo/platform/engine/modules/deployments/build.service";
+import { onSuccess } from "@repo/platform/engine/modules/deployments/deployment-lifecycle";
+import type { DeploymentMeta } from "@repo/platform/engine/lib/deployment-runtime";
+import { reapplyProjectLiveRoutes } from "@repo/platform/engine/modules/domains/project-route.service";
+import { describeTlsIssuedElsewhere, manageDomainSsl, tlsIssuedElsewhere } from "@repo/platform/engine/lib/domain-ssl";
+import { refreshSelfAppPublicUrl } from "@repo/platform/engine/lib/public-url";
 
 const APP_SLUG = "openship";
 const APP_TEMPLATE_ID = "openship";
@@ -101,7 +102,7 @@ export async function ensureAdoptDeployment(
 
   // Already adopted + active → done.
   if (project.activeDeploymentId) {
-    const active = await repos.deployment.findById(project.activeDeploymentId);
+    const active = await findActiveDeployment(project);
     if (isAdoptDeployment(active)) return active!;
   }
 
@@ -200,7 +201,7 @@ async function foreignProxyBlocksEdge(
 ): Promise<{ blocked: boolean; owner?: string; detail?: string }> {
   try {
     const { foreignProxyOnEdge } = await import("@repo/adapters");
-    const { sshManager } = await import("../ssh-manager");
+    const { sshManager } = await import("@repo/platform/engine/lib/ssh-manager");
     // Probe the HOST's :80/:443, not the api container's netns — the host channel is
     // LocalExecutor bare, SSH→host when containerized (OPENSHIP_HOST_SSH_*). Pooled,
     // so there's nothing to dispose (see withHostExecutor).
@@ -461,7 +462,7 @@ export function registerSelfAdoptReconcile(): void {
       if (isLinuxRoot()) {
         try {
           const { recoverInterruptedTakeover } = await import("@repo/adapters");
-          const { sshManager } = await import("../ssh-manager");
+          const { sshManager } = await import("@repo/platform/engine/lib/ssh-manager");
           // Recover takeover on the HOST (local bare, SSH→host containerized).
           await sshManager.withHostExecutor((exec) =>
             recoverInterruptedTakeover(exec, (e) => console.log(`[self-deploy] ${e.message}`)),

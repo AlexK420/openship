@@ -23,7 +23,7 @@
  */
 
 import { repos } from "@repo/db";
-import { auth } from "../../lib/auth";
+import { auth } from "@repo/platform/engine/lib/auth";
 import { isAllowedMcpResource, publicOriginFor, resolveTokenAudience } from "../../lib/mcp-resource";
 import { signMcpAccessToken } from "../../lib/mcp-token";
 import { signRs256Jwt } from "../../lib/mcp-oidc-keys";

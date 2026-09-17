@@ -14,9 +14,9 @@
  * elsewhere.
  */
 
-import { env } from "../../config/env";
-import { pinnedEdgeImage, withPinnedEdgeImage } from "../edge-image";
-import { resolveAcmeProviderOptions } from "../acme-config";
+import { env } from "@repo/platform/engine/config/env";
+import { pinnedEdgeImage, withPinnedEdgeImage } from "@repo/platform/engine/lib/edge-image";
+import { resolveAcmeProviderOptions } from "@repo/platform/engine/lib/acme-config";
 
 export interface SelfEdgeInfraProgress {
   onLog?: (message: string, level?: "info" | "warn" | "error") => void;
@@ -137,7 +137,7 @@ async function runEnsure(
 
   // Lazy, like @repo/adapters above: deliver pulls in the deploy runtime (db, ssh,
   // dockerode), which must stay off the boot path on the topologies that skip early.
-  const { deliverManagedImage } = await import("../deliver-managed-image");
+  const { deliverManagedImage } = await import("@repo/platform/engine/lib/deliver-managed-image");
 
   // Stage-B APPLY, build-only: this host IS the target, so build the edge from our
   // source onto the local daemon before either bring-up path pulls the pinned tag.

@@ -87,6 +87,78 @@ export const HOST_CHANNEL_UNPROVISIONED =
   "unset, so there is no address to reach the host at and nothing has been dialed.";
 
 /**
+ * The account the container→host channel logs in as, when nothing has been provisioned.
+ *
+ * `root` because that is what `chooseHostChannelUser` authorizes whenever it can reach it
+ * — the platform's host operations are root-owned by contract (see `stateDir()` in
+ * adapters/system/environment-ops). It is a DEFAULT, not a requirement: the value is
+ * whatever provisioning wrote, and this is only the answer for an install that has not
+ * written one.
+ */
+export const HOST_CHANNEL_DEFAULT_ACCOUNT = "root";
+
+/**
+ * THE host-channel account resolver.
+ *
+ * One function because this expression was spelled independently in five places — the
+ * adapters' dial (`hostChannelUser`), the api's self-server row (`desiredSshUser`), and
+ * three spots in the CLI's compose layer — and #527 is what that costs. The row rendered
+ * `admin@<ip>` from one copy while the dial used `root@host.docker.internal` from another,
+ * so the operator was shown an account the channel was not using, went to correct it, and
+ * corrected nothing.
+ *
+ * The row and the dial cannot disagree if they cannot spell it separately. Takes the
+ * environment as an argument rather than reading `process.env` because its callers read
+ * from two different sources: a live process (adapters, api) and a parsed `.env` file on
+ * disk (the CLI, deciding what to write).
+ */
+export function hostChannelAccount(env: {
+  OPENSHIP_HOST_SSH_USER?: string | undefined;
+}): string {
+  return env.OPENSHIP_HOST_SSH_USER?.trim() || HOST_CHANNEL_DEFAULT_ACCOUNT;
+}
+
+/**
+ * Why a channel that ANSWERS is still not working: sshd took the connection and then
+ * refused the key.
+ *
+ * Its own state and its own copy because of #527. The port was open, so the health
+ * check called the channel healthy, and the first thing the operator saw was a generic
+ * "SSH credentials rejected" card on the This Server row — a row whose stored
+ * credentials this channel never uses. They spent a dozen messages moving key files
+ * between /tmp, /root and ~/.ssh, none of which anything reads.
+ *
+ * Both causes are named because the remedies differ and neither is observable from
+ * inside the container: we can read neither the host's sshd_config nor the target
+ * account's authorized_keys. Naming only the first sends every hardened host to audit
+ * a file that was already correct — the same mistake #490 made with firewalls.
+ */
+export const HOST_CHANNEL_AUTH_REJECTED =
+  "The host accepted the connection and then refused Openship's key. Either the key is " +
+  "no longer in the target account's `authorized_keys`, or sshd does not permit that " +
+  "account to log in at all (for a root channel, check `sshd -T | grep -i permitrootlogin`).";
+
+/**
+ * The same fault in one line, for a surface with a column rather than a paragraph — a
+ * `openship doctor` row. Shared rather than re-worded there, because a doctor row that
+ * disagrees with the banner about the same probe is worse than no row.
+ */
+export const HOST_CHANNEL_AUTH_REJECTED_SHORT =
+  "the host refused the channel key — re-authorize it, or permit that account to log in";
+
+/**
+ * The sentence that stops the credential hunt.
+ *
+ * Every surface that can show an auth failure ON the local row needs it, because the
+ * row displays `user@host` and offers an edit form, and both are lies for this
+ * connection. Said once, here, so the banner, the deploy-log throw and the doctor row
+ * cannot word it differently.
+ */
+export const HOST_CHANNEL_ROW_CREDENTIALS_UNUSED =
+  "The SSH credentials stored on this server are not used for this connection — the " +
+  `host channel has its own key, provisioned by \`${HOST_CHANNEL_PROVISION_COMMAND}\`.`;
+
+/**
  * The opt-out, stated as what it is.
  *
  * It used to sit one line under the fix as a co-equal "Or…", which made the warning

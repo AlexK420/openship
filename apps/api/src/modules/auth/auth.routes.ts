@@ -13,9 +13,11 @@
 
 import { Hono } from "hono";
 import { db, eq, repos, schema } from "@repo/db";
-import { env } from "../../config/env";
-import { auth, isSaasDeployment } from "../../lib/auth";
+import { env } from "@repo/platform/engine/config/env";
+import { auth, isSaasDeployment } from "@repo/platform/engine/lib/auth";
 import { normalizeMcpRedirectUri } from "../../lib/oauth-redirect";
+import { authMiddleware } from "../../middleware/auth";
+import * as organizationController from "./organization.controller";
 import { internalAuth } from "../../middleware/internal-auth";
 import { isLoopbackRequest } from "../../middleware/loopback-peer";
 import * as ctrl from "./auth.controller";
@@ -31,6 +33,21 @@ if (env.DEPLOY_MODE === "desktop") {
   authRoutes.get("/desktop-auth-poll", ctrl.desktopAuthPoll);
   authRoutes.get("/desktop-claim", ctrl.desktopClaim);
 }
+
+// Public by design: the invitation id is an unguessable bearer token and this
+// route returns only its claim-page projection. Better Auth's own invitation
+// lookup requires a session, which a brand-new invitee cannot have yet.
+authRoutes.get("/invitation-preview/:id", ctrl.invitationPreview);
+
+// Compatibility URLs use the same authorized operations as the SDK. The shared
+// invitation service owns the serialization boundary.
+authRoutes.post("/organization/invite-member", authMiddleware, organizationController.inviteMember);
+authRoutes.post("/organization/accept-invitation", authMiddleware, organizationController.acceptInvitation);
+authRoutes.post("/organization/reject-invitation", authMiddleware, organizationController.rejectInvitation);
+authRoutes.post("/organization/cancel-invitation", authMiddleware, organizationController.cancelInvitation);
+authRoutes.post("/organization/update-member-role", authMiddleware, organizationController.updateMemberRole);
+authRoutes.post("/organization/remove-member", authMiddleware, organizationController.removeMember);
+authRoutes.post("/organization/leave", authMiddleware, organizationController.leaveOrganization);
 
 // Invite-only sign-up guard (runs BEFORE the Better Auth catch-all). SaaS keeps
 // open public signup. On self-host the ONLY Better Auth signup allowed is the
@@ -61,11 +78,10 @@ authRoutes.on("POST", "/sign-up/*", async (c, next) => {
 authRoutes.get("/mcp/jwks", async (c) => {
   const { getMcpSigningKey } = await import("../../lib/mcp-oidc-keys");
   const key = await getMcpSigningKey();
-  return c.json(
-    { keys: [key.publicJwk] },
-    200,
-    { "Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*" },
-  );
+  return c.json({ keys: [key.publicJwk] }, 200, {
+    "Cache-Control": "public, max-age=3600",
+    "Access-Control-Allow-Origin": "*",
+  });
 });
 
 authRoutes.get("/mcp/userinfo", async (c) => {

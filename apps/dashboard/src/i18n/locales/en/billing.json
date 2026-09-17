@@ -3,6 +3,8 @@
     "title": "Capacity & usage",
     "subtitle": "Included capacity on your plan and how much you've used. Live figures sync from Openship Cloud.",
     "routes": "Free routes",
+    "runningServices": "Running services",
+    "projects": "Projects",
     "workspaces": "Workspaces",
     "unlimited": "Unlimited",
     "used": "used",
@@ -33,9 +35,10 @@
     "invoices": "Invoices"
   },
   "portal": {
-    "openButton": "Open Stripe Portal",
+    "openButton": "Open billing portal",
     "errorMissingUrl": "Portal URL missing from response",
-    "errorOpenFailed": "Failed to open Stripe portal"
+    "errorOpenFailed": "Failed to open billing portal",
+    "supportButton": "Contact support"
   },
   "unavailable": {
     "notConnected": {
@@ -65,7 +68,10 @@
     "loadError": "Failed to load plans",
     "genericError": "Something went wrong",
     "tryAgain": "Try again",
-    "checkoutError": "Failed to start checkout"
+    "checkoutError": "Failed to start checkout",
+    "changeViaSupport": "Contact support to change or cancel your current subscription.",
+    "billingUnavailable": "Purchases are not available for this account yet.",
+    "replacementNotice": "Changing your plan or billing interval starts a new cycle at the full selected price after payment. There is no automatic proration."
   },
   "pricing": {
     "custom": "Custom",
@@ -74,21 +80,25 @@
     "currentPlan": "Current plan",
     "contactSales": "Contact sales",
     "freeForever": "Free forever",
-    "upgrade": "Upgrade"
+    "upgrade": "Upgrade",
+    "billingInterval": "Billing interval",
+    "monthly": "Monthly",
+    "annual": "Yearly",
+    "billedAnnually": "Billed yearly"
   },
   "topups": {
     "loadError": "Failed to load top-up packs",
     "title": "Top up credits",
-    "description": "One-time credit packs charged via Stripe. Credits never expire and stack on top of your monthly allowance.",
+    "description": "One-time credit packs added to your cloud balance after payment.",
     "tryAgain": "Try again",
     "credits": "credits",
     "redirecting": "Redirecting…",
     "buy": "Buy",
     "empty": "No top-up packs available right now.",
     "receiptsTitle": "Recent top-ups",
-    "receiptsDescription": "Receipts are managed in Stripe — open the billing portal to view your invoice history and download receipts.",
+    "receiptsDescription": "View or request receipts for your credit purchases.",
     "opening": "Opening…",
-    "openPortal": "Open Stripe Portal",
+    "openPortal": "Open billing portal",
     "checkoutError": "Failed to start checkout",
     "portalError": "Failed to open billing portal"
   },
@@ -100,7 +110,6 @@
     "resetsInDay": "In {n} day",
     "resetsInDays": "In {n} days",
     "none": "—",
-    "upgradeToPro": "Upgrade to Pro",
     "recentActivity": "Recent activity",
     "last7Days": "Last 7 days",
     "viewFullUsage": "View full usage",
@@ -147,10 +156,22 @@
       "empty": "No usage in the selected range."
     },
     "resources": {
-      "cpu": { "label": "CPU time", "units": "vCPU-hours" },
-      "memory": { "label": "Memory", "units": "GB-hours" },
-      "disk": { "label": "Disk IO", "units": "GB" },
-      "network": { "label": "Network", "units": "GB" }
+      "cpu": {
+        "label": "CPU time",
+        "units": "vCPU-hours"
+      },
+      "memory": {
+        "label": "Memory",
+        "units": "GB-hours"
+      },
+      "disk": {
+        "label": "Disk IO",
+        "units": "GB"
+      },
+      "network": {
+        "label": "Network",
+        "units": "GB"
+      }
     },
     "toolbar": {
       "workspace": "Workspace",
@@ -188,14 +209,37 @@
       "incomplete_expired": "Expired",
       "unpaid": "Unpaid",
       "paused": "Paused"
-    }
+    },
+    "includedTitle": "What's included",
+    "perYear": "${price}/yr"
   },
   "paymentPanel": {
     "title": "Payment method",
-    "description": "Cards, bank accounts, and billing details are managed in the Stripe Customer Portal. Open the portal to add, remove, or update your payment methods."
+    "description": "Manage your payment methods and billing details."
   },
   "invoicesPanel": {
     "title": "Invoices",
-    "description": "Invoices and receipts live in the Stripe Customer Portal. Open the portal to view your billing history and download PDF invoices."
+    "description": "View or request your billing history and invoices."
+  },
+  "checkout": {
+    "checking": "Refreshing your Cloud plan and balance. Payment may take a moment to process.",
+    "active": "Your Cloud plan is active.",
+    "pending": "Your payment may still be processing. Refresh this page to check your plan and balance. Contact support if a completed payment is missing.",
+    "support": "Contact support"
+  },
+  "subscription": {
+    "title": "Subscription",
+    "renewsOn": "Renews on {date}",
+    "endsOn": "Renewal stopped. Your subscription ends on {date}.",
+    "endsAtPeriodEnd": "Renewal stopped. Your subscription ends at the end of the paid period.",
+    "renewalEnabled": "Automatic renewal is enabled.",
+    "ended": "Subscription ended. Choose a plan to subscribe again.",
+    "billedMonthly": "Billed monthly",
+    "cancel": "Cancel subscription",
+    "resume": "Resume renewal",
+    "cancelNotice": "Renewal will stop at the end of your paid period. Your subscription stays in place until then.",
+    "confirmCancel": "Stop renewal",
+    "keepPlan": "Keep subscription",
+    "error": "Unable to update your subscription. Please retry."
   }
 }

@@ -27,7 +27,7 @@ import { assertInstanceAdmin } from "../../../middleware/instance-admin";
 import { runPreflight, type DomainChoice } from "./preflight.service";
 import {
   migrateInstanceToServer,
-  MigrationPreflightFailedError,
+  ServerMigrationUnavailableError,
 } from "./migrate-instance.service";
 import {
   migrateInstanceToCloud,
@@ -111,10 +111,8 @@ export async function preflight(c: Context) {
  *
  * Body: { serverId, domain }
  *
- * Runs preflight, ensures the openship project row, dumps + restores
- * the DB to the remote, flips teamMode. Synchronous (not SSE) for v1;
- * the heavy lifting (deploy pipeline) is driven by the dashboard as a
- * follow-up step using the standard /api/deployments/:id/build SSE.
+ * Whole-instance remote cutover is unavailable; returns a clear 501 before
+ * creating a project, exporting credentials, or modifying the target.
  */
 export async function start(c: Context) {
   const ctx = getRequestContext(c);
@@ -154,8 +152,8 @@ export async function start(c: Context) {
       migrationTargetUrl: result.migrationTargetUrl,
     });
   } catch (err) {
-    if (err instanceof MigrationPreflightFailedError) {
-      return c.json({ error: err.message, checks: err.checks }, 412);
+    if (err instanceof ServerMigrationUnavailableError) {
+      return c.json({ error: err.message, code: err.code }, 501);
     }
     if (err instanceof OpenshipReleaseDistMissingError) {
       return c.json({ error: err.message, code: err.code }, 412);

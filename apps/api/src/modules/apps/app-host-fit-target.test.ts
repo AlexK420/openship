@@ -18,7 +18,7 @@ const h = vi.hoisted(() => ({
   rows: {} as Record<string, { id: string; isLocal: boolean } | undefined>,
 }));
 
-vi.mock("./catalog-source", () => ({
+vi.mock("@repo/platform/engine/modules/apps/catalog-source", () => ({
   getTemplateForOrg: async (_org: string, id: string) => ({
     id,
     minResources: { memoryMb: 2048 },
@@ -41,11 +41,11 @@ vi.mock("@repo/db", async (importOriginal) => ({
 
 // The same predicate the deploy path uses; keyed off the flag here so the test
 // doesn't depend on loopback resolution or env.
-vi.mock("../../lib/box-org", () => ({
+vi.mock("@repo/platform/engine/lib/box-org", () => ({
   isLocalHostRow: async (row: { isLocal?: boolean }) => Boolean(row?.isLocal),
 }));
 
-vi.mock("../../lib/host-capacity", () => ({
+vi.mock("@repo/platform/engine/lib/host-capacity", () => ({
   getTrustedHostCapacity: async (
     serverId: string | undefined,
     _org: string,
@@ -56,7 +56,7 @@ vi.mock("../../lib/host-capacity", () => ({
   },
 }));
 
-const { getAppHostFit } = await import("./app-install.service");
+const { getAppHostFit } = await import("@repo/platform/engine/modules/apps/app-install.service");
 
 const ctx = { userId: "u1", organizationId: "org1" } as never;
 const fit = (target: { deployTarget?: string; serverId?: string }) =>

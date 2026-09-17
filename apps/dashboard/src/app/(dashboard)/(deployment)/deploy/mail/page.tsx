@@ -43,6 +43,7 @@ import {
   type WebmailTargetOption,
 } from "@/lib/api";
 import { getApiErrorCode, getApiErrorMessage } from "@/lib/api/client";
+import { mailHostname } from "@repo/core";
 
 /** The API's code for "this webmail predates the catalog app". */
 const LEGACY_WEBMAIL_CODE = "LEGACY_WEBMAIL";
@@ -94,7 +95,7 @@ export default function DeployMailPage() {
         const existing = st.webmail?.hostname;
         if (existing) setDomain(existing);
         else if (st.webmail?.routingUnknown) setDomain("");
-        else if (st.domain) setDomain(`mail.${st.domain}`);
+        else if (st.domain) setDomain(mailHostname(st.domain));
         if (st.webmail?.legacy) setReplacing(true);
       }
       setTargets(tg.options);
@@ -121,7 +122,7 @@ export default function DeployMailPage() {
     return true;
   }, [domain, selectedTarget]);
 
-  const mailHostnameFromStatus = status?.domain ? `mail.${status.domain}` : "";
+  const mailHostnameFromStatus = status?.domain ? mailHostname(status.domain) : "";
   // When cloud is chosen AND the chosen domain is the mail server's own
   // `mail.<install>` subdomain, the deploy uses the proxy variant: the
   // workload runs on Opshcloud at *.opsh.io, the mail VPS proxies the
@@ -129,6 +130,14 @@ export default function DeployMailPage() {
   // it. Otherwise both paths follow normal preflight/DNS expectations.
   const isCloudProxyVariant =
     selectedTarget?.kind === "opshcloud" &&
+    !!mailHostnameFromStatus &&
+    domain.toLowerCase() === mailHostnameFromStatus;
+  // The mail server's own hostname, deployed on the mail server itself: it already
+  // resolves here and already has a certificate, so there is nothing for the operator
+  // to set up. Worth saying, because this used to be refused (#566) and the hint that
+  // asks for DNS reads as work that isn't needed.
+  const isMailHostOnMailServer =
+    selectedTarget?.kind === "mail" &&
     !!mailHostnameFromStatus &&
     domain.toLowerCase() === mailHostnameFromStatus;
 
@@ -190,7 +199,7 @@ export default function DeployMailPage() {
   // loads targets) - it drives both the proxy-variant detection and the
   // submit-button disabled state, so it lives there rather than here.
   const domainPlaceholder = status?.domain
-    ? `mail.${status.domain}`
+    ? mailHostname(status.domain)
     : "mail.example.com";
 
   return (
@@ -270,9 +279,11 @@ export default function DeployMailPage() {
             hint={
               isCloudProxyVariant
                 ? tm.domainHintProxy
-                : selectedTarget?.kind === "opshcloud"
-                  ? tm.domainHintCloud
-                  : tm.domainHintDefault
+                : isMailHostOnMailServer
+                  ? tm.domainHintMailHost
+                  : selectedTarget?.kind === "opshcloud"
+                    ? tm.domainHintCloud
+                    : tm.domainHintDefault
             }
           >
             <input

@@ -27,12 +27,16 @@ import type { TcpProbeResult } from "./reachability";
 
 const net = vi.hoisted(() => ({
   probe: vi.fn(async (): Promise<TcpProbeResult> => ({ ok: true })),
+  /** The auth handshake behind `verifyHostChannelAuth`. Default: the key is accepted. */
+  connect: vi.fn(async () => ({ end: () => undefined })),
 }));
 
 vi.mock("./reachability", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./reachability")>()),
   probeTcpDetailed: net.probe,
 }));
+
+vi.mock("./ssh-client", () => ({ connectSshClient: net.connect }));
 
 const ENV_KEYS = [
   "OPENSHIP_HOST_CONTROL",
@@ -319,6 +323,101 @@ describe("hostChannelHealth diagnosis", () => {
     net.probe.mockClear();
     expect(await hostChannelHealth(100)).toMatchObject({ ok: true, code: "not_applicable" });
     expect(net.probe).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #527: an open port is not a working channel.
+ *
+ * The reporter's box answered on :22 and then refused the key — authorized for the wrong
+ * account by a pre-0.6.2 install, or on a host whose sshd permits that account no login.
+ * Every layer keyed on the TCP probe, so the channel reported `ok`, the local row's badge
+ * read healthy, and the first thing the operator saw was a generic "SSH credentials
+ * rejected" card pointing at credentials this channel never reads.
+ */
+describe("hostChannelHealth — the auth half (#527)", () => {
+  /** A provisioned channel whose key exists on disk, so the auth probe has one to try. */
+  async function healthWithKey() {
+    const dir = scratch();
+    const keyPath = join(dir, "id_ed25519");
+    writeFileSync(keyPath, "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n");
+    channelWithKey(keyPath);
+    net.probe.mockResolvedValue({ ok: true });
+    const { hostChannelHealth } = await load();
+    return hostChannelHealth(100);
+  }
+
+  afterEach(() => {
+    net.connect.mockReset();
+    net.connect.mockResolvedValue({ end: () => undefined });
+  });
+
+  it("reports auth_rejected when the port answers and the key is refused", async () => {
+    net.connect.mockRejectedValue(
+      new Error("SSH key authentication failed (All configured authentication methods failed)"),
+    );
+
+    const h = await healthWithKey();
+
+    expect(h).toMatchObject({ ok: false, code: "auth_rejected" });
+    // Its own state, not `unreachable`: the remedy is a key, not a firewall, and offering
+    // a ufw rule here is the mistake #490 was fixed to stop making.
+    expect(h.rule).toBeUndefined();
+    expect(h.hint).toBeTruthy();
+  });
+
+  it("still reports ok when the key is accepted", async () => {
+    expect(await healthWithKey()).toMatchObject({ ok: true, code: "ok" });
+  });
+
+  it("does not downgrade a channel over a CONNECT failure the probe already described", async () => {
+    // Only an auth rejection is a verdict here. Re-reporting a transport fault would
+    // overwrite `explainDialFailure`'s specific diagnosis with a vaguer one.
+    net.connect.mockRejectedValue(new Error("Timed out while waiting for handshake"));
+    expect(await healthWithKey()).toMatchObject({ ok: true, code: "ok" });
+  });
+
+  it("memoizes the verdict, so a dashboard poll costs one handshake and not one per load", async () => {
+    const { hostChannelHealth } = await load();
+    const dir = scratch();
+    const keyPath = join(dir, "id_ed25519");
+    writeFileSync(keyPath, "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n");
+    channelWithKey(keyPath);
+    net.probe.mockResolvedValue({ ok: true });
+
+    await hostChannelHealth(100);
+    await hostChannelHealth(100);
+
+    expect(net.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidateHostChannelAuth forces the next call to ask again", async () => {
+    const { hostChannelHealth, invalidateHostChannelAuth } = await load();
+    const dir = scratch();
+    const keyPath = join(dir, "id_ed25519");
+    writeFileSync(keyPath, "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n");
+    channelWithKey(keyPath);
+    net.probe.mockResolvedValue({ ok: true });
+
+    await hostChannelHealth(100);
+    invalidateHostChannelAuth();
+    await hostChannelHealth(100);
+
+    // The reason this exists: a live auth failure must beat a cached "it worked", or the
+    // diagnosis contradicts the error being held and #527's card comes back (see
+    // server-check.controller).
+    expect(net.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks nothing when there is no key to try", async () => {
+    clearEnv();
+    process.env.OPENSHIP_IN_CONTAINER = "true";
+    process.env.OPENSHIP_HOST_SSH_HOST = "host.docker.internal";
+    net.probe.mockResolvedValue({ ok: true });
+    const { hostChannelHealth } = await load();
+
+    expect(await hostChannelHealth(100)).toMatchObject({ ok: true, code: "ok" });
+    expect(net.connect).not.toHaveBeenCalled();
   });
 });
 

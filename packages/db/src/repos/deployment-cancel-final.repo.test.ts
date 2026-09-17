@@ -1,3 +1,4 @@
+import { createEncryption } from "../encryption";
 import { describe, it, expect } from "vitest";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -25,7 +26,7 @@ async function freshRepo() {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
   await client.exec("SET session_replication_role = replica;"); // skip FK seeding
-  const repo = createDeploymentRepo(db);
+  const repo = createDeploymentRepo(db, createEncryption("repository-test-secret"));
   await db.insert(deployment).values({
     id: "d1",
     projectId: "p1",
@@ -74,5 +75,37 @@ describe("updateStatus — a cancelled row is final", () => {
     const { repo } = await freshRepo();
 
     expect(await repo.updateStatus("nope", "ready")).toBe(false);
+  });
+});
+
+describe("cancelInFlight — cancellation admission is atomic", () => {
+  it("cancels an in-flight deployment and pins that outcome", async () => {
+    const { db, repo } = await freshRepo();
+
+    expect(await repo.cancelInFlight("d1")).toBe(true);
+    expect(await repo.updateStatus("d1", "ready")).toBe(false);
+    expect(await statusOf(db)).toBe("cancelled");
+  });
+
+  it("does not cancel a deployment that became ready first", async () => {
+    const { db, repo } = await freshRepo();
+    expect(await repo.updateStatus("d1", "ready")).toBe(true);
+
+    expect(await repo.cancelInFlight("d1")).toBe(false);
+    expect(await statusOf(db)).toBe("ready");
+  });
+
+  it("persists the record-only policy in the same atomic transition", async () => {
+    const { db, repo } = await freshRepo();
+
+    expect(
+      await repo.cancelInFlight("d1", {
+        meta: { cancellation: { keepProvisioned: true } },
+      }),
+    ).toBe(true);
+
+    const row = await db.query.deployment.findFirst({ where: eq(deployment.id, "d1") });
+    expect(row?.status).toBe("cancelled");
+    expect(row?.meta).toEqual({ cancellation: { keepProvisioned: true } });
   });
 });

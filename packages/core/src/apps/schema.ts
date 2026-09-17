@@ -79,6 +79,29 @@ const serviceSpec = z.object({
   healthcheck: z.unknown().optional(),
   restart: z.enum(["no", "always", "on-failure", "unless-stopped"]).optional(),
   command: z.string().optional(),
+  /**
+   * Structured argv, passed through as the container Cmd with NO `sh -c` wrap.
+   * Wins over `command` when both are set.
+   *
+   * `command` is convenient but it is a SHELL string, so the container's argv
+   * becomes ["sh","-c",cmd] — and an image whose entrypoint rewrites argv rather
+   * than `exec "$@"` then sees the wrong thing. MinIO is the worked example: its
+   * entrypoint prepends `minio` unless argv[0] already is, so a `command` turned
+   * into `minio sh -c "server /data"` and the container exited with "'sh' is not
+   * a minio sub-command" on every boot. There is no command string that fixes
+   * that; the argv has to arrive unwrapped. Use `command` when you need a shell
+   * (`a && b`), `commandArgv` when the image needs exact argv.
+   */
+  commandArgv: z.array(z.string()).optional(),
+  /**
+   * How long Docker waits after SIGTERM before SIGKILL (compose duration, e.g.
+   * "10m"). The engine has always honored `advanced.stopGracePeriod`; only the
+   * template could not ask for it, which silently capped every app at Docker's
+   * 10s default. That is not a tuning knob for an app whose clean shutdown does
+   * a final checkpoint and whose boot lease is a lockfile — being killed
+   * mid-checkpoint leaves the lock behind and the next boot refuses to start.
+   */
+  stopGracePeriod: z.string().optional(),
 });
 
 const configField = z.object({
@@ -279,6 +302,20 @@ export const appTemplateSchema = z.object({
       cpuCores: z.number().positive().optional(),
     })
     .optional(),
+  /**
+   * Trust mark: official open-source image plus a reviewable pipeline.
+   *
+   * A claim about PROVENANCE, not about whether we got the app running. Booting a
+   * template proves it works; it does not make its publisher vouched for. Set it
+   * only when EVERY image is published by the project the app actually is, or is
+   * a composition upstream itself documents (Ghost + MySQL, Supabase's own
+   * compose, Convex's backend/dashboard pair).
+   *
+   * Leave it off when WE picked a third-party companion the upstream project
+   * neither ships nor endorses — ClickHouse + ch-ui, Kafka + kafbat-ui,
+   * MongoDB + mongo-express, Valkey + RedisInsight — or when the publisher is a
+   * single maintainer whose build pipeline cannot be reviewed (neond).
+   */
   verified: z.boolean().optional(),
   // Hidden from the browsable catalog while staying fully installable — for an app
   // reached through another app's wizard rather than the grid. NOT `available:

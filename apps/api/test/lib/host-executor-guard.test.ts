@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -55,17 +55,20 @@ describe("host-control executor guard", () => {
  * that has quietly stopped guarding anything).
  */
 describe("createHostExecutor has one owner", () => {
-  const OWNER = "src/lib/ssh-manager.ts";
+  const OWNER = "packages/platform/src/engine/lib/ssh-manager.ts";
 
   it(`only ${OWNER} constructs the host executor`, () => {
-    const root = fileURLToPath(new URL("../../", import.meta.url));
-    const files = execFileSync("git", ["ls-files", "--", "src"], { cwd: root, encoding: "utf8" })
-      .split("\n")
-      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
-    expect(files.length, "no sources listed — the glob or cwd is wrong").toBeGreaterThan(100);
+    const root = fileURLToPath(new URL("../../../../", import.meta.url));
+    // Scan the current source tree, including unstaged moves, using Node alone.
+    const files = ["apps/api/src", "packages/platform/src/engine"].flatMap((directory) =>
+      readdirSync(join(root, directory), { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts"))
+        .map((entry) => relative(root, join(entry.parentPath, entry.name)).split(sep).join("/")),
+    );
+    expect(files.length, "no sources listed — source directories are wrong").toBeGreaterThan(100);
 
     const callers = files.filter((f) =>
-      /\bcreateHostExecutor\(\s*\)/.test(code(readFileSync(`${root}${f}`, "utf8"))),
+      /\bcreateHostExecutor\(\s*\)/.test(code(readFileSync(join(root, f), "utf8"))),
     );
     expect(callers.sort()).toEqual([OWNER]);
   });
@@ -85,7 +88,7 @@ describe("createHostExecutor has one owner", () => {
  */
 describe("target resolution never registers this box", () => {
   it("deployment-runtime.ts reads the row, it does not ensure it", () => {
-    const src = code(read("../../src/lib/deployment-runtime.ts"));
+    const src = code(read("../../../../packages/platform/src/engine/lib/deployment-runtime.ts"));
     expect(src).toContain("findLocalServer(");
     expect(src, "ensureLocalServer() on a resolve path — use findLocalServer()").not.toContain(
       "ensureLocalServer(",
@@ -106,8 +109,14 @@ describe("target resolution never registers this box", () => {
  * the call site names `loopback-port`, and matching that would pass for the wrong reason.
  */
 const PIPELINES = [
-  "../../src/modules/deployments/build-pipeline.ts",
-  "../../src/modules/deployments/compose/deploy.service.ts",
+  {
+    file: "../../../../packages/platform/src/engine/modules/deployments/build-pipeline.ts",
+    executionScope: "async function executeBuildAndDeploy",
+  },
+  {
+    file: "../../../../packages/platform/src/engine/modules/deployments/compose/deploy.service.ts",
+    executionScope: "async function deployComposeServicesUnlocked",
+  },
 ];
 
 /** Drop block and line comments so an index comparison reads CODE positions. */
@@ -116,9 +125,16 @@ function code(src: string): string {
 }
 
 describe("both deploy pipelines announce a demoted host channel", () => {
-  for (const rel of PIPELINES) {
-    it(`${rel} emits the notice before any host touchpoint, on every route strategy`, () => {
-      const src = code(read(rel));
+  for (const { file, executionScope } of PIPELINES) {
+    it(`${file} emits the notice before any host touchpoint, on every route strategy`, () => {
+      const fileSource = code(read(file));
+      const scope = fileSource.indexOf(executionScope);
+      expect(scope, `${executionScope} is missing`).toBeGreaterThan(-1);
+      // Scope the ordering check to the function that actually performs the
+      // deployment. The Compose public wrapper may inspect routeStrategy to choose
+      // the target-wide allocation lock, but it performs no host operation; the
+      // unlocked implementation remains the one place that fans out to them.
+      const src = fileSource.slice(scope);
       const notice = src.indexOf("hostChannelDeployNotice(");
       expect(notice, "hostChannelDeployNotice() is never called").toBeGreaterThan(-1);
       // Before the port allocation and the routing preflight, whose own hints are the

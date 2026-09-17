@@ -118,6 +118,7 @@ export type LocalizedString = string | { [locale: string]: string };
 /** One resolved connection value (URL or generated key) for the app Overview. */
 export interface AppConnectionOutput {
   id: string;
+  sourceServiceId?: string;
   label: string;
   help?: string;
   secret: boolean;

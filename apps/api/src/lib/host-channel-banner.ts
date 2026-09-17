@@ -7,7 +7,7 @@ import {
   HOST_CHANNEL_UNAFFECTED,
   wrapText,
 } from "@repo/core";
-import { env } from "../config/env";
+import { env } from "@repo/platform/engine/config/env";
 
 /**
  * Boot-time diagnosis of the container→host SSH channel (#490).
@@ -28,6 +28,7 @@ const TITLES: Partial<Record<HostChannelHealth["code"], string>> = {
   unreachable: "HOST CONTROL UNREACHABLE",
   not_configured: "HOST CONTROL NOT CONFIGURED",
   key_unreadable: "HOST CONTROL KEY UNREADABLE",
+  auth_rejected: "HOST CONTROL KEY REFUSED",
 };
 
 /** One blocked item, wrapped with a hanging indent so a long one still reads as a
@@ -68,7 +69,25 @@ export async function reportHostChannelAtBoot(
 
   // `ok` covers a bare install (not_applicable) as well as a working channel.
   // `disabled` is a deliberate --no-host-control opt-out: don't nag every restart.
-  if (health.ok || health.code === "disabled") return health.code;
+  if (health.ok || health.code === "disabled") {
+    // One narrow advisory on an otherwise healthy channel: it execs fine but refuses TCP
+    // forwards, which breaks exactly one thing — the deploy-time readiness probe, whose
+    // published-port candidate can only be dialed from the host. Said here so an operator
+    // learns it BEFORE a deploy rather than from a health check that falls back to `curl`
+    // (or, on an install predating that fallback, from "the app never answered" about an
+    // app that was answering all along — GH-583).
+    //
+    // Deliberately not the full !!! banner: nothing is broken yet, and the block above
+    // owns the "this box cannot drive its host" story.
+    if (health.forwarding === "blocked") {
+      deps.log(
+        `[host-channel] ${health.target ?? "the host channel"} refuses TCP forwarding, so ` +
+          `deploy health checks fall back to \`curl\` on the host (and are skipped if it ` +
+          `has none). Re-run \`openship up\` to re-provision the channel with forwarding.`,
+      );
+    }
+    return health.code;
+  }
 
   const title = TITLES[health.code] ?? "HOST CONTROL UNAVAILABLE";
   const headline = health.target ? `${title} — ${health.target}` : title;

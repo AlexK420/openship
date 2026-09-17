@@ -16,7 +16,7 @@ vi.mock("@repo/db", async (importOriginal) => {
   };
 });
 
-import { enrichProject } from "../../../src/modules/projects/project-crud.service";
+import { enrichProject } from "@repo/platform/engine/modules/projects/project-crud.service";
 
 const baseProject = {
   id: "proj_1",
@@ -43,7 +43,7 @@ describe("enrichProject serverId coalesce", () => {
 
   it("uses the deploy meta serverId when present (column ignored)", async () => {
     deploymentRepo.findById.mockResolvedValue({
-      id: "dep_1",
+      id: "dep_1", projectId: "proj_1", organizationId: "org_1",
       meta: { deployTarget: "server", serverId: "srv_meta" },
       version: 2,
       status: "success",
@@ -64,7 +64,7 @@ describe("enrichProject serverId coalesce", () => {
 
   it("coalesces to the durable column when meta dropped serverId", async () => {
     deploymentRepo.findById.mockResolvedValue({
-      id: "dep_1",
+      id: "dep_1", projectId: "proj_1", organizationId: "org_1",
       meta: { deployTarget: "server" },
       version: 3,
       status: "success",
@@ -87,7 +87,7 @@ describe("enrichProject serverId coalesce", () => {
   // that server's name/sshHost. See test/modules/deployments/server-name-org-scope.test.ts.
   it("leaves serverName null for a serverId outside the project's org", async () => {
     deploymentRepo.findById.mockResolvedValue({
-      id: "dep_1",
+      id: "dep_1", projectId: "proj_1", organizationId: "org_1",
       meta: { deployTarget: "server", serverId: "srv_other_org" },
       version: 2,
       status: "success",
@@ -160,7 +160,7 @@ describe("enrichProject deployTarget derivation", () => {
     // The silent failure this replaced: a cloud project whose redeploy wrote no
     // deployTarget read as null, so isCloud went false and the card swapped the metered
     // free-tier ceilings for "no limits", while every cloud-only gate switched off.
-    deploymentRepo.findById.mockResolvedValue({ id: "dep_1", meta: {}, version: 4, status: "success" });
+    deploymentRepo.findById.mockResolvedValue({ id: "dep_1", projectId: "proj_1", organizationId: "org_1", meta: {}, version: 4, status: "success" });
 
     const enriched = await enrichProject({
       ...baseProject,
@@ -176,7 +176,7 @@ describe("enrichProject deployTarget derivation", () => {
     // A cloud-bound project cannot be reported as running on a server, whatever an older
     // deployment's snapshot says — the bindings are the durable record, meta is not.
     deploymentRepo.findById.mockResolvedValue({
-      id: "dep_1",
+      id: "dep_1", projectId: "proj_1", organizationId: "org_1",
       meta: { deployTarget: "server", serverId: null },
       version: 5,
       status: "success",
@@ -193,7 +193,7 @@ describe("enrichProject deployTarget derivation", () => {
   });
 
   it("reports local for a deployed project bound to neither", async () => {
-    deploymentRepo.findById.mockResolvedValue({ id: "dep_1", meta: {}, version: 2, status: "success" });
+    deploymentRepo.findById.mockResolvedValue({ id: "dep_1", projectId: "proj_1", organizationId: "org_1", meta: {}, version: 2, status: "success" });
 
     const enriched = await enrichProject({
       ...baseProject,
@@ -216,7 +216,7 @@ describe("enrichProject deployTarget derivation", () => {
       [null, null, null],
     ] as const) {
       deploymentRepo.findById.mockResolvedValue({
-        id: "dep_1",
+        id: "dep_1", projectId: "proj_1", organizationId: "org_1",
         meta: metaServerId ? { serverId: metaServerId } : {},
         version: 1,
         status: "success",

@@ -19,8 +19,8 @@
 
 import type { Context } from "hono";
 import { getRequestContext } from "../../lib/request-context";
-import { auth } from "../../lib/auth";
-import { issueNamespaceToken } from "../../lib/openship-cloud";
+import { auth } from "@repo/platform/engine/lib/auth";
+import { issueNamespaceToken } from "@repo/platform/engine/lib/openship-cloud";
 import {
   exchangeHandoffCode,
   validateDesktopRedirect,
@@ -30,15 +30,15 @@ import {
   findHandoffCodeByState,
   mintSession,
 } from "../../lib/cloud-auth-proxy";
-import { runCloudPreflight } from "../../lib/cloud-preflight";
-import { cloudRuntimeTarget } from "../../config/env";
-import * as githubAuth from "../github/github.auth";
-import { canMintInstallationToken } from "../github/github-access";
+import { runCloudPreflight } from "@repo/platform/engine/lib/cloud-preflight";
+import { cloudRuntimeTarget } from "@repo/platform/engine/config/env";
+import * as githubAuth from "@repo/platform/engine/modules/github/github.auth";
+import { canMintInstallationToken } from "@repo/platform/engine/modules/github/github-access";
 import {
   proxyCloudAnalytics,
   CloudAnalyticsForbiddenError,
   type CloudAnalyticsOperation,
-} from "./cloud-analytics.service";
+} from "@repo/platform/engine/modules/cloud/cloud-analytics.service";
 import { revokeCloudSession } from "./cloud-session.service";
 import {
   syncCloudEdgeProxy,
@@ -74,7 +74,7 @@ import {
   mintOrgInstallationToken,
   oauthBridgeStore,
   OAUTH_BRIDGE_TTL_MS,
-} from "./cloud-github.service";
+} from "@repo/platform/engine/modules/cloud/cloud-github.service";
 
 /** Coerce a thrown Oblien SDK error into an HTTP response shape. */
 function oblienErrorResponse(c: Context, err: unknown, fallback: string) {
@@ -1020,7 +1020,7 @@ export async function githubOauthSuccess(c: Context) {
  */
 export async function githubInstallUrl(c: Context) {
   const ctx = getRequestContext(c);
-  const { url, state } = await buildOrgScopedInstallUrl(ctx.organizationId);
+  const { url, state } = await buildOrgScopedInstallUrl(ctx.userId, ctx.organizationId);
   return c.json({ data: { url, state } });
 }
 
@@ -1030,9 +1030,10 @@ export async function githubInstallUrl(c: Context) {
  * Public endpoint (no session auth) — GitHub redirects the user's browser
  * here AFTER they approve the App installation on github.com. We use the
  * one-time state token (issued by githubInstallUrl and embedded into the
- * install URL) to recover the SaaS userId that started the flow, then
- * use the App-JWT (which only the SaaS holds) to read the installation
- * details and write the gitInstallation row. NO OAuth identity required.
+ * install URL) to recover the SaaS userId + workspace that started the flow.
+ * Attribution then requires that user's GitHub token and the Openship App JWT
+ * to resolve the same installation before the state and workspace claim are
+ * committed atomically. No browser session is trusted on this callback.
  */
 export async function githubInstallCallback(c: Context) {
   const result = await attributeGithubInstall({
@@ -1071,8 +1072,16 @@ export async function githubInstallCallback(c: Context) {
       return c.html(
         renderCallbackHtml(
           "Installation requested",
-          "An organization admin needs to approve the install. The Openship App will activate once approved.",
+          "An organization admin needs to approve the install. After approval, return to Openship Settings and choose Install GitHub App again to complete the verified workspace connection.",
         ),
+      );
+    case "forbidden":
+      return c.html(
+        renderCallbackHtml(
+          "Installation not authorized",
+          result.message,
+        ),
+        403,
       );
     case "ok":
       return c.html(

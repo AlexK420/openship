@@ -1,25 +1,28 @@
+import type { ExecutionContext, PermissionInput } from "@repo/platform";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 /**
  * `projectCount` is one field with one meaning, and BOTH server reads must carry it.
  *
  * The detail view spends it on two decisions the list already makes: whether an
- * absent edge is an issue or merely an offer, and how many projects "Remove server"
- * unbinds. Neither can be made from `deleteServer`'s `unboundProjects`, which is
- * only known once the response arrives — after the row is gone. So what's pinned
- * here is that `GET /servers/:id` reports the SAME number under the SAME key as
+ * absent edge is an issue or merely an offer, and how many workloads "Remove server"
+ * is about to take with it. The second one is why `deleteServer` no longer reports an
+ * `unboundProjects` count: every bound workload is now torn down before the row goes,
+ * so nothing is left unbound, and the number the confirm needs has to come from a read
+ * — this field, and the itemised `GET /servers/:id/deletion-preview` beside it. So what
+ * is pinned here is that `GET /servers/:id` reports the SAME number under the SAME key as
  * `GET /servers`, since a detail page reading a second name (or a silent absence
  * that a `?? 0` fallback turns into "no projects here") would quietly disagree with
  * the fleet view about whether this box hosts anything.
  */
 
 const h = vi.hoisted(() => ({
-  assert: vi.fn(async () => {}),
+  assert: vi.fn(async (_ctx: ExecutionContext, _input: PermissionInput) => {}),
   counts: vi.fn(async () => ({ srv1: 3, srv2: 1 }) as Record<string, number>),
   rows: [
-    { id: "srv1", name: "web-1", isLocal: false, sshHost: "203.0.113.10", sshPort: 22, sshUser: "root", createdAt: "2026-01-01" },
-    { id: "srv2", name: "web-2", isLocal: false, sshHost: "203.0.113.11", sshPort: 22, sshUser: "root", createdAt: "2026-01-01" },
-    { id: "srv3", name: "web-3", isLocal: false, sshHost: "203.0.113.12", sshPort: 22, sshUser: "root", createdAt: "2026-01-01" },
+    { id: "srv1", name: "web-1", isLocal: false, sshHost: "203.0.113.10", sshPort: 22, sshUser: "root", createdAt: "2026-01-01", sshAuthMethod: null, sshKeyPath: null, sshPrivateKey: null, sshJumpHost: null, sshArgs: null },
+    { id: "srv2", name: "web-2", isLocal: false, sshHost: "203.0.113.11", sshPort: 22, sshUser: "root", createdAt: "2026-01-01", sshAuthMethod: null, sshKeyPath: null, sshPrivateKey: null, sshJumpHost: null, sshArgs: null },
+    { id: "srv3", name: "web-3", isLocal: false, sshHost: "203.0.113.12", sshPort: 22, sshUser: "root", createdAt: "2026-01-01", sshAuthMethod: null, sshKeyPath: null, sshPrivateKey: null, sshJumpHost: null, sshArgs: null },
   ],
 }));
 
@@ -33,16 +36,20 @@ vi.mock("@repo/db", () => ({
   },
 }));
 
-vi.mock("@repo/adapters", () => ({ hostControlDisabled: () => false }));
+vi.mock("@repo/adapters", async (original) => ({ ...(await original<Record<string, unknown>>()), hostControlDisabled: () => false }));
 vi.mock("../../lib/permission", () => ({ permission: { assert: h.assert } }));
+vi.mock("../../lib/operation-context", () => ({
+  operationContext: () => ({ userId: "u1", organizationId: "org1", role: "owner" }),
+  operationData: async (_c: unknown, work: Promise<{ data: unknown }>) => (await work).data,
+}));
 vi.mock("../../lib/request-context", () => ({
   getRequestContext: () => ({ userId: "u1", organizationId: "org1", role: "owner" }),
 }));
-vi.mock("@/lib/startup/self-server", () => ({
+vi.mock("@repo/platform/engine/lib/startup/self-server", () => ({
   ensureLocalServer: vi.fn(async () => null),
   localServerHostChannel: vi.fn(async () => null),
 }));
-vi.mock("@/lib/geo-ip", () => ({ primeGeo: vi.fn(async () => {}), countryForIp: () => null }));
+vi.mock("@repo/platform/engine/lib/geo-ip", () => ({ primeGeo: vi.fn(async () => {}), countryForIp: () => null }));
 
 import { getServer, listServers } from "./servers.controller";
 
@@ -107,4 +114,18 @@ describe("GET /servers/:id carries projectCount", () => {
     await expect(getServer(c)).rejects.toThrow();
     expect(h.counts).not.toHaveBeenCalled();
   });
+});
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/authorization", () => ({
+  authorization: { authorize: async (ctx: ExecutionContext, input: PermissionInput) => { await h.assert(ctx, input); return ctx; } },
+}));
+
+// Keep the controller unit focused on this real shared operation group.
+vi.mock("@repo/platform/engine/lib/platform", async () => {
+  const { createServerOperations } = await import("@repo/platform");
+  const { serverDependencies } = await import("@repo/platform/engine/modules/system/server.operations");
+  const { authorization } = await import("@repo/platform/engine/lib/authorization");
+  const servers = createServerOperations(authorization, serverDependencies);
+  return { getPlatformKernel: () => ({ servers }) };
 });

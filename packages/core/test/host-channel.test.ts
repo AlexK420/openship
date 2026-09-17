@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   explainHostChannelCause,
+  hostChannelAccount,
+  HOST_CHANNEL_DEFAULT_ACCOUNT,
   hostFirewallRule,
   hostFirewallRuleRemoval,
   SSHD_ENABLE_HINT_UNKNOWN,
@@ -199,5 +201,47 @@ describe("the command that starts sshd is this host's, not Debian's", () => {
     const body = explainHostChannelCause("refused", ctx).body;
     expect(body).toContain(SSHD_ENABLE_HINT_UNKNOWN);
     expect(body).toMatch(/sshd/);
+  });
+});
+
+/**
+ * One resolver, because five copies is what #527 was made of.
+ *
+ * The account was spelled independently in the adapters' dial (`hostChannelUser`), the
+ * api's self-server row (`desiredSshUser`), and three places in the CLI's compose layer.
+ * Nothing kept them equal, and the row is display-only — so when they diverged, the
+ * dashboard showed `admin@<ip>` while the dial used `root@host.docker.internal`, and the
+ * operator "corrected" an account the channel was never going to use.
+ *
+ * These tests pin the resolver's contract. The ratchet below pins the harder half: that
+ * nobody re-introduces a local copy of it.
+ */
+describe("hostChannelAccount — the one place the channel account is decided", () => {
+  it("uses what provisioning wrote", () => {
+    expect(hostChannelAccount({ OPENSHIP_HOST_SSH_USER: "deploy" })).toBe("deploy");
+  });
+
+  it("defaults to root when nothing was provisioned", () => {
+    expect(hostChannelAccount({})).toBe(HOST_CHANNEL_DEFAULT_ACCOUNT);
+    expect(hostChannelAccount({ OPENSHIP_HOST_SSH_USER: undefined })).toBe("root");
+  });
+
+  it("treats a blank or whitespace value as unset, not as an empty username", () => {
+    // `.env` round-trips can leave `OPENSHIP_HOST_SSH_USER=`; dialing "" fails with an
+    // sshd error that names no account at all.
+    expect(hostChannelAccount({ OPENSHIP_HOST_SSH_USER: "" })).toBe("root");
+    expect(hostChannelAccount({ OPENSHIP_HOST_SSH_USER: "   " })).toBe("root");
+  });
+
+  it("trims, so a stray newline from a written .env cannot become part of the account", () => {
+    expect(hostChannelAccount({ OPENSHIP_HOST_SSH_USER: " deploy\n" })).toBe("deploy");
+  });
+
+  it("answers identically for a live process env and a parsed .env record", () => {
+    // The two callers read from different sources; the whole point is that the source
+    // cannot change the answer.
+    const parsed: Record<string, string> = { OPENSHIP_HOST_SSH_USER: "deploy" };
+    const live: NodeJS.ProcessEnv = { OPENSHIP_HOST_SSH_USER: "deploy" };
+    expect(hostChannelAccount(parsed)).toBe(hostChannelAccount(live));
   });
 });

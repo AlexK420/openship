@@ -29,6 +29,16 @@ export type Branding = {
   loginSubtext: string;
   loginFooter: string;
   homeHtml: string | null;
+  /**
+   * Show the "Powered by OpenShip" row and its Docs / Privacy / Terms / GitHub
+   * links at the foot of the login page. GH-568: every one of those is vendor
+   * chrome pointing off-site, and none of it was reachable from the branding
+   * schema - so a fully branded deployment still advertised the vendor and led
+   * its users away. One toggle covers the whole row because that is exactly
+   * what the row is; defaults to `true` so existing installs are unchanged and
+   * dropping the attribution stays a deliberate operator decision.
+   */
+  showPoweredBy: boolean;
 };
 
 export const defaultBranding: Branding = {
@@ -38,6 +48,7 @@ export const defaultBranding: Branding = {
   loginSubtext: 'Sign in with your mailbox credentials',
   loginFooter: 'Self-hosted on your own mail server. No third parties.',
   homeHtml: null,
+  showPoweredBy: true,
 };
 
 const CONFIG_FILE = 'config.json';

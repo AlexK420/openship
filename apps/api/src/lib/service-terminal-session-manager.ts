@@ -15,11 +15,11 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { env } from "../config/env";
+import { env } from "@repo/platform/engine/config/env";
 import type { RuntimeAdapter, ShellSession } from "@repo/adapters";
-import { disposeRuntime } from "./deployment-runtime";
+import { disposeRuntime } from "@repo/platform/engine/lib/deployment-runtime";
 import type { TerminalExitReason } from "@repo/db";
-import type { RequestContext } from "./request-context";
+import type { ExecutionContext as RequestContext } from "@repo/platform";
 
 // ─── Tickets ────────────────────────────────────────────────────────────────
 

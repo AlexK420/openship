@@ -354,6 +354,7 @@ function ServerForm({
   const [freeSlug, setFreeSlug] = useState("");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [running, setRunning] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -403,12 +404,15 @@ function ServerForm({
 
   const handleStart = async () => {
     if (!preflight?.ready) return;
+    setStartError(null);
     onSubmitStart();
     try {
       const res = await migrationApi.startServer({ serverId, domain });
       onSuccess(res);
     } catch (err) {
-      showToast(getApiErrorMessage(err, t.settings.migrate.server.toastMigrationFailed), "error", t.settings.common.toast.migration);
+      const message = getApiErrorMessage(err, t.settings.migrate.server.toastMigrationFailed);
+      setStartError(message);
+      showToast(message, "error", t.settings.common.toast.migration);
     } finally {
       onSubmitEnd();
     }
@@ -540,9 +544,15 @@ function ServerForm({
           <CheckRow ok={preflight.checks.domain.ok} label={t.settings.migrate.server.domainReady}>
             {preflight.checks.domain.detail}
           </CheckRow>
+          {preflight.checks.deployment && (
+            <CheckRow ok={preflight.checks.deployment.ok} label={t.settings.migrate.server.startMigration}>
+              {preflight.checks.deployment.detail}
+            </CheckRow>
+          )}
         </div>
       )}
 
+      {startError && <p role="alert" className="text-sm text-destructive">{startError}</p>}
       {/* Actions */}
       <div className="flex items-center justify-end gap-2 pt-2">
         {!preflight && (

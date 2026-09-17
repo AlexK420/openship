@@ -171,9 +171,8 @@ export function secureRouter<T extends Hono>(
     // else per-user `default-authed` for permission-tagged routes (authMiddleware
     // ran just above → ctx is set, so the limiter keys per user), else per-IP
     // `default-anon` for public / self-auth routes (no ctx). Placed AFTER auth and
-    // BEFORE the permission check. There is NO global `/api/*` limiter anymore — it
-    // ran upstream of auth, so it always fell back to default-anon AND double-
-    // charged routes that set their own policy.
+    // BEFORE the permission check. The independent app-level flood guard uses
+    // its own bucket and does not choose or suppress this route's policy.
     const authed = !isPublicSpec(mergedSpec) && !(mergedSpec as PermissionSpec).skipAuth;
     const rateLimitPolicy = mergedSpec.rateLimit ?? (authed ? "default-authed" : "default-anon");
     chain.push(rateLimiterFor(rateLimitPolicy));

@@ -39,11 +39,11 @@ function liveEnv<T extends { env: Record<string, unknown> }>(actual: T) {
     },
   };
 }
-vi.mock("../../../src/config", async (importOriginal) =>
+vi.mock("@repo/platform/engine/config/index", async (importOriginal) =>
   liveEnv(await importOriginal<typeof import("../../../src/config")>()),
 );
-vi.mock("../../../src/config/env", async (importOriginal) =>
-  liveEnv(await importOriginal<typeof import("../../../src/config/env")>()),
+vi.mock("@repo/platform/engine/config/env", async (importOriginal) =>
+  liveEnv(await importOriginal<typeof import("@repo/platform/engine/config/env")>()),
 );
 
 import { getRouteRegistry } from "../../../src/lib/route-permission";

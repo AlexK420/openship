@@ -20,6 +20,7 @@ import { useToast } from "@/context/ToastContext";
 import { useCloud } from "@/context/CloudContext";
 import { usePlatform } from "@/context/PlatformContext";
 import { useI18n, interpolate } from "@/components/i18n-provider";
+import { mailHostname } from "@repo/core";
 
 /**
  * Mail provider wizard — the app-catalog entry point for Openship Mail, and the
@@ -82,7 +83,7 @@ export default function MailWizardPage() {
     () => mailServers.find((s) => s.completed && s.domain) ?? null,
     [mailServers],
   );
-  const ourMailHost = ourMailServer?.domain ? `mail.${ourMailServer.domain}` : null;
+  const ourMailHost = ourMailServer?.domain ? mailHostname(ourMailServer.domain) : null;
 
   useEffect(() => {
     void (async () => {

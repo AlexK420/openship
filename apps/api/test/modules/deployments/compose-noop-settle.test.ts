@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   activePointer: [] as string[],
   statusWrites: [] as Array<{ id: string; status: string; extra?: Record<string, unknown> }>,
+  sessionStatuses: [] as Array<{ id: string; status: string; detail?: Record<string, unknown> }>,
   containerIdWrites: [] as Array<string | undefined>,
   notifications: [] as string[],
   audits: [] as string[],
@@ -49,26 +50,28 @@ vi.mock("@repo/db", () => ({
   },
 }));
 
-vi.mock("../../../src/modules/deployments/session-manager", () => ({
-  updateStatus: () => {},
+vi.mock("@repo/platform/engine/modules/deployments/session-manager", () => ({
+  updateStatus: (id: string, status: string, detail?: Record<string, unknown>) => {
+    h.sessionStatuses.push({ id, status, detail });
+  },
   broadcastServiceStatus: () => {},
   broadcastInstallPhase: () => {},
   appendLog: () => {},
 }));
 
-vi.mock("../../../src/lib/notification-dispatcher", () => ({
+vi.mock("@repo/platform/engine/lib/notification-dispatcher", () => ({
   notification: { emit: (e: { eventType: string }) => h.notifications.push(e.eventType) },
 }));
 vi.mock("../../../src/lib/audit", () => ({
   audit: { recordAsync: (_c: unknown, e: { eventType: string }) => h.audits.push(e.eventType) },
 }));
-vi.mock("../../../src/lib/favicon-detector", () => ({ detectAndStoreFavicon: async () => {} }));
-vi.mock("../../../src/modules/mail/webmail/webmail-install.service", () => ({
+vi.mock("@repo/platform/engine/lib/favicon-detector", () => ({ detectAndStoreFavicon: async () => {} }));
+vi.mock("@repo/platform/engine/modules/mail/webmail/webmail-install.service", () => ({
   onWebmailDeployed: async () => {},
 }));
 
 // Not under test — a zero-image, zero-failure build.
-vi.mock("../../../src/modules/deployments/compose/build.service", () => ({
+vi.mock("@repo/platform/engine/modules/deployments/compose/build.service", () => ({
   buildComposeImages: async () => ({
     imageRefs: new Map<string, string>(),
     builtImageRefs: new Map<string, string>(),
@@ -77,14 +80,14 @@ vi.mock("../../../src/modules/deployments/compose/build.service", () => ({
   }),
 }));
 
-vi.mock("../../../src/modules/deployments/compose/deploy.service", async (importOriginal) => ({
+vi.mock("@repo/platform/engine/modules/deployments/compose/deploy.service", async (importOriginal) => ({
   ...(await importOriginal<
-    typeof import("../../../src/modules/deployments/compose/deploy.service")
+    typeof import("@repo/platform/engine/modules/deployments/compose/deploy.service")
   >()),
   deployComposeServices: async () => h.deployResult,
 }));
 
-const { executeComposePipeline } = await import("../../../src/modules/deployments/compose/pipeline");
+const { executeComposePipeline } = await import("@repo/platform/engine/modules/deployments/compose/pipeline");
 type PipelineOpts = Parameters<typeof executeComposePipeline>[0];
 
 /** db first, app second — topoSort's dependency-first order, i.e. the order in
@@ -132,6 +135,7 @@ function optsFor(): PipelineOpts {
 beforeEach(() => {
   h.activePointer = [];
   h.statusWrites = [];
+  h.sessionStatuses = [];
   h.containerIdWrites = [];
   h.notifications = [];
   h.audits = [];
@@ -223,4 +227,39 @@ describe("executeComposePipeline — an all-carried redeploy must not take over"
     expect(h.statusWrites.some((w) => w.status === "no_changes")).toBe(false);
     expect(h.activePointer).toEqual(["prj_1:dep_1"]);
   });
+
+  it("announces a partial-failure decision on the first terminal event", async () => {
+    h.deployResult = {
+      status: "ready",
+      summary: {
+        total: 2,
+        successful: 1,
+        deployed: 1,
+        failed: 1,
+        indeterminate: 0,
+        mutated: true,
+        failedServices: ["worker"],
+      },
+      services: [
+        { serviceId: "app", serviceName: "app", containerId: "cid-app", status: "running" },
+        { serviceId: "worker", serviceName: "worker", status: "failed", error: "exit 1" },
+      ],
+      primaryContainerId: "cid-app",
+      warning: "Some services failed",
+      portChecks: [],
+    };
+
+    await executeComposePipeline(optsFor());
+
+    const terminal = h.sessionStatuses.find((entry) => entry.status === "ready");
+    expect(terminal?.detail).toMatchObject({ decisionPending: true });
+    expect(h.statusWrites.at(-1)?.extra).toMatchObject({
+      meta: { composeDeployment: { decision: "pending" } },
+    });
+  });
 });
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/audit-emitter", () => ({
+  audit: { recordAsync: (_c: unknown, e: { eventType: string }) => h.audits.push(e.eventType) },
+}));

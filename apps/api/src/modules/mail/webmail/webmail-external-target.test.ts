@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   starts: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock("./webmail-install.service", () => ({
+vi.mock("@repo/platform/engine/modules/mail/webmail/webmail-install.service", () => ({
   startWebmailDeploy: async () => ({ deploymentId: "dep-1", projectId: "prj-1" }),
   startExternalWebmailDeploy: async (_ctx: unknown, input: Record<string, unknown>) => {
     h.starts.push(input);

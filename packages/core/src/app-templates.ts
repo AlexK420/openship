@@ -104,8 +104,19 @@ export interface TemplateServiceSpec {
   healthcheck?: ComposeHealthcheck;
   /** Restart policy (compose syntax). */
   restart?: "no" | "always" | "on-failure" | "unless-stopped";
-  /** Override the container command. */
+  /** Override the container command (shell string; becomes ["sh","-c",cmd]). */
   command?: string;
+  /**
+   * Exact container argv, with no `sh -c` wrap. Wins over `command`. Required for
+   * images whose entrypoint rewrites argv instead of `exec "$@"` (e.g. MinIO).
+   */
+  commandArgv?: readonly string[];
+  /**
+   * Seconds/duration Docker waits after SIGTERM before SIGKILL (maps to
+   * `service.advanced.stopGracePeriod`). Needed by apps whose clean shutdown
+   * does real work — Docker's 10s default kills them mid-checkpoint.
+   */
+  stopGracePeriod?: string;
 }
 
 export interface AppConfigField {
@@ -597,6 +608,19 @@ export function getOutputService(output: Pick<AppOutput, "service" | "source">):
   if (output.service) return output.service;
   const m = /^(?:env|publicUrl):([^:]+)/.exec(output.source ?? "");
   return m?.[1] ?? null;
+}
+
+/**
+ * The CONTAINER port an output's source names (`publicUrl:<service>:<port>`), or
+ * null when it names none. Authoritative for internal-mode rewriting alongside
+ * `getOutputService`: the port that survives into the RESOLVED value is either
+ * absent (a routed `https://<host>`) or the host side of a published mapping, so
+ * only this declaration says which of a multi-endpoint service's ports the output
+ * actually means.
+ */
+export function getOutputPort(output: Pick<AppOutput, "source">): number | null {
+  const m = /^publicUrl:[^:]+:(\d+)$/.exec(output.source ?? "");
+  return m ? Number(m[1]) : null;
 }
 
 /**

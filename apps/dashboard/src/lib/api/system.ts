@@ -1,5 +1,12 @@
 import { api, getApiBaseUrl, getActiveOrganizationId } from "./client";
 import { endpoints } from "./endpoints";
+// Removal types + the timeout rule live with the pure helpers so the modal and this
+// client share one definition (and so the rule is testable without React).
+import {
+  serverRemovalTimeoutMs,
+  type ServerDeletionPreview,
+  type ServerRemovalResult,
+} from "../server-removal";
 
 /**
  * Client budget for an ad-hoc SSH probe.
@@ -135,7 +142,10 @@ export type HostChannelCode =
   | "disabled"
   | "not_configured"
   | "key_unreadable"
-  | "unreachable";
+  | "unreachable"
+  /** Reached, then the key was refused — #527. Distinct from `unreachable` because the
+   *  remedy is re-authorizing a key, not opening a firewall. */
+  | "auth_rejected";
 
 /**
  * GET /servers/:id/reachability — liveness plus the reason.
@@ -331,6 +341,39 @@ export interface BulkApplyResult {
     component: "edge" | "mail";
     reason: "needs_takeover_consent" | "container_missing" | "already_running" | "unreachable";
   }>;
+}
+
+/**
+ * One managed component the org is applying right now. `queued` means the bulk run
+ * accepted it but hasn't reached it yet (it has no session, so no steps); `running`
+ * carries the live step model and the session id a log view re-attaches to.
+ */
+export interface ContainerApplyActive {
+  serverId: string;
+  serverName: string;
+  component: "edge" | "mail";
+  state: "queued" | "running";
+  /** What the operator asked for. Null for a run whose cached row is gone. */
+  intent: ContainerApplyIntent | null;
+  sessionId?: string;
+  steps?: ContainerApplyStep[];
+  startedAt?: string;
+}
+
+/** An apply that finished moments ago — the only source of a "done" beat. */
+export interface ContainerApplySettled {
+  serverId: string;
+  serverName: string;
+  component: "edge" | "mail";
+  ok: boolean;
+  error?: string;
+  finishedAt: string;
+}
+
+/** Live fleet progress: what's in flight, and what just settled. */
+export interface ContainerApplyProgress {
+  active: ContainerApplyActive[];
+  recent: ContainerApplySettled[];
 }
 
 /** One step of a container image swap, for the progress bar. */
@@ -719,9 +762,32 @@ export const systemApi = {
   updateServerEntry: (id: string, data: Record<string, unknown>) =>
     api.patch<ServerInfo>(endpoints.system.server(id), data),
 
-  /** Delete a server */
-  deleteServerEntry: (id: string) =>
-    api.delete<{ ok: boolean }>(endpoints.system.server(id)),
+  /** What "Remove server" is about to take with it — every project/app bound to the
+   *  box plus the server-scoped records that cascade. Read-only; safe on modal open. */
+  serverDeletionPreview: (id: string) =>
+    api.get<{ ok: boolean; preview: ServerDeletionPreview }>(
+      endpoints.system.serverDeletionPreview(id),
+    ),
+
+  /**
+   * Remove a server, resolving the fate of every workload bound to it.
+   *
+   * `destroyOnSource` is the operator's explicit opt-in to stop and delete the
+   * containers on the machine; without it the workloads are removed from Openship
+   * only and keep running. Flags travel as query params (same idiom as
+   * `projectsApi.delete`), and the timeout scales with the workload count because
+   * each teardown is its own SSH round-trip — a short client timeout would abort a
+   * request the server then finishes anyway.
+   */
+  deleteServerEntry: (
+    id: string,
+    opts: { destroyOnSource?: boolean; workloadCount?: number } = {},
+  ) => {
+    const qs = opts.destroyOnSource ? "?destroyOnSource=true" : "";
+    return api.delete<ServerRemovalResult>(`${endpoints.system.server(id)}${qs}`, {
+      timeout: serverRemovalTimeoutMs(opts),
+    });
+  },
 
   // ── Native-module updates (per-server) ─────────────────────────────────────
 
@@ -890,6 +956,14 @@ export const systemApi = {
     api.post<BulkApplyResult>(endpoints.system.allContainersApply(), intents ? { intents } : {}, {
       timeout: 120_000,
     }),
+
+  /**
+   * Live progress for every apply the org has in flight, plus the ones that settled
+   * in the last minute or so. Cheap (cached rows + in-memory sessions) — polled only
+   * while something is running.
+   */
+  applyingContainers: () =>
+    api.get<ContainerApplyProgress>(endpoints.system.allContainersApplying()),
 
   // ── Rate Limiting (per-server) ─────────────────────────────────────────────
 

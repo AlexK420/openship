@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { cloudflareDnsProvider } from "../../../src/modules/dns/providers/cloudflare.provider";
+import { cloudflareDnsProvider } from "@repo/platform/engine/modules/dns/providers/cloudflare.provider";
 import {
   DnsApiError,
   DnsRecordConflictError,
   OPENSHIP_RECORD_COMMENT,
   isOpenshipManaged,
-} from "../../../src/modules/dns/types";
+} from "@repo/platform/engine/modules/dns/types";
 
 /** Shape a Cloudflare v4 envelope the way the real API does. */
 function cfOk(result: unknown, resultInfo?: Record<string, number>) {

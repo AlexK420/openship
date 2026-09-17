@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { Value } from "@sinclair/typebox/value";
 import { PROXY_DIRECTIVES, sanitizeProxySettings, type ProxyDirectiveSpec } from "@repo/core";
-import { UpdateProjectBody } from "../../src/modules/projects/project.schema";
+import { UpdateProjectBody } from "@repo/contracts";
 
 /**
  * OpenResty inherits nginx's defaults, so an upload over 1 MB is a 413 and anything
@@ -16,8 +16,7 @@ import { UpdateProjectBody } from "../../src/modules/projects/project.schema";
  * would save successfully and then silently do nothing.
  */
 
-const validate = (proxy: unknown) =>
-  Value.Check(UpdateProjectBody, { routingConfig: { proxy } });
+const validate = (proxy: unknown) => Value.Check(UpdateProjectBody, { routingConfig: { proxy } });
 
 describe("ProxySettings — the API schema and the renderer agree", () => {
   const GOOD = [
@@ -35,19 +34,21 @@ describe("ProxySettings — the API schema and the renderer agree", () => {
   it("accepts every valid shape, and the renderer keeps it", () => {
     for (const proxy of GOOD) {
       expect(validate(proxy), `schema rejected ${JSON.stringify(proxy)}`).toBe(true);
-      expect(sanitizeProxySettings(proxy), `renderer dropped ${JSON.stringify(proxy)}`).toEqual(proxy);
+      expect(sanitizeProxySettings(proxy), `renderer dropped ${JSON.stringify(proxy)}`).toEqual(
+        proxy,
+      );
     }
   });
 
   const BAD = [
-    { clientMaxBodySize: "25" },        // no unit — nginx would read it as bytes
-    { clientMaxBodySize: "25mb" },      // not an nginx size suffix
-    { clientMaxBodySize: "0m" },        // leading zero excluded by the regex
+    { clientMaxBodySize: "25" }, // no unit — nginx would read it as bytes
+    { clientMaxBodySize: "25mb" }, // not an nginx size suffix
+    { clientMaxBodySize: "0m" }, // leading zero excluded by the regex
     { clientMaxBodySize: "-5m" },
     { clientMaxBodySize: "25m; root /etc" }, // the injection this guards against
-    { proxyReadTimeout: "300" },        // no unit
-    { proxyReadTimeout: "300ms" },      // not one of the accepted time forms
-    { clientMaxBodySize: 25 },          // wrong type
+    { proxyReadTimeout: "300" }, // no unit
+    { proxyReadTimeout: "300ms" }, // not one of the accepted time forms
+    { clientMaxBodySize: 25 }, // wrong type
   ];
 
   it("rejects malformed values at the API, and the renderer drops them too", () => {
@@ -55,7 +56,8 @@ describe("ProxySettings — the API schema and the renderer agree", () => {
       expect(validate(proxy), `schema accepted ${JSON.stringify(proxy)}`).toBe(false);
       // Belt and braces: even if one slipped past the schema, nothing reaches config.
       expect(
-        sanitizeProxySettings(proxy)?.clientMaxBodySize ?? sanitizeProxySettings(proxy)?.proxyReadTimeout,
+        sanitizeProxySettings(proxy)?.clientMaxBodySize ??
+          sanitizeProxySettings(proxy)?.proxyReadTimeout,
       ).toBeUndefined();
     }
   });
@@ -131,7 +133,9 @@ describe("ProxySettings — every directive in the table is wired end to end", (
       const proxy = { [spec.key]: badFor(spec) };
       expect(validate(proxy), `schema accepted bad ${spec.directive}`).toBe(false);
       expect(
-        sanitizeProxySettings(proxy)?.[spec.key as keyof ReturnType<typeof sanitizeProxySettings> & string],
+        sanitizeProxySettings(proxy)?.[
+          spec.key as keyof ReturnType<typeof sanitizeProxySettings> & string
+        ],
         `renderer kept bad ${spec.directive}`,
       ).toBeUndefined();
     }
@@ -145,7 +149,10 @@ describe("ProxySettings — every directive in the table is wired end to end", (
       for (const attack of attacks) {
         const proxy = { [spec.key]: attack };
         expect(validate(proxy), `schema accepted ${spec.directive}=${attack}`).toBe(false);
-        expect(sanitizeProxySettings(proxy), `renderer kept ${spec.directive}=${attack}`).toBeUndefined();
+        expect(
+          sanitizeProxySettings(proxy),
+          `renderer kept ${spec.directive}=${attack}`,
+        ).toBeUndefined();
       }
     }
   });
@@ -197,7 +204,7 @@ function registerRoutePayloads(src: string): string[] {
 }
 
 describe("ProxySettings — every project vhost writer carries them", () => {
-  const compose = source("../../src/modules/deployments/compose/deploy.service.ts");
+  const compose = source("../../../../packages/platform/src/engine/modules/deployments/compose/deploy.service.ts");
 
   it("resolves them ONCE per compose deploy, sanitized, off the project", () => {
     // Sanitized here rather than at the callers, because the row can also carry a
@@ -216,7 +223,7 @@ describe("ProxySettings — every project vhost writer carries them", () => {
   });
 
   it("spreads them on the live apply path too (a save must not need a redeploy)", () => {
-    const payloads = registerRoutePayloads(source("../../src/lib/route-apply.service.ts"));
+    const payloads = registerRoutePayloads(source("../../../../packages/platform/src/engine/lib/route-apply.service.ts"));
     expect(payloads).not.toHaveLength(0);
     for (const p of payloads) expect(p).toMatch(/\.\.\.\(proxy \? \{ proxy \} : \{\}\)/);
   });
@@ -231,7 +238,7 @@ describe("ProxySettings — every project vhost writer carries them", () => {
  * the adapters' `route-registration.test.ts` (what reaches `registerRoute`).
  */
 describe("compiled vercel.json rules — every project vhost writer carries them", () => {
-  const compose = source("../../src/modules/deployments/compose/deploy.service.ts");
+  const compose = source("../../../../packages/platform/src/engine/modules/deployments/compose/deploy.service.ts");
 
   it("compiles them ONCE per compose deploy", () => {
     // Was recompiled per route, per service, plus again for the fan-out. Identical input
@@ -264,7 +271,7 @@ describe("compiled vercel.json rules — every project vhost writer carries them
   });
 
   it("carries them on the single-app / static deploy path, and reports what it refused", () => {
-    const pipeline = source("../../src/modules/deployments/build-pipeline.ts");
+    const pipeline = source("../../../../packages/platform/src/engine/modules/deployments/build-pipeline.ts");
     expect(pipeline).toContain("compileProjectRoutingFields(project.routingConfig");
     // This is the one path with no topology-aware pass behind it, so a refused rule is
     // genuinely not live and the deploy log has to say so.
@@ -304,21 +311,21 @@ function reconcileOptions(src: string): string[] {
  * (Oblien's edge compiles its own table).
  */
 describe("compiled vercel.json rules — the live reconcile writers carry them too", () => {
-  const SRC = new URL("../../src/", import.meta.url);
-  const liveWriters = readdirSync(SRC, { recursive: true, encoding: "utf8" })
+  const roots = [new URL("../../src/", import.meta.url), new URL("../../../../packages/platform/src/engine/", import.meta.url)];
+  const liveWriters = roots.flatMap(SRC => readdirSync(SRC, { recursive: true, encoding: "utf8" })
     .map((entry) => entry.replaceAll("\\", "/"))
     .filter((rel) => rel.endsWith(".ts") && !rel.endsWith(".test.ts"))
     // The dispatcher itself — it receives the registers, it doesn't build them.
     .filter((rel) => rel !== "lib/route-apply.service.ts")
     .map((rel) => [rel, readFileSync(new URL(rel, SRC), "utf8")] as const)
-    .filter(([, src]) => reconcileOptions(src).some((opts) => opts.includes("registers")));
+    .filter(([, src]) => reconcileOptions(src).some((opts) => opts.includes("registers"))));
 
   it("still sees every live writer (a rename must not blind the scan)", () => {
     const found = liveWriters.map(([rel]) => rel);
     for (const rel of [
       "modules/domains/project-route.service.ts",
       "modules/domains/routing-apply.service.ts",
-      "modules/projects/project.controller.ts",
+      "modules/projects/project-git.operations.ts",
       "modules/services/service.service.ts",
     ]) {
       expect(found, `${rel} no longer matches the live-writer scan`).toContain(rel);
@@ -338,8 +345,8 @@ describe("compiled vercel.json rules — the live reconcile writers carry them t
     // Spreading the compiled fields over a fan-out register would ASSIGN over its
     // per-path upstreams: the domain keeps serving, with `/v3` quietly pointing at the
     // root service instead of the API. Same order as the deploy path — fan-out first.
-    expect(source("../../src/modules/domains/routing-apply.service.ts")).toContain(
-      "[...(reg.proxyLocations ?? []), ...(routingFields.proxyLocations ?? [])]",
-    );
+    expect(
+      source("../../../../packages/platform/src/engine/modules/domains/routing-apply.service.ts").replace(/\s+/g, ""),
+    ).toContain("...(reg.proxyLocations??[]),...(routingFields.proxyLocations??[])");
   });
 });

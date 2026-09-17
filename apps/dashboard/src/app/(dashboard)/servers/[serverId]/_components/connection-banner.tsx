@@ -126,6 +126,21 @@ export function ConnectionBanner(props: {
   const copy = (() => {
     switch (kind) {
       case "host_channel":
+        // Refused, not unanswered (#527). Checked before the address cases because the
+        // fault is not about the address at all: something DID answer there, so the
+        // generic "nothing answered" copy would be false, and the operator's next move
+        // is a key, not a firewall. Red rather than amber: unlike a channel that was
+        // never provisioned, this one was set up and has stopped working.
+        if (diagnosis?.channel === "auth_rejected") {
+          return {
+            title: t.servers.banner.hostChannelAuthTitle,
+            body: interpolate(t.servers.banner.hostChannelAuthBody, {
+              target: dialed ?? "the host",
+            }),
+            icon: KeyRound,
+            tone: "red",
+          };
+        }
         // Nothing dialed → the channel was never provisioned, so no address can be
         // named as unresponsive and nothing here is down (#509).
         return dialed === null
@@ -183,11 +198,20 @@ export function ConnectionBanner(props: {
    */
   const fix = kind !== "host_channel"
     ? null
-    : dialed === null
-      ? { label: t.servers.banner.hostChannelProvisionFix, command: HOST_CHANNEL_PROVISION_COMMAND }
-      : diagnosis?.rule
-        ? { label: t.servers.banner.hostChannelFix, command: diagnosis.rule }
-        : null;
+    : diagnosis?.channel === "auth_rejected"
+      // Re-running the installer re-authorizes the key, so the remedy is the same command
+      // as an unprovisioned channel with a different reason for running it. A firewall
+      // rule is never offered here: a packet arrived and was answered, so no packet filter
+      // has been established — the distinction #490 was fixed to preserve.
+      ? {
+          label: t.servers.banner.hostChannelReauthorizeFix,
+          command: HOST_CHANNEL_PROVISION_COMMAND,
+        }
+      : dialed === null
+        ? { label: t.servers.banner.hostChannelProvisionFix, command: HOST_CHANNEL_PROVISION_COMMAND }
+        : diagnosis?.rule
+          ? { label: t.servers.banner.hostChannelFix, command: diagnosis.rule }
+          : null;
 
   const tone = copy.tone === "red"
     ? "bg-danger-bg border-danger-border text-danger"

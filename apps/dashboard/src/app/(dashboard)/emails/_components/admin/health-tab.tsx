@@ -6,9 +6,10 @@
  * Two sections operators check in different troubleshooting flows but
  * want to see together:
  *
- *   1. Daemons   - live systemd status of Postfix, Dovecot, Amavis,
- *                  ClamAV, etc. Polled every 10 s. Check this when
- *                  "mail isn't sending" - usually a daemon is down.
+ *   1. Daemons   - live state of Postfix, Dovecot, Amavis, ClamAV, etc, read from
+ *                  whichever supervisor the box runs (supervisord in the engine
+ *                  container, or systemd on a legacy host). Polled every 10 s.
+ *                  Check this when "mail isn't sending" - usually a daemon is down.
  *   2. Outbound  - where this server hands mail off, and what the queue
  *                  says about it. Rides the same poll as the daemons.
  *                  Check this when the daemons are green and mail still
@@ -60,6 +61,8 @@ import {
   type MailDeferralKind,
   type MailDeliveryHealth,
   type MailDeliveryStatus,
+  type MailPortReachability,
+  type MailPortReachabilityCheck,
 } from "@/lib/api";
 import { useToast } from "@/context/ToastContext";
 import { SectionCard } from "./_shared/section-card";
@@ -81,6 +84,8 @@ export function HealthTab({ serverId }: { serverId: string }) {
   // Same response as the daemons, so the same poll and the same error banner —
   // the send path is a second reading off one connection, not a second request.
   const [delivery, setDelivery] = useState<MailDeliveryHealth | null>(null);
+  const [reachability, setReachability] = useState<MailPortReachability | null>(null);
+  const [reachabilityRefreshing, setReachabilityRefreshing] = useState(false);
   const [componentsErr, setComponentsErr] = useState<string | null>(null);
   const [componentsLastUpdated, setComponentsLastUpdated] = useState<number | null>(null);
 
@@ -88,11 +93,12 @@ export function HealthTab({ serverId }: { serverId: string }) {
   const [dnsErr, setDnsErr] = useState<string | null>(null);
   const [dnsRefreshing, setDnsRefreshing] = useState(false);
 
-  const tickComponents = useCallback(async () => {
+  const tickComponents = useCallback(async (refreshReachability = false) => {
     try {
-      const r = await mailApi.getHealth(serverId);
+      const r = await mailApi.getHealth(serverId, refreshReachability);
       setComponents(r.components);
       setDelivery(r.delivery);
+      setReachability(r.reachability);
       setComponentsErr(null);
       setComponentsLastUpdated(Date.now());
     } catch (err) {
@@ -140,11 +146,22 @@ export function HealthTab({ serverId }: { serverId: string }) {
     }
   };
 
+  const onReachabilityRefresh = async () => {
+    if (reachabilityRefreshing) return;
+    setReachabilityRefreshing(true);
+    try {
+      await tickComponents(true);
+    } finally {
+      setReachabilityRefreshing(false);
+    }
+  };
+
   const summary = summarizeHealth(
     components,
     dns?.checks ?? null,
     delivery,
     t.emailsAdmin.health,
+    reachability,
   );
 
   return (
@@ -214,6 +231,13 @@ export function HealthTab({ serverId }: { serverId: string }) {
         ) : null}
       </SectionCard>
 
+      <ReachabilitySection
+        reachability={reachability}
+        error={componentsErr}
+        refreshing={reachabilityRefreshing}
+        onRefresh={onReachabilityRefresh}
+      />
+
       {/* ── Outbound delivery ─────────────────────────────────────────────
           Hidden only until the first reading lands, and only if that first
           reading failed — the error is already shown above, and an empty card
@@ -275,6 +299,140 @@ export function HealthTab({ serverId }: { serverId: string }) {
   );
 }
 
+export function ReachabilitySection({
+  reachability,
+  error,
+  refreshing,
+  onRefresh,
+}: {
+  reachability: MailPortReachability | null;
+  error: string | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
+  const { t } = useI18n();
+  const h = t.emailsAdmin.health;
+  const providerBlocked =
+    reachability?.status === "fail" &&
+    reachability.ports.some((port) => port.status === "blocked");
+  return (
+    <SectionCard
+      title={h.reachability.title}
+      description={
+        reachability?.address
+          ? interpolate(h.reachability.descFor, {
+              hostname: reachability.hostname,
+              address: reachability.address,
+            })
+          : h.reachability.desc
+      }
+      density="split"
+      icon={Globe}
+      action={
+        <div className="flex items-center gap-3">
+          {reachability && (
+            <span className="text-[11px] text-muted-foreground tabular-nums">
+              {interpolate(h.updated, { time: timeAgo(reachability.checkedAt, h.time) })}
+            </span>
+          )}
+          <button
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-muted text-foreground hover:bg-muted/80 border border-border transition-colors disabled:opacity-50"
+          >
+            <RefreshCcw className={`size-3 ${refreshing ? "animate-spin" : ""}`} />
+            {h.rescan}
+          </button>
+        </div>
+      }
+    >
+      {!reachability && !error ? (
+        <ReachabilitySkeleton />
+      ) : reachability ? (
+        <>
+          {providerBlocked && (
+            <div className="px-5 py-3 text-sm text-danger border-b border-danger-border bg-danger-bg">
+              {h.reachability.remediation}
+            </div>
+          )}
+          {reachability.status === "unknown" && reachability.detail && (
+            <div className="px-5 py-3 text-sm text-warning border-b border-warning-border bg-warning-bg">
+              {reachability.detail}
+            </div>
+          )}
+          <div className="divide-y divide-border/40">
+            {reachability.ports.map((port) => (
+              <ReachabilityRow
+                key={port.key}
+                port={port}
+                unverified={reachability.status === "unknown" && port.status === "blocked"}
+              />
+            ))}
+          </div>
+        </>
+      ) : null}
+    </SectionCard>
+  );
+}
+
+function ReachabilityRow({
+  port,
+  unverified,
+}: {
+  port: MailPortReachabilityCheck;
+  unverified: boolean;
+}) {
+  const { t } = useI18n();
+  const copy = t.emailsAdmin.health.reachability;
+  // Keep the raw failed probe in the API response, but do not present an
+  // ambiguous SMTP timeout as a confirmed inbound firewall failure.
+  const displayStatus = unverified ? "unknown" : port.status;
+  const status = reachabilityPresentation(displayStatus);
+  const detail =
+    displayStatus === "reachable"
+      ? copy.reachableHint
+      : displayStatus === "blocked"
+        ? port.failure === "timeout"
+          ? copy.blockedTimeoutHint
+          : copy.blockedHint
+        : displayStatus === "not_listening"
+          ? copy.notListeningHint
+          : displayStatus === "not_exposed"
+            ? copy.notExposedHint
+            : port.detail || copy.unknownHint;
+
+  return (
+    <div className="flex items-center gap-4 px-5 py-4">
+      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${status.iconBg}`}>
+        <status.Icon className={`size-5 ${status.iconColor}`} strokeWidth={2} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-sm font-medium text-foreground">{copy.ports[port.key]}</p>
+          <span className="font-mono text-[11px] text-muted-foreground">TCP {port.port}</span>
+        </div>
+        <p className="text-xs text-muted-foreground mt-0.5">{detail}</p>
+      </div>
+      <StatusPill tone={status.tone}>{copy.status[displayStatus]}</StatusPill>
+    </div>
+  );
+}
+
+function reachabilityPresentation(status: MailPortReachabilityCheck["status"]): {
+  Icon: typeof CheckCircle2;
+  iconBg: string;
+  iconColor: string;
+  tone: PillTone;
+} {
+  if (status === "reachable") {
+    return { Icon: CheckCircle2, iconBg: "bg-success-bg", iconColor: "text-success", tone: "success" };
+  }
+  if (status === "unknown") {
+    return { Icon: CircleDashed, iconBg: "bg-muted", iconColor: "text-muted-foreground", tone: "neutral" };
+  }
+  return { Icon: Unplug, iconBg: "bg-danger-bg", iconColor: "text-danger", tone: "danger" };
+}
+
 // ─── Rows ────────────────────────────────────────────────────────────────────
 
 /**
@@ -294,7 +452,8 @@ function DaemonRow({
   const { t, dir } = useI18n();
   const h = t.emailsAdmin.health;
   const presentation = daemonStatusPresentation(component.status);
-  const statusLabel = daemonStatusLabel(component.status, h);
+  const statusLabel = daemonStatusLabel(component.status, h, component.subState);
+  const subStateHint = daemonSubStateHint(component, h);
   const { showToast } = useToast();
   const [acting, setActing] = useState<ComponentAction | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -303,11 +462,31 @@ function DaemonRow({
     if (acting) return;
     setActing(action);
     try {
-      await mailAdminApi.components.action(serverId, component.key, action);
-      const doneTpl =
-        action === "start" ? h.toast.started : action === "stop" ? h.toast.stopped : h.toast.restarted;
-      showToast(interpolate(doneTpl, { label: component.label }), "success");
+      const res = await mailAdminApi.components.action(serverId, component.key, action);
+      // Refresh BEFORE toasting so the pill and the toast can't contradict each other.
       await onActed();
+      const wanted = action === "stop" ? "inactive" : "active";
+      if (!res.settled || res.settled.status === wanted) {
+        const doneTpl =
+          action === "start" ? h.toast.started : action === "stop" ? h.toast.stopped : h.toast.restarted;
+        showToast(interpolate(doneTpl, { label: component.label }), "success");
+      } else {
+        // The supervisor took the job and the daemon still isn't there. "ClamAV
+        // restarted" for a daemon already back in BACKOFF is the lie this removes.
+        // `res.output` is the supervisor's own words (e.g. "ERROR (not running)"),
+        // server-generated, so it is appended verbatim and untranslated. A settled
+        // state that is still transitional arrives as undefined, so a healthy slow
+        // restart keeps the optimistic wording above.
+        const sentence = interpolate(h.toast.notConfirmed, {
+          label: component.label,
+          state: daemonStatusLabel(res.settled.status, h, res.settled.subState),
+        });
+        showToast(
+          res.output ? `${sentence} ${res.output}` : sentence,
+          "info",
+          interpolate(h.toast.notConfirmedTitle, { label: component.label }),
+        );
+      }
     } catch (err) {
       const failMsg =
         action === "start" ? h.toast.startFailed : action === "stop" ? h.toast.stopFailed : h.toast.restartFailed;
@@ -387,6 +566,14 @@ function DaemonRow({
             <span className="font-mono text-[11px] text-muted-foreground/80 truncate">
               {component.unit}
             </span>
+            {/* Informational rows carry the same chip: from the operator's side both
+                mean "mail still works without this". The difference is only whether the
+                banner grades it (GH-240). */}
+            {component.severity !== "required" && (
+              <span className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground/70 border border-border/60 rounded px-1 py-px">
+                {h.optional}
+              </span>
+            )}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5 truncate">
             {component.description}
@@ -402,6 +589,9 @@ function DaemonRow({
             <p className="text-[11px] text-warning mt-0.5 break-words">
               {component.detail}
             </p>
+          )}
+          {subStateHint && (
+            <p className="text-[11px] text-danger mt-0.5 break-words">{subStateHint}</p>
           )}
         </div>
         <StatusPill tone={presentation.tone} icon={presentation.PillIcon}>
@@ -436,7 +626,6 @@ function DaemonRow({
         <LogsDrawer
           serverId={serverId}
           componentKey={component.key}
-          unit={component.unit}
           label={component.label}
           onClose={() => setLogsOpen(false)}
         />
@@ -758,6 +947,23 @@ function DeliverySkeleton() {
   );
 }
 
+function ReachabilitySkeleton() {
+  return (
+    <div className="divide-y divide-border/40">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="flex items-center gap-4 px-5 py-4">
+          <Skeleton className="w-10 h-10 rounded-xl shrink-0" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-3 w-48 max-w-full" />
+            <Skeleton className="h-2.5 w-72 max-w-full" />
+          </div>
+          <Skeleton className="h-5 w-20 rounded-full shrink-0" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DnsScanSkeleton() {
   return (
     <div className="divide-y divide-border/40">
@@ -917,7 +1123,11 @@ function dnsStatusPresentation(status: DnsCheckStatus): DnsStatusPresentation {
 
 // ─── Status label maps (localized) ───────────────────────────────────────────
 
-function daemonStatusLabel(status: MailComponentStatus, h: HealthDict): string {
+function daemonStatusLabel(
+  status: MailComponentStatus,
+  h: HealthDict,
+  subState?: string,
+): string {
   switch (status) {
     case "active":
       return h.daemonStatus.running;
@@ -927,13 +1137,29 @@ function daemonStatusLabel(status: MailComponentStatus, h: HealthDict): string {
       return h.daemonStatus.stopping;
     case "inactive":
       return h.daemonStatus.stopped;
+    // supervisord collapses FATAL (given up) and BACKOFF (still retrying) into one
+    // `failed`; only the sub-state separates them, and only one of them needs the
+    // operator to press Restart.
     case "failed":
-      return h.daemonStatus.failed;
+      return subState === "fatal" ? h.daemonStatus.crashed : h.daemonStatus.failed;
     case "missing":
       return h.daemonStatus.missing;
     default:
       return h.daemonStatus.unknown;
   }
+}
+
+/**
+ * The one thing `failed` doesn't say: whether anything is still trying.
+ *
+ * Matches the LOWER-CASED supervisord word (mail-engine.ts lower-cases the container
+ * arm); systemd has no FATAL/BACKOFF, so the host flavor never hits either branch.
+ */
+function daemonSubStateHint(component: MailComponentHealth, h: HealthDict): string | null {
+  if (component.status !== "failed") return null;
+  if (component.subState === "fatal") return h.daemonHint.fatal;
+  if (component.subState === "backoff") return h.daemonHint.backoff;
+  return null;
 }
 
 function dnsStatusLabel(status: DnsCheckStatus, h: HealthDict): string {

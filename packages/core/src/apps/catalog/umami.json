@@ -20,9 +20,6 @@
       "image": "ghcr.io/umami-software/umami:postgresql-v2.19.0",
       "exposedPort": 3000,
       "exposed": true,
-      "ports": [
-        "3000:3000"
-      ],
       "routes": [
         {
           "port": 3000
@@ -48,7 +45,10 @@
         "retries": 10,
         "startPeriod": "30s"
       },
-      "restart": "unless-stopped"
+      "restart": "unless-stopped",
+      "ports": [
+        "3011:3000"
+      ]
     },
     {
       "name": "umami-db",

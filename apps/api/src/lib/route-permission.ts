@@ -34,7 +34,8 @@ import {
   canUseGitHubRepo,
   checkSourceTier,
   type SourceTier,
-} from "../modules/github/github-access";
+} from "@repo/platform/engine/modules/github/github-access";
+import type { PolicyId } from "./rate-limit/policies";
 
 /* ------------------------------------------------------------------ */
 /*  Tag types                                                          */
@@ -255,16 +256,7 @@ async function assertParentChain(
  * tagged routes). Override when a route warrants tighter or looser
  * limits than the default.
  */
-export type RateLimitPolicyId =
-  | "default-anon"
-  | "default-authed"
-  | "auth-tight"
-  | "auth-loose"
-  | "mcp"
-  | "read-authed"
-  | "write-authed"
-  | "webhook-ingress"
-  | "billing-portal";
+export type RateLimitPolicyId = PolicyId;
 
 /**
  * MCP exposure for a route. Presence of this block is the MCP allowlist:
@@ -372,8 +364,20 @@ export interface PermissionSpec {
    *   1. `body` declares `projectId` as REQUIRED — the auto-wired validator runs
    *      right after this middleware, so a missing id is a 400 before the handler.
    *   2. The handler asserts on that id before doing any work.
+   * Use `"query"` for GET collections: this middleware requires and authorizes
+   * the `projectId` query parameter itself before the handler runs.
    */
-  collectionProject?: boolean;
+  collectionProject?: boolean | "query";
+  /** The shared application operation emits this mutation's audit event for every transport. */
+  auditHandledByOperation?: boolean;
+  /**
+   * This adapter delegates every call to a shared authorized operation. Use for
+   * body/session-derived targets, where a wildcard pre-check would reject an
+   * otherwise valid exact resource grant. Authentication and request validation
+   * remain HTTP middleware; the operation resolves and authorizes the target.
+   * A successful adapter must apply its returned operation context.
+   */
+  authorizationHandledByOperation?: boolean;
   /**
    * Restrict this route to self-hosted instances. The secure router mounts the
    * `localOnly` middleware ahead of auth, so a request in CLOUD_MODE gets a 404
@@ -506,7 +510,11 @@ export function requirePermission(spec: PermissionSpec): MiddlewareHandler {
 
     const ghTarget = githubReadTarget(parsed, c);
 
-    if (ghTarget) {
+    if (spec.authorizationHandledByOperation) {
+      // The operation receives the authenticated context and performs the same
+      // target authorization as a native call, before invoking retained services.
+      leafId = "*";
+    } else if (ghTarget) {
       // Authorize against the caller's ACTUAL GitHub grant width instead of
       // the unsatisfiable {github,"*"} singleton check — see githubReadTarget.
       // `canUseGitHubRepo` gates membership itself and short-circuits to allow
@@ -566,12 +574,22 @@ export function requirePermission(spec: PermissionSpec): MiddlewareHandler {
 
       leafId = ghTarget.key;
     } else if (spec.collectionProject) {
-      // The body names the target project and the handler asserts on it — see
+      if (spec.collectionProject === "query") {
+        // GET collections carry the same explicit project scope in the query.
+        // Enforce it here; a missing id must never become a wildcard list.
+        const projectId = c.req.query("projectId");
+        if (!projectId?.trim()) return c.json({ error: "projectId query parameter required" }, 400);
+        await permission.assert(getRequestContext(c), {
+          resourceType: "project", resourceId: projectId,
+          action: parsed.isList ? "read" : parsed.action as Action,
+        });
+      }
+      // A body names the target project and the handler asserts on it — see
       // PermissionSpec.collectionProject for why the `"*"` pre-check is skipped
       // rather than kept as belt-and-braces. `leafId` stays "*" so the audit
       // record below is byte-identical to the collection branch's.
       leafId = "*";
-    } else if (parsed.isList) {
+    } else if (parsed.isList || (spec.collection && parsed.root !== parsed.leaf)) {
       if (parsed.root !== parsed.leaf) {
         // A nested collection belongs to the concrete parent named in the URL.
         // Authorizing `{service,"*"}` here made project-scoped tokens unable to
@@ -591,7 +609,7 @@ export function requirePermission(spec: PermissionSpec): MiddlewareHandler {
         await permission.assert(getRequestContext(c), {
           resourceType: parsed.root,
           resourceId: parentId,
-          action: "read",
+          action: parsed.isList ? "read" : parsed.action as Action,
         });
         leafId = "*";
       } else {
@@ -690,11 +708,16 @@ export function requirePermission(spec: PermissionSpec): MiddlewareHandler {
     // Run the handler.
     await next();
 
+    if (spec.authorizationHandledByOperation && c.res.status < 400 && !c.get("operationContextApplied"))
+      throw new Error("An operation-authorized route did not apply its authorized context");
+
     // After handler success: emit an audit event for write/admin/list-
     // -with-side-effects. Read/list are typically too noisy to log unless
     // the route opts in (TODO: per-route auditOnRead flag).
     const action = parsed.action;
-    if (action === "write" || action === "admin") {
+    // A cloud proxy may finish before reaching a migrated operation. Only skip
+    // this emitter when that operation actually recorded this invocation.
+    if ((!spec.auditHandledByOperation || !c.get("operationAuditRecorded")) && (action === "write" || action === "admin")) {
       const status = c.res.status;
       if (status >= 200 && status < 400) {
         // For CREATE flows, the handler stamps the new id via

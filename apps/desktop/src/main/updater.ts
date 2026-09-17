@@ -17,7 +17,16 @@
  */
 
 import { app, net, shell } from "electron";
-import { resolveDesktopUpdate, type GithubReleasePayload } from "@repo/core";
+import {
+  changelogMarkdownUrl,
+  extractChangelogSection,
+  resolveDesktopUpdate,
+  RELEASES_LATEST_API,
+  type DesktopUpdateAsset,
+  type DesktopUpdateCheck,
+  type DesktopUpdateSnapshot,
+  type GithubReleasePayload,
+} from "@repo/core";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -30,61 +39,88 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { advisoryManifestUrl, parseManifest, type Advisory, type AdvisoryManifest } from "@repo/core";
+import { advisoryManifestUrl, parseManifest, type AdvisoryManifest } from "@repo/core";
 import { isAllowedUpdateAssetUrl } from "./security";
 
-const RELEASES_API = "https://api.github.com/repos/oblien/openship/releases/latest";
+export type UpdateAsset = DesktopUpdateAsset;
+export type UpdateInfo = Extract<DesktopUpdateCheck, { available: true }>;
+export type UpdateCheck = DesktopUpdateSnapshot;
 
-export interface UpdateAsset {
-  name: string;
-  url: string;
-  size: number;
+let cachedCheck: UpdateCheck | null = null;
+let inFlightCheck: Promise<UpdateCheck> | null = null;
+
+/** Startup, renderer navigation and manual checks share one request in flight. */
+export function checkForUpdate(options: { force?: boolean } = {}): Promise<UpdateCheck> {
+  if (inFlightCheck) return inFlightCheck;
+  if (!options.force && cachedCheck) return Promise.resolve(cachedCheck);
+  inFlightCheck = checkForUpdateUncached()
+    .then((result) => {
+      // Offline is not a successful session cache: allow the next caller to retry.
+      cachedCheck = result.latest ? result : null;
+      return result;
+    })
+    .finally(() => {
+      inFlightCheck = null;
+    });
+  return inFlightCheck;
 }
-export interface UpdateInfo {
-  available: true;
-  version: string;
-  notes: string;
-  asset: UpdateAsset;
-  /**
-   * The RELEASE ADVISORY that authorizes interrupting the user at launch, or
-   * null for a routine release: installable from Settings → Updates, but no
-   * modal, no notification. Comes straight from the advisory manifest via
-   * `resolveDesktopUpdate` — this process never decides it for itself.
-   */
-  announcement: Advisory | null;
-}
-export type UpdateCheck = UpdateInfo | { available: false };
 
 /**
- * Ask GitHub for the latest release + the advisory manifest pinned to its tag,
- * and hand both to `resolveDesktopUpdate`. Never throws — a failed check
- * (offline, rate-limited) resolves to "no update".
+ * Ask GitHub for the latest release, then read the changelog and advisory
+ * manifest pinned to its tag before handing the result to
+ * `resolveDesktopUpdate`. Never throws — a failed release check (offline,
+ * rate-limited) resolves to "no update".
  *
  * This function is I/O only. The whole decision — which asset this platform
  * pulls, whether the release is newer, and whether an advisory authorizes
  * interrupting the user — lives in @repo/core, unit-tested against synthetic
  * payloads. Nothing here re-checks or re-derives any of it.
  */
-export async function checkForUpdate(): Promise<UpdateCheck> {
+async function checkForUpdateUncached(): Promise<UpdateCheck> {
   try {
-    const res = await net.fetch(RELEASES_API, {
+    const res = await net.fetch(RELEASES_LATEST_API, {
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": "Openship-Desktop",
       },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return { available: false };
+    if (!res.ok) return { available: false, latest: null, manifest: null };
     const data = (await res.json()) as GithubReleasePayload;
-    return resolveDesktopUpdate({
-      releasePayload: data,
-      platform: process.platform,
-      arch: process.arch,
-      currentVersion: app.getVersion(),
-      manifest: await fetchManifest((data?.tag_name ?? "").trim()),
-    });
+    const tag = (data?.tag_name ?? "").trim();
+    if (!tag) return { available: false, latest: null, manifest: null };
+    // These are independent, fail-soft reads. A missing changelog must never
+    // suppress a critical advisory (or the reverse).
+    const [manifest, changelogNotes] = await Promise.all([fetchManifest(tag), fetchChangelog(tag)]);
+    return {
+      ...resolveDesktopUpdate({
+        releasePayload: data,
+        platform: process.platform,
+        arch: process.arch,
+        currentVersion: app.getVersion(),
+        manifest,
+        changelogNotes,
+      }),
+      latest: { version: tag.replace(/^v/, ""), tag, notes: changelogNotes ?? "" },
+      manifest,
+    };
   } catch {
-    return { available: false };
+    return { available: false, latest: null, manifest: null };
+  }
+}
+
+/** Exact release section from the immutable changelog at this release tag. */
+async function fetchChangelog(tag: string): Promise<string | null> {
+  if (!tag) return null;
+  try {
+    const res = await net.fetch(changelogMarkdownUrl(tag), {
+      headers: { Accept: "text/markdown", "User-Agent": "Openship-Desktop" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    return extractChangelogSection(await res.text(), tag);
+  } catch {
+    return null;
   }
 }
 
@@ -245,11 +281,9 @@ function installMac(dmg: string): void {
   const staged = join(app.getPath("temp"), "openship-update", "Openship.app");
 
   // Mount, copy the new .app out, unmount — all before we quit.
-  const attach = spawnSync(
-    "hdiutil",
-    ["attach", "-nobrowse", "-readonly", "-noverify", dmg],
-    { encoding: "utf8" },
-  );
+  const attach = spawnSync("hdiutil", ["attach", "-nobrowse", "-readonly", "-noverify", dmg], {
+    encoding: "utf8",
+  });
   if (attach.status !== 0) return fallbackOpen(dmg);
   const mount = (attach.stdout.match(/\/Volumes\/[^\n]*/g) ?? []).pop()?.trim();
   if (!mount) return fallbackOpen(dmg);

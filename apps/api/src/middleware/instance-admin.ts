@@ -27,28 +27,11 @@
  */
 
 import type { Context, Next } from "hono";
-import { ForbiddenError } from "@repo/core";
-import { db, schema, eq } from "@repo/db";
+import { instanceAuthorization } from "../lib/instance-authorization";
 
 import { getRequestContext, type RequestContext } from "../lib/request-context";
 
 const DENIED = "Requires an instance administrator";
-
-/** True when this principal is an admin OF THE INSTANCE (not of any org). */
-async function isInstanceAdmin(ctx: RequestContext): Promise<boolean> {
-  // A scoped token must never carry instance-takeover capability, whoever owns
-  // it — a narrowly-granted PAT reaching a whole-instance export would defeat
-  // the point of scoping. Unscoped PATs (how the CLI authenticates) still pass.
-  if (ctx.tokenScope) return false;
-
-  const [row] = await db
-    .select({ role: schema.user.role })
-    .from(schema.user)
-    .where(eq(schema.user.id, ctx.userId))
-    .limit(1);
-
-  return row?.role === "admin";
-}
 
 /**
  * Route middleware: 403 unless the caller is an instance administrator.
@@ -66,7 +49,8 @@ export function requireInstanceAdmin() {
       return c.json({ error: "Unauthorized" }, 401);
     }
 
-    if (!(await isInstanceAdmin(ctx))) {
+    const action = c.req.method === "GET" || c.req.method === "HEAD" ? "read" : "write";
+    if (!(await instanceAuthorization.allows(ctx, action))) {
       return c.json({ error: DENIED, code: "INSUFFICIENT_INSTANCE_ROLE" }, 403);
     }
 
@@ -80,7 +64,5 @@ export function requireInstanceAdmin() {
  * middleware. Throws ForbiddenError (403).
  */
 export async function assertInstanceAdmin(ctx: RequestContext): Promise<void> {
-  if (!(await isInstanceAdmin(ctx))) {
-    throw new ForbiddenError(DENIED);
-  }
+  await instanceAuthorization.assert(ctx);
 }

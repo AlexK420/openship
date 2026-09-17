@@ -11,12 +11,9 @@ import { StorageSettings } from "./StorageSettings";
 import { ResourceSettings } from "./ResourceSettings";
 
 /**
- * Project → Runtime tab. READ-ONLY by design.
- *
- * Config (build/runtime/env) has a single edit owner: the deploy wizard. This
- * tab only DISPLAYS the project's current configuration and links to the wizard
- * (opened with ?projectId) for any change — so editing never lives in two
- * places and every change goes through the create-a-new-version flow.
+ * Project → Configuration. Build settings link to the deploy wizard; project
+ * environment, resources and storage use their existing focused editors.
+ * Shared project environment remains available for every workload type.
  *
  * Visual shell (SectionCard + ICON_TONES) mirrors the sibling settings tabs
  * (GitSettings / BackupSettings / DomainSettings) so the tab fills the same
@@ -91,7 +88,6 @@ export const BuildSettings = () => {
   const { buildData, projectData, servicesData, id } = useProjectSettings();
   const { t } = useI18n();
   const router = useRouter();
-  const [envOpen, setEnvOpen] = useState(false);
 
   const isWebmail = projectData?.framework === "webmail";
   const services = servicesData.services;
@@ -180,6 +176,7 @@ export const BuildSettings = () => {
             </button>
           }
         />
+        <ProjectEnvironmentSettings />
       </div>
     );
   }
@@ -251,6 +248,18 @@ export const BuildSettings = () => {
           meaningful for a project with a running container. */}
       {workload !== "static" && <StorageSettings />}
 
+      <ProjectEnvironmentSettings />
+    </div>
+  );
+};
+
+/** Shared project inputs remain editable for single apps, Compose and monorepos. */
+export function ProjectEnvironmentSettings() {
+  const { id } = useProjectSettings();
+  const { t } = useI18n();
+  const [envOpen, setEnvOpen] = useState(false);
+  return (
+    <>
       {/* Environment variables — edited in place via a safe per-variable editor
           (diff-merge; untouched secrets are never re-sent), NOT the wizard. */}
       <SectionCard
@@ -270,7 +279,7 @@ export const BuildSettings = () => {
         }
       />
 
-      <EnvVarsEditor projectId={id} isOpen={envOpen} onClose={() => setEnvOpen(false)} />
-    </div>
+      <EnvVarsEditor key={id} projectId={id} isOpen={envOpen} onClose={() => setEnvOpen(false)} />
+    </>
   );
-};
+}

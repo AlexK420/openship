@@ -20,17 +20,17 @@ import type { Context } from "hono";
 import type { ImportedSite, ManualCert } from "@repo/adapters";
 import { repos } from "@repo/db";
 import { SYSTEM, safeErrorMessage } from "@repo/core";
-import { sshManager } from "../../lib/ssh-manager";
-import { env } from "../../config";
+import { sshManager } from "@repo/platform/engine/lib/ssh-manager";
+import { env } from "@repo/platform/engine/config/index";
 import { assertNotCloud, platform } from "../../lib/controller-helpers";
 import { ensureLocalUser } from "../../lib/local-user";
-import { createProject } from "../projects/project-crud.service";
-import { getCloudConnectionStatusForOrg } from "../../lib/cloud/session";
-import { ensureManagedEdgeProxy, ManagedEdgeError } from "../../lib/managed-edge-proxy";
+import { createProject } from "@repo/platform/engine/modules/projects/project-crud.service";
+import { getCloudConnectionStatusForOrg } from "@repo/platform/engine/lib/cloud/session";
+import { ensureManagedEdgeProxy, ManagedEdgeError } from "@repo/platform/engine/lib/managed-edge-proxy";
 import { ensureAdoptDeployment, provisionSelfAppEdge } from "../../lib/startup/self-deploy";
-import { ensureLocalServer } from "../../lib/startup/self-server";
-import { reapplyProjectLiveRoutes } from "../domains/project-route.service";
-import { refreshSelfAppPublicUrl } from "../../lib/public-url";
+import { ensureLocalServer } from "@repo/platform/engine/lib/startup/self-server";
+import { reapplyProjectLiveRoutes } from "@repo/platform/engine/modules/domains/project-route.service";
+import { refreshSelfAppPublicUrl } from "@repo/platform/engine/lib/public-url";
 import { streamSSE } from "../../lib/sse";
 import {
   createSetupSession,
@@ -39,7 +39,7 @@ import {
   appendSetupLog,
   finishSetupSession,
   subscribeSetupSession,
-} from "./setup-session";
+} from "@repo/platform/engine/modules/system/setup-session";
 
 const APP_SLUG = "openship";
 const APP_TEMPLATE_ID = "openship";
@@ -127,7 +127,7 @@ export async function cloudConnect(c: Context) {
     const { exchangeCodeWithCloud, mirrorCloudUser, storeCloudSession } = await import(
       "../../lib/cloud-auth-proxy"
     );
-    const { clearAuthModeCache, isAuthModePinned } = await import("../../lib/auth-mode");
+    const { clearAuthModeCache, isAuthModePinned } = await import("@repo/platform/engine/lib/auth-mode");
     const data = await exchangeCodeWithCloud(body.code, body.codeVerifier);
     if (!data) return c.json({ error: "Could not verify with Openship Cloud" }, 401);
     const email = (data.user as { email?: string | null }).email ?? null;

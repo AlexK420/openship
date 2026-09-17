@@ -24,13 +24,16 @@ const h = vi.hoisted(() => ({
   mailServer: { organizationId: "org1" } as { organizationId: string } | undefined,
   project: undefined as { organizationId: string } | undefined,
   destination: { id: "dest1", kind: "s3" } as Record<string, unknown> | undefined,
+  policies: new Map<string, Record<string, unknown>>(),
 }));
 
 vi.mock("@repo/db", () => ({
+  withAdvisoryLock: async (_key: string, run: () => Promise<unknown>) => run(),
   repos: {
     project: { findById: vi.fn(async () => h.project) },
     server: { get: vi.fn(async () => h.mailServer) },
     backupPolicy: {
+      findById: async (id: string) => h.policies.get(id),
       iterateEnabledForRetention: async function* () {},
     },
     backupRun: {
@@ -54,22 +57,25 @@ vi.mock("@repo/adapters", () => ({
   // mock has to carry it or nothing under test loads. Its value is irrelevant here.
   HOST_STATE_DIR: "/root/.openship",
   resolveDestination: () => ({
+    // Per-key outcomes, never a throw — the real contract. A mock returning
+    // nothing let the prune read a refused delete as a successful one.
     deleteMany: vi.fn(async (keys: string[]) => {
       h.deletedKeys.push(keys);
+      return { deleted: keys, failed: [] };
     }),
   }),
 }));
 
-vi.mock("../backup-destinations/hydrate-server", () => ({
+vi.mock("@repo/platform/engine/modules/backup-destinations/hydrate-server", () => ({
   toAdapterRow: vi.fn(async (row: unknown) => row),
 }));
 
-const { prunePolicy } = await import("./retention-prune");
+const { prunePolicy } = await import("@repo/platform/engine/modules/backups/retention-prune");
 
 type PolicyArg = Parameters<typeof prunePolicy>[0];
 
-const mailPolicy = (over: Record<string, unknown> = {}): PolicyArg =>
-  ({
+const mailPolicy = (over: Record<string, unknown> = {}): PolicyArg => {
+  const policy = {
     id: "bkp_mail",
     sourceKind: "mail_server",
     projectId: null,
@@ -80,7 +86,10 @@ const mailPolicy = (over: Record<string, unknown> = {}): PolicyArg =>
     retainCount: 2,
     retainDays: null,
     ...over,
-  }) as unknown as PolicyArg;
+  };
+  h.policies.set(policy.id, policy);
+  return policy as unknown as PolicyArg;
+};
 
 /** A succeeded mail run, `ageDays` old. */
 const run = (id: string, ageDays: number, over: Record<string, unknown> = {}) => ({
@@ -127,7 +136,7 @@ describe("prunePolicy — mail-server policies", () => {
     h.runs = [run("newest", 1), run("middle", 5), run("oldest", 9)];
     const result = await prunePolicy(mailPolicy({ retainCount: 2 }));
 
-    expect(result).toEqual({ dropped: 1, skipped: null });
+    expect(result).toEqual({ dropped: 1, deferred: 0, skipped: null });
     expect(h.softDeleted).toEqual(["oldest"]);
     // Artifacts AND the manifest leave the destination, or the bytes outlive the row.
     expect(h.deletedKeys).toEqual([["mail/oldest.tar.zst", "mail/oldest.json"]]);
@@ -148,7 +157,7 @@ describe("prunePolicy — mail-server policies", () => {
     ];
     const result = await prunePolicy(mailPolicy({ retainCount: 1, retainDays: 30 }));
 
-    expect(result).toEqual({ dropped: 0, skipped: null });
+    expect(result).toEqual({ dropped: 0, deferred: 0, skipped: null });
     expect(h.softDeleted).toEqual([]);
   });
 
@@ -166,7 +175,7 @@ describe("prunePolicy — mail-server policies", () => {
 
     // No org means no scoped read is even possible; deleting on a guess would be
     // a cross-tenant delete.
-    expect(result).toEqual({ dropped: 0, skipped: "mail server row is gone" });
+    expect(result).toEqual({ dropped: 0, deferred: 0, skipped: "mail server row is gone" });
     expect(h.listCalls).toEqual([]);
     expect(h.softDeleted).toEqual([]);
   });
@@ -175,7 +184,7 @@ describe("prunePolicy — mail-server policies", () => {
     h.runs = [run("a", 1), run("b", 2), run("c", 3)];
     const result = await prunePolicy(mailPolicy({ retainCount: -1 }));
 
-    expect(result).toEqual({ dropped: 0, skipped: "retention set to unlimited" });
+    expect(result).toEqual({ dropped: 0, deferred: 0, skipped: "retention set to unlimited" });
     expect(h.softDeleted).toEqual([]);
   });
 
@@ -183,7 +192,7 @@ describe("prunePolicy — mail-server policies", () => {
     h.runs = [run("a", 400)];
     const result = await prunePolicy(mailPolicy({ retainCount: null, retainDays: null }));
 
-    expect(result).toEqual({ dropped: 0, skipped: "retention set to unlimited" });
+    expect(result).toEqual({ dropped: 0, deferred: 0, skipped: "retention set to unlimited" });
   });
 
   it("still prunes project policies by projectId", async () => {

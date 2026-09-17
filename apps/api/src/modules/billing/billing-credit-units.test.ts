@@ -6,7 +6,7 @@ import {
   MILLI_PER_CREDIT,
   OBLIEN_QUOTA_MAX_CREDITS,
   OBLIEN_QUOTA_MAX_MILLI,
-} from "./billing-credit-units";
+} from "@repo/platform/engine/modules/billing/billing-credit-units";
 
 describe("credit-unit boundary", () => {
   it("divides milli → Oblien credits (÷1000)", () => {

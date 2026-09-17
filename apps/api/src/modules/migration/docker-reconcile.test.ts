@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { DockerContainerDetail } from "@repo/adapters";
-import type { ManifestProjectEntry } from "../../lib/openship-manifest";
+import type { ManifestProjectEntry } from "@repo/platform/engine/lib/openship-manifest";
 import {
   reconcileOpenshipProjects,
   isBuildHelper,
@@ -10,8 +10,8 @@ import {
   toDiscoveredService,
   parseComposePort,
   isExternalHostPublish,
-} from "./docker-reconcile";
-import type { ComposeService } from "../../lib/compose-parser";
+} from "@repo/platform/engine/modules/migration/docker-reconcile";
+import type { ComposeService } from "@repo/platform/engine/lib/compose-parser";
 
 describe("isBuildHelper", () => {
   it("is true only for a transient builder (openship.build, no deployment/service)", () => {
@@ -159,6 +159,44 @@ describe("splitEnvByProvenance — inverts Docker's create-time env merge (#394)
 });
 
 describe("toDiscoveredService — env import separates operator config from image defaults (#394)", () => {
+  it("preserves an exact-match flag from the proxy route index", () => {
+    const detail = container({
+      labels: {},
+      ports: [{ privatePort: 3000, publicPort: 3100, type: "tcp" }],
+    });
+    const svc = toDiscoveredService(
+      detail,
+      undefined,
+      undefined,
+      undefined,
+      new Map([
+        [
+          3100,
+          [
+            {
+              port: 3100,
+              path: "/mcp",
+              exact: true,
+              domains: ["mcp.example.com"],
+              ssl: { enabled: false },
+            },
+          ],
+        ],
+      ]),
+    );
+
+    expect(svc.existingRoute).toEqual([
+      {
+        port: 3100,
+        path: "/mcp",
+        exact: true,
+        domains: ["mcp.example.com"],
+        ssl: { enabled: false },
+        source: undefined,
+      },
+    ]);
+  });
+
   it("imports the operator's vars and reports the image-supplied ones with values", () => {
     const detail = container({ labels: {}, env: CAPTURED.overrideMatchingDefault });
 

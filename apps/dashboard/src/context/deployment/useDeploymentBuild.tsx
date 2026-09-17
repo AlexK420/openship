@@ -19,17 +19,26 @@ import { useServerGitHubConnectModal } from "@/components/github/ServerGitHubCon
 import type { DeploymentConfig, DeploymentState, DeploymentStatus, ServiceDeployStatus } from "./types";
 import { syncActiveModeSnapshot } from "./mode-config";
 import {
+  planDeploymentEnvPersistence,
+  planMatchedExistingProjectEnvPersistence,
+} from "./env-payload";
+import { createProjectEnvEditState, type ProjectEnvDiff } from "@/lib/project-env-diff";
+import {
   BUILD_PHASES,
   DEFAULT_CONFIG,
   INITIAL_STATE,
   ensurePublicEndpoints,
-  normalizeComposeService,
   resolveBuildElapsedMs,
   syncPublicEndpointState,
   usesServiceDeployment,
   workloadOf,
 } from "./types";
-import type { RawComposeService } from "./types";
+import {
+  BUILD_SESSION_ERROR_FALLBACK,
+  classifyBuildSessionFailure,
+  hydrateSnapshotServices,
+  type BuildSessionLoadResult,
+} from "./load-session";
 import type { WorkloadType } from "@repo/core";
 import {
   deployErrorCloudCapability,
@@ -39,6 +48,14 @@ import {
 const ERROR_DEBOUNCE_MS = 1000;
 const MAX_RENDERED_BUILD_LOGS = 2000;
 const BUILD_STATUS_POLL_MS = 3000;
+
+async function persistProjectEnvDiff(projectId: string, diff: ProjectEnvDiff | null) {
+  if (!diff || (diff.upserts.length === 0 && diff.deletes.length === 0)) return;
+  await projectsApi.mergeEnv(projectId, {
+    environment: "production",
+    ...diff,
+  });
+}
 
 // Map a getBuildStatus snapshot's per-service rows into UI service statuses.
 // Shared by the initial hydrate (loadBuildSession) and the self-heal poll so
@@ -314,15 +331,23 @@ export function useDeploymentBuild(
         deploymentSuccess: true,
         deploymentFailed: false,
         deploymentCanceled: false,
+        cancellationPending: false,
         currentProgress: 100,
         currentStepIndex: 5,
         isDeploying: false,
         failureMessage: "",
         warningMessage,
-        // A warning on success means a partial failure (some services failed):
-        // hold it for an explicit keep/reject decision. The server flag takes
-        // over on refresh (loadBuildSession) — false once the user keeps it.
-        decisionPending: data?.decisionPending ?? !!warningMessage,
+        // THE SERVER'S FLAG ONLY. Never inferred from the presence of a warning.
+        //
+        // This used to read `?? !!warningMessage`, on the premise that "a warning on success means
+        // a partial failure". It doesn't. A successful deploy also warns when its domains aren't
+        // routed yet, or are routed with no TLS certificate — and those warnings then opened the
+        // failed-services keep/reject modal on a deploy where nothing failed, reading
+        // "0 of 5 services failed" over a "Retry 0 Failed Services" button.
+        //
+        // A warning is information; a decision is a thing the server is holding open. Only the
+        // server knows which, and it now says so on this event (`finalizeComposeDeploy`).
+        decisionPending: !!data?.decisionPending,
         decisionFailedServiceIds: data?.partial?.failed ?? prev.decisionFailedServiceIds,
         // Advisory port-check rides the `complete` event; skips only ever arrive
         // via refresh (build-status), so keep the prior skip list here.
@@ -426,6 +451,7 @@ export function useDeploymentBuild(
       setState((prev) => ({
         ...prev,
         deploymentCanceled: true,
+        cancellationPending: true,
         deploymentFailed: false,
         deploymentSuccess: false,
         isDeploying: false,
@@ -644,6 +670,16 @@ export function useDeploymentBuild(
       return null;
     }
 
+    const envPlan = planDeploymentEnvPersistence({
+      projectId: config.projectId,
+      envVars: config.envVars,
+      baseline: config.projectEnvBaseline,
+    });
+    if (!envPlan.ok) {
+      showToast(envPlan.error, "error", "Environment variables");
+      return null;
+    }
+
     lastErrorRef.current = null;
 
     const localBuildStartedAt = new Date().toISOString();
@@ -662,6 +698,7 @@ export function useDeploymentBuild(
         deploymentSuccess: false,
         deploymentFailed: false,
         deploymentCanceled: false,
+        cancellationPending: false,
         failureMessage: "",
         warningMessage: "",
         decisionPending: false,
@@ -688,11 +725,11 @@ export function useDeploymentBuild(
 
     try {
       // ── Save-only (Edit from the Runtime page): the project ALREADY exists,
-      // so persist build + runtime config in ONE atomic call (POST /:id/options)
-      // and STOP. Deliberately does NOT call `ensure` (which would resend git +
-      // publicEndpoints + a re-detected framework and clobber live config/routes)
-      // and does NOT touch env (env has its own per-variable editor — a blind
-      // replace here would wipe/corrupt masked secrets). No deploy. ────────────
+      // so persist build + runtime config through POST /:id/options and STOP.
+      // Deliberately does NOT call `ensure` (which would resend git + routes + a
+      // re-detected framework). Env uses the shared per-key merge contract:
+      // untouched masked secrets are omitted and explicit edits are persisted
+      // before success is reported. No deploy. ────────────────────────────────
       if (saveConfigOnly) {
         const projectId = config.projectId;
         if (!projectId) {
@@ -701,6 +738,7 @@ export function useDeploymentBuild(
         }
         try {
           await projectsApi.setOptions(projectId, {
+            ...(!isSourceless ? { gitBranch: config.branch } : {}),
             framework: config.framework,
             packageManager: config.packageManager,
             buildImage: config.buildImage,
@@ -724,6 +762,7 @@ export function useDeploymentBuild(
               ? { runtimeMode: config.runtimeMode }
               : {}),
           });
+          await persistProjectEnvDiff(projectId, envPlan.merge);
           showToast("Configuration saved", "success", "Saved");
           return projectId;
         } catch (err) {
@@ -826,22 +865,38 @@ export function useDeploymentBuild(
       // errors but the project row already exists at this point.
       ensuredProjectId = projectData.project_id;
 
-      // Step 2: Create deployment with config snapshot + env vars
-      const envVarsMap: Record<string, string> = {};
-      if (config.envVars && config.envVars.length > 0) {
-        for (const ev of config.envVars) {
-          if (ev.key.trim()) {
-            envVarsMap[ev.key] = ev.value;
-          }
+      let resolvedEnvPlan = envPlan;
+      if (!config.projectId && projectData.created !== true) {
+        // `ensure` de-duplicates by project slug/branch. A wizard opened as a
+        // nominally new repo can therefore resolve to an existing project even
+        // though it never loaded that project's env. Re-read the authoritative
+        // store and turn the wizard rows into a non-destructive partial merge:
+        // submitted values may update matching keys, omitted saved keys remain.
+        const envRes = await projectsApi.getEnv(projectData.project_id);
+        const matchedEnvPlan = planMatchedExistingProjectEnvPersistence({
+          envVars: config.envVars,
+          persisted: createProjectEnvEditState(envRes?.data ?? []),
+        });
+        if (!matchedEnvPlan.ok) {
+          throw new Error(matchedEnvPlan.error);
         }
+        resolvedEnvPlan = matchedEnvPlan;
       }
 
+      // Existing-project env is authoritative in its project store. Apply only
+      // the editor diff before build/access; omitting its envVars payload avoids
+      // the endpoint's legacy full-replace behavior. A genuinely new project
+      // still sends its initial values through build/access to create the store.
+      await persistProjectEnvDiff(projectData.project_id, resolvedEnvPlan.merge);
+
+      // Step 2: Create deployment with config snapshot + env vars
       const data = await deployApi.buildAccess({
         projectId: projectData.project_id,
         branch: config.branch || undefined,
         // Folder-upload: adopt the uploaded source (workspace or staging dir).
         uploadSessionId: config.uploadSessionId || undefined,
-        envVars: Object.keys(envVarsMap).length > 0 ? envVarsMap : undefined,
+        envVars: resolvedEnvPlan.buildAccessEnvVars,
+        sourceEnvKeys: resolvedEnvPlan.sourceEnvKeys,
         // "None" routing → explicit [] (no public URL). Must be [], not
         // undefined: undefined makes the backend auto-derive a free subdomain.
         publicEndpoints: !isServiceDeployment
@@ -876,13 +931,10 @@ export function useDeploymentBuild(
           config.projectType === "docker" || isServiceDeployment
             ? "docker"
             : (overrides?.runtimeMode ?? config.runtimeMode),
-        // Send the mode for BOTH multi-app shapes so the operator's per-app vs
-        // single choice reaches the backend. Monorepo was previously omitted,
-        // leaving the backend to guess via shouldUseProjectServicePipeline.
-        serviceDeploymentMode:
-          config.projectType === "services" || config.projectType === "monorepo"
-            ? config.serviceDeploymentMode
-            : undefined,
+        // A branch scan can replace Compose with a single app. Send that choice
+        // explicitly so retained service rows from the previous branch cannot
+        // route this deployment back through the service pipeline.
+        serviceDeploymentMode: config.serviceDeploymentMode,
         // Cloud resource tier sizes a long-lived container — a web app OR a
         // worker (#538). Only a static (Pages) deploy has no workspace to size,
         // so gate on the workload, not the legacy hasServer boolean (a worker
@@ -903,6 +955,8 @@ export function useDeploymentBuild(
               image: service.image,
               build: service.build,
               dockerfile: service.dockerfile,
+              buildArgs: service.buildArgs,
+              advanced: service.advanced,
               ports: service.ports,
               dependsOn: service.dependsOn,
               environment: service.environment,
@@ -1003,7 +1057,8 @@ export function useDeploymentBuild(
       !state.deploymentSuccess &&
       !state.deploymentFailed &&
       !state.deploymentCanceled;
-    if (!deploymentId || !active || buildStream.isConnected) return;
+    const waitingCancellation = state.deploymentCanceled && state.cancellationPending;
+    if (!deploymentId || (!active && !waitingCancellation) || buildStream.isConnected) return;
 
     let cancelled = false;
     const tick = async () => {
@@ -1034,6 +1089,7 @@ export function useDeploymentBuild(
           deploymentSuccess: !isActive && status === "ready",
           deploymentFailed: !isActive && status === "failed",
           deploymentCanceled: !isActive && status === "cancelled",
+          cancellationPending: !!data.cancellationPending,
           ...(mapped.length ? { serviceStatuses: mapped } : {}),
           ...(polledLogs.length > prev.buildLogs.length ? { buildLogs: polledLogs } : {}),
           ...(!isActive
@@ -1073,12 +1129,13 @@ export function useDeploymentBuild(
     state.deploymentSuccess,
     state.deploymentFailed,
     state.deploymentCanceled,
+    state.cancellationPending,
     buildStream.isConnected,
     buildStream.disconnect,
   ]);
 
   const loadBuildSession = useCallback(
-    async (deploymentId: string): Promise<{ success: boolean; error?: string }> => {
+    async (deploymentId: string): Promise<BuildSessionLoadResult> => {
       try {
         lastErrorRef.current = null;
 
@@ -1092,9 +1149,13 @@ export function useDeploymentBuild(
         const data = await deployApi.getBuildStatus(deploymentId);
 
         if (!data.success) {
-          const errorMessage = data.error || "Failed to load build session";
+          const errorMessage = data.error || BUILD_SESSION_ERROR_FALLBACK;
           showToast(errorMessage, "error", "Error");
-          return { success: false, error: errorMessage };
+          // The server answered and said no: the only arm that legitimately
+          // renders the page's "not found" state (a genuine miss comes through
+          // here as a soft failure or, more often, as the 404 classified in the
+          // catch below). Everything else must stay distinguishable from it.
+          return { success: false, notFound: true, error: errorMessage };
         }
 
         // Restore config from session
@@ -1180,9 +1241,13 @@ export function useDeploymentBuild(
             // "Edit Configuration" — so the compose wizard shows them even when
             // the service table is empty (e.g. a deploy that failed before its
             // rows were persisted). Falls back to whatever's already loaded.
-            services: Array.isArray(data.composeServices)
-              ? (data.composeServices as RawComposeService[]).map(normalizeComposeService)
-              : prev.services,
+            // `carryServiceIds` (inside the helper): the snapshot has no service-row ids,
+            // and this assignment REPLACES the list — so without it, hydrating here after
+            // the rows had loaded dropped the ids the env editor needs to reveal stored
+            // values. The helper also falls back to the loaded list when the snapshot ships
+            // an EMPTY array, which a `services`-type deploy does (#604): `[]` must not
+            // blank a populated list.
+            services: hydrateSnapshotServices(data.composeServices, prev.services),
             options: {
               buildCommand: apiConfig.buildCommand || prev.options.buildCommand,
               outputDirectory: apiConfig.outputDirectory || prev.options.outputDirectory,
@@ -1230,6 +1295,7 @@ export function useDeploymentBuild(
           deploymentSuccess: !isActive && status === "ready",
           deploymentFailed: !isActive && status === "failed",
           deploymentCanceled: !isActive && status === "cancelled",
+          cancellationPending: !!data.cancellationPending,
           isDeploying: isLive,
           screenshots: !isActive ? (data.screenshots || []) : [],
           failureMessage: !isActive ? (data.failureMessage || "") : "",
@@ -1298,6 +1364,7 @@ export function useDeploymentBuild(
             screenshots: data.screenshots,
             project_id: data.project_id,
             warningMessage: data.warningMessage,
+            decisionPending: data.decisionPending,
           });
           if (data.warningMessage) {
             showToast(data.warningMessage, "success", "Deployment Ready With Warnings");
@@ -1313,9 +1380,14 @@ export function useDeploymentBuild(
         return { success: true };
       } catch (err) {
         console.error("Error loading build session:", err);
-        const errorMessage = getApiErrorMessage(err, "Failed to load build session");
+        // Only a server-confirmed 404 is "this deployment does not exist". A
+        // throw while hydrating a successful response — or a 5xx/network
+        // failure — is a load error the page can retry, not proof the resource
+        // is gone (#604: this catch used to feed every one of them into the
+        // "not found" screen).
+        const { notFound, error: errorMessage } = classifyBuildSessionFailure(err);
         showToast(errorMessage, "error", "Error");
-        return { success: false, error: errorMessage };
+        return { success: false, notFound, error: errorMessage };
       }
     },
     [buildStream, setConfig, showToast, writeToTerminal, handleSuccessMessage, handleFailureMessage, handleCanceled],
@@ -1328,11 +1400,18 @@ export function useDeploymentBuild(
 
     try {
       const response = await deployApi.cancel(state.deploymentId);
-      if (response.success) {
+      if (response.success || response.pending) {
         buildStream.disconnect();
         canStreamContainer.current = false;
         handleCanceled(response.message);
-        showToast(response.message || "Deployment cancelled", "success", "Cancelled");
+        if (response.pending) {
+          showToast(response.message, "info", "Cancellation pending");
+        } else {
+          // The API only returns this branch after build_session.finishedAt is
+          // durable, so no follow-up poll is required to prove quiescence.
+          setState((prev) => ({ ...prev, cancellationPending: false }));
+          showToast(response.message || "Deployment cancelled", "success", "Cancelled");
+        }
       } else {
         showToast(response.error || "Failed to stop deployment", "error", "Error");
       }
@@ -1382,6 +1461,7 @@ export function useDeploymentBuild(
           deploymentSuccess: false,
           deploymentFailed: false,
           deploymentCanceled: false,
+          cancellationPending: false,
           failureMessage: "",
           warningMessage: "",
           decisionPending: false,

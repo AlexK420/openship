@@ -3,13 +3,15 @@ import { networkInterfaces } from "node:os";
 
 import {
   explainHostChannelCause,
+  hostChannelAccount,
   hostFirewallRule,
+  HOST_CHANNEL_AUTH_REJECTED,
   HOST_CHANNEL_NOT_PROVISIONED,
   HOST_CHANNEL_UNPROVISIONED,
 } from "@repo/core";
 
 import type { CommandExecutor, SshConfig } from "../types";
-import { HostChannelUnavailableError } from "./errors";
+import { HostChannelUnavailableError, isSshAuthError } from "./errors";
 import { LocalExecutor } from "./local-executor";
 import { probeTcpDetailed, type TcpProbeFailure, type TcpProbeResult } from "./reachability";
 import { SshExecutor } from "./ssh-executor";
@@ -76,6 +78,7 @@ export function setHostControlOverride(disabled: boolean | null): void {
 /** Host control explicitly switched off — by the operator's Settings toggle
  *  (runtime override) or, absent that, by `--no-host-control` at install. */
 export function hostControlDisabled(): boolean {
+  if (process.env.OPENSHIP_NATIVE === "true" && process.env.OPENSHIP_NATIVE_ALLOW_HOST_EXECUTION !== "true") return true;
   return (
     hostControlOverride ??
     process.env.OPENSHIP_HOST_CONTROL?.trim().toLowerCase() === "false"
@@ -116,7 +119,7 @@ function hostChannelPort(): number {
 }
 
 function hostChannelUser(): string {
-  return process.env.OPENSHIP_HOST_SSH_USER?.trim() || "root";
+  return hostChannelAccount(process.env);
 }
 
 /**
@@ -181,7 +184,14 @@ export type HostChannelCode =
   | "not_configured"
   | "key_unreadable"
   /** Configured, but the TCP connection to the host SSH port never completed. */
-  | "unreachable";
+  | "unreachable"
+  /**
+   * The port answered and sshd then REFUSED the key. Its own state rather than a
+   * refinement of `unreachable`, because the remedy shares nothing with a dropped
+   * packet: re-authorize the key, or permit the account to log in. Conflating the two
+   * is what sent #490's reporters to audit firewalls and #527's to audit key files.
+   */
+  | "auth_rejected";
 
 export interface HostChannelHealth {
   /** Host ("this machine") operations can be performed at all. */
@@ -202,6 +212,13 @@ export interface HostChannelHealth {
    * splitting the code would fan out into all of them for no gain.
    */
   cause?: TcpProbeFailure;
+  /**
+   * Whether the channel can carry a TCP FORWARD, which is a separate question from
+   * whether it works — see {@link HostChannelForwarding}. Only the deploy-time readiness
+   * probe needs it, so `blocked` leaves `ok` true and is reported as an advisory.
+   * Absent when there was no key to authenticate with.
+   */
+  forwarding?: HostChannelForwarding;
 }
 
 /**
@@ -246,9 +263,169 @@ function explainDialFailure(
 }
 
 /**
+ * Auth verdicts are memoized: {@link hostChannelHealth} is called on every dashboard
+ * load, and an SSH handshake costs more than a TCP probe. A rejection is cached far
+ * shorter than a success, so a channel the operator has just re-authorized stops
+ * reporting broken within seconds rather than within a cache generation.
+ */
+const AUTH_MEMO_OK_MS = 30_000;
+const AUTH_MEMO_FAIL_MS = 5_000;
+let authMemo: {
+  key: string;
+  hint: string | null;
+  forwarding: HostChannelForwarding;
+  expires: number;
+} | null = null;
+
+/** Drop the memoized auth verdict. For a caller that just CHANGED the channel — a
+ *  re-provision — and must not then read its own stale "refused". */
+export function invalidateHostChannelAuth(): void {
+  authMemo = null;
+}
+
+/**
+ * Can this channel carry a TCP forward, as distinct from a command?
+ *
+ * A separate axis from `ok` ON PURPOSE. `restrict` in `authorized_keys` (what
+ * `openship up` wrote before GH-583) denies forwarding while leaving exec untouched, so
+ * such a channel is genuinely healthy for everything the platform does EXCEPT the
+ * deploy-time readiness probe — which is why "host control reachable" was a true
+ * statement that still misled two rounds of qualification. Folding it into `ok` would
+ * swing the error the other way and report a working box as broken.
+ *
+ * `unknown` = we did not get to ask (no key material, or the connection failed first).
+ */
+export type HostChannelForwarding = "ok" | "blocked" | "unknown";
+
+/**
+ * Ask sshd for a forward we expect to FAIL to connect, and read which way it fails.
+ *
+ * Port 1 on the host's own loopback: nothing listens there, so a channel that permits
+ * forwarding answers CONNECT_FAILED (reason 2) — which is the "yes" we're looking for,
+ * because sshd only tries to connect once policy has allowed the request.
+ * ADMINISTRATIVELY_PROHIBITED (reason 1) is the "no". Nothing is ever actually
+ * connected to, so this probe cannot touch a real service.
+ */
+function probeForwarding(
+  client: { forwardOut: (...args: never[]) => unknown },
+  timeoutMs: number,
+): Promise<HostChannelForwarding> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (verdict: HostChannelForwarding) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(verdict);
+    };
+    const timer = setTimeout(() => finish("unknown"), timeoutMs);
+    timer.unref?.();
+
+    try {
+      (
+        client.forwardOut as unknown as (
+          srcIp: string,
+          srcPort: number,
+          dstIp: string,
+          dstPort: number,
+          cb: (err?: unknown, stream?: { destroy: () => void }) => void,
+        ) => void
+      )("127.0.0.1", 0, "127.0.0.1", 1, (err, stream) => {
+        if (stream) {
+          stream.destroy();
+          finish("ok");
+          return;
+        }
+        const reason = (err as { reason?: unknown } | undefined)?.reason;
+        const message = (err as { message?: unknown } | undefined)?.message;
+        if (reason === 1 || reason === 3) return finish("blocked");
+        if (typeof message === "string" && /administratively prohibited/i.test(message)) {
+          return finish("blocked");
+        }
+        // Anything else (CONNECT_FAILED being the expected one) means the request was
+        // permitted and only the destination was unreachable.
+        finish("ok");
+      });
+    } catch {
+      finish("unknown");
+    }
+  });
+}
+
+/**
+ * Does the host channel's key actually AUTHENTICATE?
+ *
+ * The gap this closes is #527: an open port is not a working channel. sshd answers the
+ * SYN and then refuses — the key was never authorized for the account we dial, or sshd
+ * permits that account no login at all — and every consumer keyed on the TCP probe
+ * called that healthy. The local row's badge read fine while every host operation
+ * failed, and the failure surfaced as "SSH credentials rejected" against credentials
+ * this channel does not read.
+ *
+ * Only an AUTH rejection becomes a verdict. A connect failure is left alone: the TCP
+ * probe already ran and `explainDialFailure` describes it better, so reporting it twice
+ * would overwrite a specific firewall diagnosis with a vaguer one (#490).
+ */
+async function verifyHostChannelAuth(config: {
+  host: string;
+  port: number;
+  username: string;
+  privateKey: string;
+  timeoutMs: number;
+}): Promise<{ hint?: string; forwarding: HostChannelForwarding }> {
+  // The key's LENGTH, not the key: enough to notice a re-provision swapped the material,
+  // without holding a credential in a module-level cache for 30 seconds.
+  const memoKey = `${config.username}@${config.host}:${config.port}#${config.privateKey.length}`;
+  if (authMemo?.key === memoKey && authMemo.expires > Date.now()) {
+    return authMemo.hint
+      ? { hint: authMemo.hint, forwarding: authMemo.forwarding }
+      : { forwarding: authMemo.forwarding };
+  }
+
+  let hint: string | null = null;
+  let forwarding: HostChannelForwarding = "unknown";
+  try {
+    // Dynamic for the reason every SSH import on this path is dynamic: this function is
+    // reachable from the boot hook and from unauthenticated /health/env, and must not
+    // drag ssh2 in before something has actually asked it to dial.
+    const { connectSshClient } = await import("./ssh-client");
+    const client = await connectSshClient({
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      privateKey: config.privateKey,
+      readyTimeoutMs: config.timeoutMs,
+      // Load-bearing: it selects describeSshAuthFailure's host-channel wording, so the
+      // hint an operator reads here is the same sentence the deploy log gives them.
+      hostChannel: true,
+    });
+    // Free, in the sense that matters: the connection and the handshake are already
+    // paid for, so the capability the readiness probe depends on costs one extra
+    // round trip and is memoized with the auth verdict beside it.
+    forwarding = await probeForwarding(
+      client as unknown as { forwardOut: (...args: never[]) => unknown },
+      config.timeoutMs,
+    );
+    client.end();
+  } catch (err) {
+    if (isSshAuthError(err)) {
+      hint = err instanceof Error ? err.message : HOST_CHANNEL_AUTH_REJECTED;
+    }
+  }
+
+  authMemo = {
+    key: memoKey,
+    hint,
+    forwarding,
+    expires: Date.now() + (hint ? AUTH_MEMO_FAIL_MS : AUTH_MEMO_OK_MS),
+  };
+  return hint ? { hint, forwarding } : { forwarding };
+}
+
+/**
  * Can this instance actually drive its host? Cheap enough to call on every page
- * load: one TCP handshake to the host SSH port, or no I/O at all when the answer
- * is decided by env.
+ * load: one TCP handshake to the host SSH port — plus, when that answers, one
+ * memoized auth handshake — or no I/O at all when the answer is decided by env.
  *
  * Exists because {@link createHostExecutor} has no "configured but unreachable"
  * state — it returns an executor that has not dialed anything, so a filtered
@@ -284,34 +461,61 @@ export async function hostChannelHealth(timeoutMs = 2_500): Promise<HostChannelH
   const port = hostChannelPort();
   const target = `${hostChannelUser()}@${host}:${port}`;
   const keyPath = process.env.OPENSHIP_HOST_SSH_KEY?.trim();
+  // Kept rather than discarded: the auth probe below needs the same material the real
+  // dial uses, and reading it twice would let the two disagree.
+  let privateKey: string | undefined;
   if (keyPath) {
-    const { reason } = readHostChannelKey(keyPath);
-    if (reason) {
+    const read = readHostChannelKey(keyPath);
+    if (read.reason) {
       return {
         ok: false,
         code: "key_unreadable",
         host,
         port,
         target,
-        hint: `${reason} ${HOST_CHANNEL_NOT_PROVISIONED}`,
+        hint: `${read.reason} ${HOST_CHANNEL_NOT_PROVISIONED}`,
       };
     }
+    privateKey = read.key;
   }
 
   const probe = await probeTcpDetailed(host, port, timeoutMs);
-  if (probe.ok) {
-    return { ok: true, code: "ok", host, port, target };
+  if (!probe.ok) {
+    return {
+      ok: false,
+      code: "unreachable",
+      host,
+      port,
+      target,
+      cause: probe.reason,
+      ...explainDialFailure(probe, host, port, target),
+    };
   }
 
-  return {
-    ok: false,
-    code: "unreachable",
-    host,
-    port,
-    target,
-    cause: probe.reason,
-    ...explainDialFailure(probe, host, port, target),
-  };
+  // Reached and keyed — so the one remaining way for this channel to be broken is that
+  // sshd refuses the key, and this is the only place cheap enough to find that out
+  // before an operation needs it (#527). Spent only on the path where it can change the
+  // answer: an unreachable port never gets here, and a verdict is memoized.
+  let forwarding: HostChannelForwarding = "unknown";
+  if (privateKey) {
+    const verdict = await verifyHostChannelAuth({
+      host,
+      port,
+      username: hostChannelUser(),
+      privateKey,
+      timeoutMs,
+    });
+    if (verdict.hint) {
+      return { ok: false, code: "auth_rejected", host, port, target, hint: verdict.hint };
+    }
+    forwarding = verdict.forwarding;
+  }
+
+  // `ok` regardless of `forwarding`: a channel that execs but won't forward runs
+  // everything the platform does except the deploy readiness probe, which now says so
+  // itself and falls back. Reporting the whole box unhealthy over it would trade a
+  // misleading "fine" for a misleading "broken".
+  return { ok: true, code: "ok", host, port, target, forwarding };
 }
 
 /**

@@ -55,6 +55,7 @@ export interface UpPlanOpts {
   hostControl?: boolean;
   hostSshHost?: string;
   hostSshPort?: string;
+  hostSshUser?: string;
   /** Openship Mail install (OPENSHIP_PRODUCT=mail / `--mail` in the unit's argv). */
   mail?: boolean;
   /** Already normalized + merged with the install's saved URL by the caller. */
@@ -159,6 +160,7 @@ export async function planUp(opts: UpPlanOpts): Promise<UpPlan> {
       ...(opts.hostControl === false ? { noHostControl: true } : {}),
       ...(opts.hostSshHost ? { hostSshHost: opts.hostSshHost } : {}),
       ...(opts.hostSshPort ? { hostSshPort: opts.hostSshPort } : {}),
+      ...(opts.hostSshUser ? { hostSshUser: opts.hostSshUser } : {}),
       ...(opts.resetSecrets ? { resetSecrets: true } : {}),
       ...(opts.mail ? { mail: true } : {}),
     });
@@ -174,10 +176,28 @@ export async function planUp(opts: UpPlanOpts): Promise<UpPlan> {
       ...(stack.hostChannel
         ? [
             stack.hostChannel.keyPath,
-            `${stack.hostChannel.authKeysPath}${stack.hostChannel.viaSudo ? "  (via sudo)" : ""}  (authorizes that key for ${stack.hostChannel.user}'s host ops; --no-host-control skips it)`,
+            `${stack.hostChannel.authKeysPath}  (authorizes that key for ${stack.hostChannel.user}'s host ops; --no-host-control skips it)`,
+            // Say which route to root this channel will take, rather than repeating a root
+            // warning at a box that reaches root perfectly well via sudo. `sudo` is a
+            // supported shape now, not a degradation, and the preview is where an operator
+            // decides whether that is what they wanted.
+            ...(stack.hostChannel.elevation === "sudo"
+              ? [
+                  `logs in as ${stack.hostChannel.user} and elevates with sudo for root host ops (no root login is created)`,
+                ]
+              : []),
             ...(stack.hostChannel.rootUnavailable
               ? [
-                  "⚠ host control needs root — this user isn't root and passwordless sudo isn't available, so mail/edge host ops will fail (re-run as root to fix)",
+                  "⚠ host control needs root — this user isn't root and passwordless sudo isn't available, so mail/edge host ops will fail (re-run as root, or enable passwordless sudo, to fix)",
+                ]
+              : []),
+            // A plan that named one account and then settled on another would read as the
+            // plan being wrong, and this run genuinely cannot know which: only a dial can
+            // establish whether sshd accepts the first account, and dialing means writing
+            // the key a dry run exists not to write (#527, previewHostChannel).
+            ...(stack.hostChannel.fallbacks?.length
+              ? [
+                  `if this host's sshd refuses that account, falls back to ${stack.hostChannel.fallbacks.join(", ")} (pin one with --host-ssh-user)`,
                 ]
               : []),
           ]

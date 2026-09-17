@@ -7,9 +7,9 @@ import {
   parseMailQueue,
   type MailQueueReading,
 } from "../../../src/modules/mail/mail-delivery.service";
-import { mailQueueProbeCommand } from "../../../src/modules/mail/mail-engine";
+import { mailQueueProbeCommand } from "@repo/platform/engine/modules/mail/mail-engine";
 import type { CommandExecutor } from "@repo/adapters";
-import type { OutboundRelay } from "../../../src/modules/mail/mail-state";
+import type { OutboundRelay } from "@repo/platform/engine/modules/mail/mail-state";
 
 /**
  * The blind spot this closes: nine green daemons, green DNS, and a Test-tab email

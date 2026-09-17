@@ -10,7 +10,12 @@ export type DeploymentStatus =
   | "deploying"
   | "ready"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "partial_failure"
+  | "action_required"
+  | "rejected"
+  | "no_changes"
+  | "reconciling";
 
 export type Environment = "production" | "preview" | "development";
 
@@ -231,7 +236,50 @@ export type ComposeAdvancedPatch = {
 };
 
 export type ComposeAdvanced = {
+  /**
+   * Provenance for a Compose `image:` expression. `resolved` remains in the
+   * service's ordinary `image` column for display and rollback snapshots; this
+   * record keeps the authored expression so deployment can evaluate it against
+   * the final project environment instead of freezing a scan-time value.
+   *
+   * `unresolvedVariables` describes the scan-time scope. It lets deploy safely
+   * reuse a concrete value supplied by the compose-adjacent `.env` file when
+   * that file is not part of the runtime environment, while still refusing a
+   * genuinely unresolved expression. Internal/compose-owned.
+   */
+  imageTemplate?: {
+    expression: string;
+    unresolvedVariables: string[];
+    /** Value produced by the compose-adjacent `.env` before project env is
+     * overlaid. Used only to recognize an untouched legacy scan during the
+     * one-time provenance migration. */
+    sourceValue?: string;
+  };
+  /**
+   * Environment keys whose stored inline value is the original Compose
+   * interpolation expression. Values stay in the masked `environment` column;
+   * this names-only marker lets deploy resolve them against the final env layers
+   * without exposing expressions (which may contain secret defaults) elsewhere.
+   * Internal/compose-owned: API clients do not author this field.
+   */
+  environmentTemplateKeys?: string[];
+  /** Inline environment keys explicitly edited, removed, or kept during drift
+   * review. Names only; template provenance still controls interpolation. */
+  environmentOverrideKeys?: string[];
+  /**
+   * Build-argument keys whose stored value is the original expression from a
+   * raw Compose file. Unlike `buildArgs` received from the CLI (already expanded
+   * by `docker compose config`) or a direct API call, these keys are expanded
+   * once against the deployment's final build environment.
+   *
+   * Names only: values remain in `buildArgs`. Compose-owned and safe to
+   * round-trip through service/deployment responses.
+   */
+  buildArgTemplateKeys?: string[];
   healthcheck?: ComposeHealthcheck;
+  /** False opts this service out of steady-state outage monitoring and Docker
+   * event acceleration. Deployment readiness remains independent. */
+  monitoringEnabled?: boolean;
   /**
    * Per-service deploy-time readiness gate, overriding the project's for THIS
    * service. Absent ⇒ inherit the project's; neither ⇒ off.
@@ -301,6 +349,26 @@ export type ComposeAdvanced = {
    * An alias existing is not exposure — publish stays loopback-only behind the edge.
    */
   alias?: string;
+  /**
+   * Compose `entrypoint` — the container's ENTRYPOINT, as argv.
+   *
+   * The other half of container shape, and it has to distinguish three states that
+   * a plain `string[]` expresses exactly:
+   *
+   *   absent  ⇒ the image's own ENTRYPOINT runs (unchanged).
+   *   `[]`    ⇒ CLEAR it (`Entrypoint: []`). This is the deliberate form — pairing
+   *             `entrypoint: []` with a `command` is how you run a binary directly
+   *             in an image whose ENTRYPOINT is a wrapper — and it used to be the
+   *             most silent failure of the lot: `requestsSomething` reads an empty
+   *             array as "asks for nothing", so it produced no warning either (#575).
+   *   argv    ⇒ replace it (a debug shim, `wait-for-it.sh`, a privilege dropper).
+   *
+   * No implicit `sh -c`, matching what #332 settled for `command`: a compose string
+   * is shell-WORD-SPLIT into argv (`commandToArgv`), so running a shell takes an
+   * explicit `sh -c`. Unlike `command` there is no companion text column to keep in
+   * step — nothing predates this field, so argv is the only representation.
+   */
+  entrypoint?: string[];
   /**
    * Compose `stop_signal` — the signal Docker sends to ask this container to shut
    * down (`"SIGINT"`, `"SIGQUIT"`, a bare number). Absent ⇒ Docker's default

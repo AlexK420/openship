@@ -26,21 +26,27 @@ vi.mock("@repo/db", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@repo/db")>();
   return {
     ...actual,
-    repos: { ...actual.repos, project: projectRepo, service: serviceRepo, deployment: deploymentRepo, domain: domainRepo },
+    repos: {
+      ...actual.repos,
+      project: projectRepo,
+      service: serviceRepo,
+      deployment: deploymentRepo,
+      domain: domainRepo,
+    },
   };
 });
 
-vi.mock("../../../src/lib/free-domain-guard", () => ({ assertFreeEndpointsAllowed: vi.fn() }));
+vi.mock("@repo/platform/engine/lib/free-domain-guard", () => ({ assertFreeEndpointsAllowed: vi.fn() }));
 
-vi.mock("../../../src/modules/domains/domain.service", () => ({
+vi.mock("@repo/platform/engine/modules/domains/domain.service", () => ({
   ensurePendingServiceDomain: vi.fn().mockResolvedValue({ created: false }),
   removeServiceDomain: vi.fn(),
   reuseServerCertForDomain: vi.fn(),
 }));
 
 const reconcileProjectRoutes = vi.hoisted(() => vi.fn());
-vi.mock("../../../src/lib/route-apply.service", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../src/lib/route-apply.service")>();
+vi.mock("@repo/platform/engine/lib/route-apply.service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@repo/platform/engine/lib/route-apply.service")>();
   return { ...actual, reconcileProjectRoutes };
 });
 
@@ -50,15 +56,21 @@ vi.mock("../../../src/lib/controller-helpers", async (importOriginal) => {
 });
 
 const resolveDeploymentRuntimeForRead = vi.hoisted(() => vi.fn());
-vi.mock("../../../src/lib/deployment-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../src/lib/deployment-runtime")>();
+vi.mock("@repo/platform/engine/lib/deployment-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@repo/platform/engine/lib/deployment-runtime")>();
   return { ...actual, resolveDeploymentRuntimeForRead };
 });
 
-import { updateService } from "../../../src/modules/services/service.service";
+import { updateService } from "@repo/platform/engine/modules/services/service.service";
 
 const ctx = { organizationId: "org_1" } as never;
-const project = { id: "proj_1", organizationId: "org_1", slug: "kuma", activeDeploymentId: "dep_1", routeStrategy: "auto" };
+const project = {
+  id: "proj_1",
+  organizationId: "org_1",
+  slug: "kuma",
+  activeDeploymentId: "dep_1",
+  routeStrategy: "auto",
+};
 
 /** A migrated single-service project: listens on 3001, custom domain attached. */
 const migratedService = () => ({
@@ -125,12 +137,19 @@ describe("service route upstream (migration cutover)", () => {
     reconcileProjectRoutes.mockResolvedValue(undefined);
     deploymentRepo.findById.mockResolvedValue({
       id: "dep_1",
+      projectId: "proj_1",
       organizationId: "org_1",
       meta: { deployTarget: "server", serverId: "srv_1", runtimeMode: "docker" },
     });
     // The row still claims a loopback publish from an earlier deploy.
     serviceRepo.listByDeployment.mockResolvedValue([
-      { serviceId: "svc_1", deploymentId: "dep_1", containerId: "container_1", ip: "172.19.0.2", hostPort: 3001 },
+      {
+        serviceId: "svc_1",
+        deploymentId: "dep_1",
+        containerId: "container_1",
+        ip: "172.19.0.2",
+        hostPort: 3001,
+      },
     ]);
     liveContainer({ ip: "172.19.0.2" });
   });
@@ -150,12 +169,20 @@ describe("service route upstream (migration cutover)", () => {
     expect(registeredTarget()?.targetUrl).toBe("http://127.0.0.1:43001");
   });
 
-  it("keeps the last-known upstream when the container cannot be inspected", async () => {
+  it("does not re-register a cached upstream when the container cannot be inspected", async () => {
     liveContainer(null);
 
     await publishRoute();
 
-    expect(registeredTarget()?.targetUrl).toBe("http://127.0.0.1:3001");
+    expect(registeredTarget()?.targetUrl).toBeUndefined();
+  });
+
+  it("does not re-register a cache when the target runtime cannot be resolved", async () => {
+    resolveDeploymentRuntimeForRead.mockRejectedValueOnce(new Error("host unavailable"));
+
+    await publishRoute();
+
+    expect(registeredTarget()?.targetUrl).toBeUndefined();
   });
 
   it("releases the runtime it opened to inspect the container", async () => {
@@ -166,14 +193,31 @@ describe("service route upstream (migration cutover)", () => {
     expect(dispose).toHaveBeenCalled();
   });
 
-  it("does not open a runtime when the service has no container yet", async () => {
+  it("does not route a stored bridge IP when the service has no container", async () => {
     serviceRepo.listByDeployment.mockResolvedValue([
-      { serviceId: "svc_1", deploymentId: "dep_1", containerId: null, ip: "172.19.0.2", hostPort: null },
+      {
+        serviceId: "svc_1",
+        deploymentId: "dep_1",
+        containerId: null,
+        ip: "172.19.0.2",
+        hostPort: null,
+      },
     ]);
 
     await publishRoute();
 
     expect(resolveDeploymentRuntimeForRead).not.toHaveBeenCalled();
-    expect(registeredTarget()?.targetUrl).toBe("http://172.19.0.2:3001");
+    expect(registeredTarget()?.targetUrl).toBeUndefined();
   });
+});
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/platform-config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/controller-helpers")>();
+  return { ...actual, platform: () => ({ runtime: { name: "docker" } }) };
+});
+
+vi.mock("@repo/platform/engine/lib/resource-access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/controller-helpers")>();
+  return { ...actual, platform: () => ({ runtime: { name: "docker" } }) };
 });

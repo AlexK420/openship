@@ -36,12 +36,28 @@ export type MailComponentStatus =
   | "missing"
   | "unknown";
 
+/**
+ * Whether a mail server stops being one without this daemon. Server-decided (the
+ * catalog in mail-health.service.ts) — never re-derived here from a key list, which
+ * would be a second definition free to drift from the install gate's.
+ *
+ * `informational` is reported but never graded: nothing on the stack consults it, so
+ * letting its state colour the banner produced an amber that was always wrong (GH-240 —
+ * spamd, while amavis scores spam in-process). Keep this union in step with the server's.
+ */
+export type MailComponentSeverity = "required" | "advisory" | "informational";
+
 export interface MailComponentHealth {
   key: string;
   label: string;
   description: string;
   unit: string;
+  severity: MailComponentSeverity;
   status: MailComponentStatus;
+  /**
+   * The supervisor's state word, lower-cased. `status: "failed"` covers both
+   * supervisord FATAL (given up) and BACKOFF (still retrying); this separates them.
+   */
   subState?: string;
   activeSince?: string;
   /** Why the status is `unknown` — the probe's own output. */
@@ -53,6 +69,7 @@ export interface MailComponentDef {
   label: string;
   description: string;
   unit: string;
+  severity: MailComponentSeverity;
 }
 
 /** How outbound mail leaves the box. */
@@ -95,11 +112,40 @@ export interface MailDeliveryHealth {
   detail?: string;
 }
 
+export type MailPortReachabilityStatus =
+  | "reachable"
+  | "blocked"
+  | "not_listening"
+  | "not_exposed"
+  | "unknown";
+
+export interface MailPortReachabilityCheck {
+  key: "smtp" | "smtps" | "submission" | "imaps";
+  port: number;
+  label: string;
+  status: MailPortReachabilityStatus;
+  listening: boolean | null;
+  exposed: boolean | null;
+  reachable: boolean | null;
+  failure?: "timeout" | "refused" | "unresolved" | "no_route" | "error";
+  detail?: string;
+}
+
+export interface MailPortReachability {
+  hostname: string;
+  address: string | null;
+  checkedAt: number;
+  status: "ok" | "fail" | "unknown";
+  ports: MailPortReachabilityCheck[];
+  detail?: string;
+}
+
 export interface MailHealthResponse {
   serverId: string;
   components: MailComponentHealth[];
   definitions: MailComponentDef[];
   delivery: MailDeliveryHealth;
+  reachability: MailPortReachability | null;
 }
 
 /**
@@ -622,8 +668,10 @@ export const mailApi = {
    * Live health of every mail-core daemon on the target server. The Mail
    * tab polls this every ~10 s to render running/stopped pills.
    */
-  getHealth: (serverId: string) =>
-    api.get<MailHealthResponse>(endpoints.mail.health(serverId)),
+  getHealth: (serverId: string, refreshReachability = false) =>
+    api.get<MailHealthResponse>(
+      `${endpoints.mail.health(serverId)}${refreshReachability ? "?refreshReachability=1" : ""}`,
+    ),
 
   /** Standalone port 80/443 scan */
   checkPorts: (serverId: string) =>
@@ -699,4 +747,3 @@ export const mailApi = {
       ),
   },
 };
-

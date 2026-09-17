@@ -42,9 +42,9 @@ import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { DockerRuntime, initPlatform, resetPlatform, scopedVolumeName } from "@repo/adapters";
 import { repos, type BackupRestoreStatus } from "@repo/db";
-import { env } from "../../src/config";
+import { env } from "@repo/platform/engine/config/index";
 import type { RequestContext } from "../../src/lib/request-context";
-import { resolvePlatformConfig } from "../../src/lib/controller-helpers";
+import { resolvePlatformConfig } from "@repo/platform/engine/lib/platform-config";
 import { describeDockerE2E, requireDocker } from "../helpers/docker-e2e";
 import {
   seedOrg,
@@ -56,8 +56,8 @@ import {
   seedBackupPolicy,
   seedBackupRun,
 } from "../helpers/seed";
-import { backupOrchestrator } from "../../src/modules/backups/backup.orchestrator";
-import { restoreOrchestrator } from "../../src/modules/backups/restore.orchestrator";
+import { backupOrchestrator } from "@repo/platform/engine/modules/backups/backup.orchestrator";
+import { restoreOrchestrator } from "@repo/platform/engine/modules/backups/restore.orchestrator";
 
 /** Same image the executor's helpers use, so the test adds no extra pull. */
 const HELPER_IMAGE = "alpine:3";

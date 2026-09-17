@@ -41,6 +41,7 @@ import type { SystemManager } from "./system/setup";
 import type { DockerConnectionOptions } from "./runtime/docker";
 import type { BareRuntimeOptions } from "./runtime/bare";
 import type { NginxProviderOptions } from "./infra/nginx";
+import { EDGE_CONTAINER_NAME } from "./system/port-owner";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,11 @@ export interface PlatformConfig {
   cloudClientSecret?: string;
   /** Oblien namespace-scoped token (cloud target - local instances) */
   cloudToken?: string;
+  /** Customer namespace; required alongside a token for cloud workload access. */
+  cloudNamespace?: string;
+  cloudApiUrl?: string;
+  /** Fresh provider entitlement check before starting billable work. */
+  cloudBeforeProvision?: () => Promise<void>;
   /**
    * Admin-scoped Oblien operations that namespace tokens can't perform.
    * Local/desktop instances inject these so CloudRuntime can hand them
@@ -244,19 +250,23 @@ async function createCloudPlatform(config: PlatformConfig): Promise<Platform> {
 
   // Single Oblien client - either from token or master creds
   const client = config.cloudToken
-    ? new Oblien({ token: config.cloudToken })
+    ? new Oblien({ token: config.cloudToken, baseUrl: config.cloudApiUrl })
     : new Oblien({
         clientId: config.cloudClientId ?? process.env.OBLIEN_CLIENT_ID ?? "",
         clientSecret: config.cloudClientSecret ?? process.env.OBLIEN_CLIENT_SECRET ?? "",
+        baseUrl: config.cloudApiUrl,
       });
 
-  const infra = new CloudInfraProvider(client);
+  const infra = new CloudInfraProvider(client, { namespace: config.cloudNamespace, adminProxy: config.cloudAdminProxy });
 
   return {
     target: "cloud",
     runtime: new CloudRuntime(client, {
       adminProxy: config.cloudAdminProxy,
       allowHostBuild: config.allowHostBuild,
+      namespace: config.cloudNamespace,
+      allowProvisioning: Boolean(config.cloudToken && config.cloudNamespace),
+      beforeProvision: config.cloudBeforeProvision,
     }),
     routing: infra,
     ssl: infra,
@@ -426,7 +436,7 @@ async function createSelfHostedPlatform(config: PlatformConfig): Promise<Platfor
   // explicit flag, falling back to the old inference. See PlatformConfig.localHost.
   const targetIsThisMachine = !config.ssh && (config.localHost ?? !config.executor);
   const useDockerEdge = targetIsThisMachine && process.env.OPENSHIP_EDGE_MODE === "docker";
-  const edgeContainer = process.env.OPENSHIP_EDGE_CONTAINER?.trim() || "openship-edge";
+  const edgeContainer = process.env.OPENSHIP_EDGE_CONTAINER?.trim() || EDGE_CONTAINER_NAME;
 
   // Executor - use injected (managed/pooled) executor, or create a fresh one
   let executor: CommandExecutor;
@@ -450,32 +460,42 @@ async function createSelfHostedPlatform(config: PlatformConfig): Promise<Platfor
   });
 
   // Runtime
-  let runtime: RuntimeAdapter;
-  if (runtimeMode === "bare") {
-    const { BareRuntime } = await import("./runtime/bare");
-    runtime = new BareRuntime({ ...config.bare, executor, systemManager: system });
-  } else {
-    const { DockerRuntime } = await import("./runtime/docker");
-    runtime = await DockerRuntime.create(config.docker, system, config.provisionLock);
+  let runtime: RuntimeAdapter | undefined;
+  try {
+    if (runtimeMode === "bare") {
+      const { BareRuntime } = await import("./runtime/bare");
+      runtime = new BareRuntime({ ...config.bare, executor, systemManager: system });
+    } else {
+      const { DockerRuntime } = await import("./runtime/docker");
+      runtime = await DockerRuntime.create(config.docker, system, config.provisionLock);
+    }
+
+    // Infrastructure - runtime implies the reverse proxy
+    const { routing, ssl } = await createInfraProvider(
+      runtimeMode,
+      config,
+      executor,
+      useDockerEdge ? edgeContainer : undefined,
+    );
+
+    return {
+      target: "selfhosted",
+      runtime,
+      routing,
+      ssl,
+      system,
+      executor,
+      localHost: targetIsThisMachine,
+    };
+  } catch (error) {
+    // Construction may fail after opening a runtime transport. Release the
+    // resources created here; an injected executor still belongs to its caller.
+    await Promise.allSettled([
+      Promise.resolve().then(() => runtime?.dispose?.()),
+      Promise.resolve().then(() => config.executor ? undefined : executor.dispose()),
+    ]);
+    throw error;
   }
-
-  // Infrastructure - runtime implies the reverse proxy
-  const { routing, ssl } = await createInfraProvider(
-    runtimeMode,
-    config,
-    executor,
-    useDockerEdge ? edgeContainer : undefined,
-  );
-
-  return {
-    target: "selfhosted",
-    runtime,
-    routing,
-    ssl,
-    system,
-    executor,
-    localHost: targetIsThisMachine,
-  };
 }
 
 // ─── Singleton ───────────────────────────────────────────────────────────────

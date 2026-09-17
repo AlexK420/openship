@@ -8,10 +8,10 @@
 
 import { useEffect, useState, type ComponentType } from "react";
 import Link from "next/link";
-import { Boxes, Copy, Check, ShieldCheck, Unplug, Loader2, ChevronDown, ExternalLink, KeyRound, SlidersHorizontal } from "lucide-react";
+import { Boxes, Copy, Check, ScrollText, ShieldCheck, Unplug, Loader2, ChevronDown, ExternalLink, KeyRound, SlidersHorizontal } from "lucide-react";
 import { SettingsSection } from "./SettingsSection";
 import { McpAccessEditor } from "./McpAccessEditor";
-import { getRestApiBaseUrl } from "@/lib/api/urls";
+import { getMcpEndpointUrl } from "@/lib/api/urls";
 import { tokensApi, getApiErrorMessage, type McpClient, type McpClientDetail } from "@/lib/api";
 import { useToast } from "@/context/ToastContext";
 import { useI18n, interpolate } from "@/components/i18n-provider";
@@ -312,11 +312,11 @@ export function McpConnection() {
   const { showToast } = useToast();
   const { t } = useI18n();
 
-  // Resolve on the client — getRestApiBaseUrl reads window.location, so compute
+  // Resolve on the client — getMcpEndpointUrl reads window.location, so compute
   // after mount to avoid an SSR/hydration mismatch.
   const [endpoint, setEndpoint] = useState("");
   useEffect(() => {
-    setEndpoint(`${getRestApiBaseUrl()}/mcp`);
+    setEndpoint(getMcpEndpointUrl());
   }, []);
 
   // Connected clients own the layout: once anything is connected the list leads
@@ -626,6 +626,15 @@ function ClientsList({
                   {c.organizationName ? interpolate(t.settings.mcp.orgPrefix, { org: c.organizationName }) : ""}
                   {interpolate(t.settings.mcp.authorized, { date: formatDate(c.authorizedAt) })}
                   {c.lastUsedAt ? interpolate(t.settings.mcp.lastUsedSuffix, { date: formatDate(c.lastUsedAt) }) : ""}
+                  {/* A timestamp says the agent is alive; the count says how much
+                      it has actually done, which is the difference between a client
+                      someone tried once and one running unattended all week. */}
+                  {c.useCount > 0
+                    ? interpolate(
+                        c.useCount === 1 ? t.settings.mcp.callsOne : t.settings.mcp.callsMany,
+                        { count: c.useCount.toLocaleString() },
+                      )
+                    : ""}
                 </p>
               </div>
               {confirming ? (
@@ -650,6 +659,16 @@ function ClientsList({
                 // Edit leads; Disconnect keeps its danger hover. Both are hidden while
                 // the row is confirming a disconnect — that interaction owns the row.
                 <div className="flex shrink-0 items-center gap-1.5">
+                  {/* Straight to this agent's own history. The audit log could
+                      already filter to "an AI assistant", but arriving from the
+                      row that names one and having to re-pick it was the gap. */}
+                  <Link
+                    href={`/audit?source=mcp&client=${encodeURIComponent(c.auditClientId)}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground"
+                  >
+                    <ScrollText className="size-3.5" />
+                    {t.settings.mcp.viewActivity}
+                  </Link>
                   <button
                     onClick={() => onEdit(id)}
                     disabled={!id || loadingScope === id}

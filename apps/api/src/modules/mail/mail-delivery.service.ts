@@ -26,9 +26,9 @@
 import type { CommandExecutor } from "@repo/adapters";
 import { relayedDomainsFor, safeErrorMessage } from "@repo/core";
 
-import { mailQueueProbeCommand, resolveMailEngine } from "./mail-engine";
-import { readState } from "./mail-state";
-import type { OutboundRelay } from "./mail-state";
+import { mailQueueProbeCommand, resolveMailEngine } from "@repo/platform/engine/modules/mail/mail-engine";
+import { readState } from "@repo/platform/engine/modules/mail/mail-state";
+import type { OutboundRelay } from "@repo/platform/engine/modules/mail/mail-state";
 
 /** How outbound mail leaves the box. */
 export type MailOutboundMode = "direct" | "relay";

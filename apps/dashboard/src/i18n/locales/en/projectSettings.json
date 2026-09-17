@@ -25,6 +25,70 @@
     "toastTitle": "Source",
     "cliManaged": "This is the Openship control plane — it updates itself. Run \"openship update\" on the host to upgrade it; there's nothing to change here."
   },
+  "releaseImageSource": {
+    "validationInvalid": "Invalid release image source.",
+    "toast": {
+      "saved": "Container release source saved.",
+      "saveFailed": "Could not save the container release source."
+    },
+    "status": {
+      "notDeployed": "Not deployed",
+      "checking": "Checking…",
+      "unavailable": "Unavailable"
+    },
+    "switchToImage": {
+      "title": "Switch to a prebuilt image source",
+      "description": "Saving replaces the current Git or local source for every environment. Existing deployments and rollback history remain available.",
+      "keep": "Keep current source"
+    },
+    "switchToGit": {
+      "title": "Switch to a Git source",
+      "description": "Nothing changes until you link a repository. Linking one replaces the tracked image source for every environment.",
+      "back": "Back to image source"
+    },
+    "entry": {
+      "shortButton": "Use prebuilt image",
+      "button": "Track a prebuilt container image",
+      "description": "Deploy a versioned registry image directly, without cloning or building a repository."
+    },
+    "summary": {
+      "title": "Tracked container image",
+      "badge": "Prebuilt",
+      "description": "Deploys a published image directly. No repository is cloned and no build command runs.",
+      "linkGit": "Link Git repository",
+      "image": "Image",
+      "versionSource": "Version source",
+      "githubReleases": "GitHub Releases",
+      "pinnedVersion": "Pinned version",
+      "currentVersion": "Current version",
+      "targetVersion": "Target version",
+      "latestVersion": "Latest version",
+      "updateAvailable": "Update available"
+    },
+    "editor": {
+      "trackingTitle": "Release tracking",
+      "configureTitle": "Configure prebuilt image",
+      "templateHint": "Use {tag} to preserve the publisher's exact tag, or {version} for the normalized version.",
+      "provider": "Version provider",
+      "githubTitle": "GitHub Releases",
+      "githubDescription": "Follow the latest published release tag.",
+      "urlTitle": "Version URL or pin",
+      "urlDescription": "Read a version endpoint or deploy a fixed version.",
+      "imageTemplate": "Image template",
+      "imagePlaceholder": "ghcr.io/acme/api:{tag}",
+      "githubRepository": "GitHub repository",
+      "repoPlaceholder": "owner/repository",
+      "versionUrl": "Version URL",
+      "versionUrlPlaceholder": "https://example.com/latest-version",
+      "versionUrlHint": "HTTPS endpoint returning text or JSON with version/tag_name.",
+      "pinnedVersion": "Pinned version",
+      "pinnedPlaceholder": "Optional, e.g. v2.4.1",
+      "pinnedHint": "Overrides the discovered latest version; leave blank to track updates.",
+      "appliesAll": "Changes apply to every environment in this project.",
+      "saving": "Saving…",
+      "save": "Save source"
+    }
+  },
   "appSettings": {
     "modeApp": "App settings",
     "modeDeployment": "Deployment",
@@ -65,10 +129,16 @@
     "openApp": "Open app",
     "goToApp": "Go to app",
     "installFailed": "Install failed",
+    "installFailedBody": "It stopped before everything was running. The technical details carry the full build log.",
+    "installCancelledSelf": "You stopped this install.",
+    "installCancelledBody": "The containers and images it had created were removed, and data volumes were kept — installing again reuses them. Anything already live was left alone.",
+    "settledAtPhase": "Stopped at {phase}",
     "viewDetails": "View technical details",
     "showLogs": "Show logs",
     "hideLogs": "Hide logs",
     "deployLogs": "deploy logs",
+    "logsWaiting": "Waiting for output…",
+    "logsEmpty": "No output was captured.",
     "back": "Back",
     "phaseImages": "Preparing images",
     "phaseServices": "Starting services",
@@ -119,6 +189,11 @@
     "breadcrumbApps": "Apps",
     "appEyebrow": "App",
     "stopFailed": "Couldn't stop the install",
+    "progressStep": "Step {current} of {total}",
+    "progressServicesReady": "{done} of {total} services ready",
+    "summaryTitle": "Configuration",
+    "summaryDestination": "Destination",
+    "summaryServices": "Services",
     "mail": {
       "title": "Set up mail",
       "subtitle": "Deploy webmail on your own domain, or connect an existing mailbox.",
@@ -195,15 +270,54 @@
       "liveAccessible": "Live and accessible",
       "pausedInaccessible": "Paused and not accessible",
       "disable": "Disable",
-      "enable": "Enable"
+      "enable": "Enable",
+      "migrating": "Migrating",
+      "migratingHint": "Being moved to another server"
+    },
+    "migration": {
+      "title": "Migration",
+      "description": "Move this project to another server",
+      "currentServer": "Current server",
+      "migrate": "Migrate",
+      "noOtherServers": "Add a second server to move this project to one.",
+      "cloudLater": "Server to server. Moving to or from Openship Cloud isn't supported yet.",
+      "startFailed": "Couldn't start the migration",
+      "confirmTitle": "Move {project} to {server}",
+      "confirmSubtitle": "Nothing changes until you start the move.",
+      "svcVolumes": "{count} volume(s)",
+      "downtimeNote": "The project is offline while its data copies across and the new server starts it. Stateful services are down for the whole transfer.",
+      "dnsNote": "DNS still points at the old server — move your records once the new one is serving.",
+      "cancel": "Cancel",
+      "confirmStart": "Start move",
+      "duplicate": "Duplicate",
+      "intentMove": "Move",
+      "intentCopy": "Duplicate",
+      "intentMoveHint": "The project moves. Its containers and volumes are removed from the old server once you confirm.",
+      "intentCopyHint": "The original keeps running. A second project is created on the new server with a copy of the data.",
+      "confirmTitleCopy": "Duplicate {project} onto {server}",
+      "confirmStartCopy": "Start duplicate",
+      "downtimeNoteCopy": "The project is briefly offline while its data is copied — the volumes have to be still to copy cleanly. It starts again on the old server as soon as the copy finishes.",
+      "copyNoDomainsNote": "The copy starts with no domains — the originals stay with the project that's serving them.",
+      "fromLabel": "From",
+      "toLabel": "To",
+      "modeLabel": "Mode",
+      "scopeLabel": "What to duplicate",
+      "scopeAll": "Select all",
+      "scopeHintAll": "Every service, with its data.",
+      "scopeHintSome": "{count} service(s) — the rest stay only on the original.",
+      "sourceServices": "{count} service(s)",
+      "runningStatus": "In progress — {status}"
     },
     "cache": {
-      "title": "Cache",
-      "description": "Clear cached build artifacts and dependency installs",
+      "title": "Docker Build Cache",
+      "description": "Unused build cache is automatically limited to 5 GB per server",
       "clearInstall": "Clear Install Cache",
       "clearInstallDesc": "Remove cached node_modules",
       "clearBuild": "Clear Build Cache",
-      "clearBuildDesc": "Remove cached build output"
+      "clearBuildDesc": "Remove unused cache across this project's Docker server",
+      "clearBuildConfirm": "Clear all unused Docker build cache on this server? Other projects may rebuild dependencies on their next deployment.",
+      "clearBuildSuccess": "Reclaimed {size} of build cache",
+      "clearBuildEmpty": "No unused build cache to clear"
     },
     "transfer": {
       "title": "Transfer & Clone",
@@ -416,8 +530,8 @@
       "appliesOnDeploy": "Applied on the next deploy."
     },
     "env": {
-      "title": "Environment variables",
-      "description": "Encrypted at rest. Secrets stay masked — only the values you change are written.",
+      "title": "Project environment (build + shared runtime)",
+      "description": "Used for image builds and shared runtime input. Compose values and service runtime overrides take precedence at runtime. Secrets stay masked.",
       "edit": "Edit"
     }
   },
@@ -426,10 +540,10 @@
     "saveChanges": "Save changes",
     "close": "Close",
     "applyTitle": "Apply without a rebuild",
-    "applyText": "Saved. Apply these to the running service — it restarts with the new env, no clone or rebuild.",
+    "applyText": "Saved. Restart to apply runtime changes. Rebuild and redeploy to apply values used when building an image.",
     "applyButton": "Apply (restart, no rebuild)",
-    "title": "Environment variables",
-    "description": "Production. Encrypted at rest. Secrets show as set — type to replace; leave blank to keep.",
+    "title": "Project environment (build + shared runtime)",
+    "description": "Production project variables. Secrets stay masked; leave a saved secret blank to keep it. Service runtime values take precedence for the same key.",
     "empty": "No environment variables yet.",
     "keyPlaceholder": "KEY",
     "secretPlaceholder": "•••••••• (set — type to replace)",
@@ -448,6 +562,8 @@
       "savedTitle": "Saved",
       "saveFailed": "Failed to save environment variables",
       "saveFailedTitle": "Save failed",
+      "noChanges": "No changes to save — your saved values were kept.",
+      "noChangesTitle": "Nothing to save",
       "applying": "Restarting the service with the new env — no rebuild.",
       "applyingTitle": "Applying",
       "applyFailed": "Couldn't apply the env to the running service",
@@ -460,28 +576,7 @@
     "unlink": "Remove connection"
   },
   "gitInfo": {
-    "repository": "Repository",
-    "autoDeploy": "Auto-deploy",
-    "deploysOnPush": "Deploys on every push",
-    "manualOnly": "Manual deploys only",
-    "branchToDeploy": "Branch to Deploy",
-    "chooseBranch": "Choose which branch to deploy from your repository",
-    "save": "Save",
-    "cancel": "Cancel",
-    "viewOnGithub": "View on GitHub",
-    "recentCommits": "Recent Commits",
-    "totalCommits": "{count} total",
-    "noCommits": "No commits yet",
-    "toast": {
-      "fetchBranchesFailed": "Failed to fetch branches",
-      "errorTitle": "Error",
-      "branchUpdated": "Branch updated successfully",
-      "updatedTitle": "Updated",
-      "branchUpdateFailed": "Failed to update branch",
-      "autoDeployEnabled": "Auto-deploy enabled",
-      "autoDeployDisabled": "Auto-deploy disabled",
-      "autoDeployFailed": "Failed to update auto-deploy"
-    }
+    "autoDeploy": "Auto-deploy"
   },
   "git": {
     "connectFirst": {
@@ -631,6 +726,9 @@
     "title": "Machine Power",
     "description": "CPU and memory limits for this project's containers.",
     "loading": "Reading the target machine…",
+    "unavailable": "Machine power unavailable",
+    "loadFailed": "Failed to load machine power",
+    "retry": "Retry",
     "machineCapacity": "Machine: {cpu} vCPU · {memory}",
     "exceedsMachine": "Exceeds this machine",
     "appliesOnNextDeploy": "Limits are applied when the container is recreated — redeploy for a change to take effect.",
@@ -655,6 +753,10 @@
       "high": {
         "name": "High",
         "description": "High-traffic applications"
+      },
+      "xlarge": {
+        "name": "Extra large",
+        "description": "Databases and heavy workloads"
       }
     },
     "custom": {
@@ -709,10 +811,6 @@
     "cannotUndo": "This action cannot be undone.",
     "aboutToPrefix": "You are about to delete ",
     "aboutToSuffix": ".",
-    "deleteAllAria": "Delete all environments",
-    "deleteAll": "Delete all environments",
-    "deleteAllOn": "Removes the project app and every branch environment under it.",
-    "deleteAllOff": "Removes only this environment. Other branches stay.",
     "scanning": "Scanning attached services and volumes…",
     "wipeAria": "Also wipe service data",
     "wipeLabelOne": "Also wipe service data ({count} volume)",
@@ -727,9 +825,7 @@
     "typePrefix": "Type ",
     "typeSuffix": " to confirm.",
     "cancel": "Cancel",
-    "confirmDeleteWipe": "Delete + wipe data",
     "confirmDeleteEnvWipe": "Delete environment + wipe data",
-    "confirmDelete": "Delete project",
     "confirmDeleteEnv": "Delete environment",
     "recordOnlyLabel": "Remove from Openship only",
     "recordOnlyDesc": "Keeps the app and its data running on your server — only the Openship record is removed. You can re-import it later.",
@@ -819,7 +915,10 @@
       "includeWwwDesc": "Also generate records for www.{domain}",
       "includeWwwFallback": "yourdomain.com",
       "externalIngress": "External ingress & TLS",
-      "externalIngressDesc": "TLS terminates upstream (Cloudflare Tunnel, load balancer). Verify by TXT only — the domain need not point at this server, and we won't issue a certificate.",
+      "externalIngressDesc": "TLS terminates at your reverse proxy (Cloudflare Tunnel, Nginx Proxy Manager, or a load balancer). The domain need not point at this server, and Openship won't issue a certificate.",
+      "dnsChallenge": "Use DNS-01 challenge",
+      "dnsChallengeDesc": "Issue and renew the certificate through your connected DNS provider. Use this when port 80 cannot be reached.",
+      "dnsChallengeWildcardDesc": "Wildcard certificates require DNS-01 and a connected DNS provider.",
       "noWww": "That domain is already on this project.",
       "adding": "Adding...",
       "submit": "Add domain"
@@ -837,7 +936,9 @@
       "toggle": "DNS records",
       "hint": "Add these at your DNS provider, then click Verify.",
       "loading": "Loading records…",
-      "none": "No records to add for this domain."
+      "none": "No records to add for this domain.",
+      "failed": "Couldn't load the DNS records for this domain.",
+      "retry": "Try again"
     },
     "verifyMissing": {
       "both": "Neither the CNAME nor the TXT record is resolving yet — add the records below, wait for DNS to propagate, then Verify.",
@@ -849,7 +950,9 @@
       "bodyService": "Service \"{service}\": nothing responded on port {port} — requests may 502 until it listens there."
     },
     "outputHint": {
-      "body": "No build output found at {path} — check your Output Directory and redeploy."
+      "body": "No build output found at {path} — check your Output Directory and redeploy.",
+      "noIndex": "Output exists at {path} but there is no index file — requests will 404. Check your Output Directory.",
+      "notServed": "The edge answered HTTP {status} for {path} — this path is not serving. Check your Output Directory and the route."
     },
     "overview": {
       "primary": "Primary",
@@ -966,5 +1069,13 @@
       "attempts": "{count} failed attempt(s) so far.",
       "pillHint": "Show why"
     }
+  },
+  "serviceEnvironment": {
+    "title": "Service runtime environment",
+    "description": "Applies only to this service at runtime. These values override Compose environment and same-named project variables. Apply them with a restart or deployment.",
+    "overrides": "These keys take precedence over project values for this service: {keys}.",
+    "buildArguments": "Explicit image build arguments are edited in the Compose file or source configuration. Rebuild and redeploy to apply them; this editor changes runtime variables only.",
+    "projectLink": "Edit shared project environment",
+    "loadFailed": "Could not load project variable names to check overrides."
   }
 }

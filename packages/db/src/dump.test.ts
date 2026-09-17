@@ -78,6 +78,32 @@ describe("assertDumpSelfContained (cross-tenant ingest guard)", () => {
     ).toThrow(/references a project_app not present/);
   });
 
+  it("rejects an active deployment outside the imported graph", () => {
+    expect(() => assertDumpSelfContained(dump({
+      project: [{ id: "p1", organizationId: "org-a", activeDeploymentId: "foreign-deployment" }],
+    }))).toThrow(/activeDeploymentId.*not present in the dump/);
+  });
+
+  it.each([
+    { projectId: "p2", organizationId: "org-a" },
+    { projectId: "p1", organizationId: "org-b" },
+  ])("rejects an active deployment with a mismatched parent: %j", (owner) => {
+    expect(() => assertDumpSelfContained(dump({
+      project: [
+        { id: "p1", organizationId: "org-a", activeDeploymentId: "d1" },
+        { id: "p2", organizationId: "org-a", activeDeploymentId: null },
+      ],
+      deployment: [{ id: "d1", ...owner }],
+    }))).toThrow(/does not belong to the same project and organization/);
+  });
+
+  it("accepts an active deployment belonging to its project and organization", () => {
+    expect(() => assertDumpSelfContained(dump({
+      project: [{ id: "p1", organizationId: "org-a", activeDeploymentId: "d1" }],
+      deployment: [{ id: "d1", projectId: "p1", organizationId: "org-a" }],
+    }))).not.toThrow();
+  });
+
   it("rejects a service_deployment referencing a foreign deploymentId/serviceId", () => {
     expect(() =>
       assertDumpSelfContained(

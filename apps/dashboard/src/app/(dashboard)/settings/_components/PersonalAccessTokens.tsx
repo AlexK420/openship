@@ -325,6 +325,14 @@ export function PersonalAccessTokens() {
                 <p className="text-xs text-muted-foreground font-mono">
                   {tok.tokenPrefix}…
                   <span className="font-sans">{interpolate(t.settings.tokens.metaLine, { lastUsed: fmtDate(tok.lastUsedAt), expires: fmtDate(tok.expiresAt) })}</span>
+                  {tok.useCount > 0 && (
+                    <span className="font-sans">
+                      {interpolate(
+                        tok.useCount === 1 ? t.settings.tokens.callsOne : t.settings.tokens.callsMany,
+                        { count: tok.useCount.toLocaleString() },
+                      )}
+                    </span>
+                  )}
                 </p>
               </div>
               <button

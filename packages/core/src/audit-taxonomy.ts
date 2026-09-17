@@ -53,6 +53,12 @@ export const AUDIT_CATEGORIES = [
     description: "Who is in this organization and what they are allowed to do.",
   },
   {
+    id: "agent",
+    label: "AI agents",
+    description:
+      "What connected assistants did over MCP — every tool call, and the scope they hold.",
+  },
+  {
     id: "security",
     label: "Security",
     description: "Admin credentials, auth mode, data export, and audit recording itself.",
@@ -160,6 +166,20 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     label: "App deletion refused",
     tone: "warning",
     description: "A delete was refused — something still depends on this app.",
+  },
+  "project.deletion.failed": {
+    category: "apps",
+    action: "failed to delete",
+    label: "App deletion failed",
+    tone: "warning",
+    description: "Cleanup did not complete, so the app record was kept for a safe retry.",
+  },
+  "project.build_cache.cleared": {
+    category: "apps",
+    action: "cleared the Docker build cache for",
+    label: "Build cache cleared",
+    tone: "warning",
+    description: "Unused build cache was removed from the app's Docker host.",
   },
   "project:write": {
     category: "apps",
@@ -313,6 +333,41 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     tone: "danger",
     description: "Automatic renewal failed — the certificate will expire unless this is fixed.",
   },
+  // Third-party credentials (the generic store: registry logins, DNS tokens, …).
+  // Category `system`: these are instance-wide settings, not a domain operation — unlike
+  // the dns_credential pair below, which stays under `domains` because that is where the
+  // operator was standing when they connected it.
+  "credential.created": {
+    category: "system",
+    action: "added a credential for",
+    label: "Credential added",
+    tone: "info",
+    description:
+      "A credential for a third-party service (a registry login, a DNS token) was stored. The secret itself is never recorded.",
+  },
+  "credential.updated": {
+    category: "system",
+    action: "updated the credential for",
+    label: "Credential updated",
+    tone: "info",
+    description:
+      "A stored credential's label, scope or secret was changed. Neither the old nor the new secret is recorded.",
+  },
+  "credential.deleted": {
+    category: "system",
+    action: "deleted the credential for",
+    label: "Credential deleted",
+    tone: "warning",
+    description:
+      "A stored credential was removed. Anything relying on it — a private image pull, a DNS record write — stops working until another is added.",
+  },
+  "credential.verified": {
+    category: "system",
+    action: "verified the credential for",
+    label: "Credential verified",
+    tone: "info",
+    description: "Openship asked the provider whether a stored credential still works.",
+  },
   "dns_credential.connected": {
     category: "domains",
     action: "connected the DNS provider",
@@ -359,6 +414,14 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     action: "removed the server",
     label: "Server removed",
     tone: "danger",
+  },
+  "server.removal.rejected": {
+    category: "servers",
+    action: "tried to remove the server",
+    label: "Server removal refused",
+    tone: "warning",
+    description:
+      "A removal was refused because a workload could not be torn down, or was destroyed but left a resource behind for cleanup. The server row was kept so those resources can still be reclaimed.",
   },
   "server.exec": {
     category: "servers",
@@ -412,8 +475,25 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     label: "Mail server admin action",
     tone: "warning",
   },
+  // Catalogued because the taxonomy scan is deliberately over-inclusive: it greps
+  // the HTTP API and shared engine for `eventType:` literals, so a notification-only emit that never
+  // writes an audit_event row is caught the same as an audit write. Without this the
+  // suite fails; with it, an operator who DOES surface these sees a real label.
+  "mail.inbound_received": {
+    category: "servers",
+    action: "received mail matching a notification rule on",
+    label: "Mail arrived at a watched address",
+    tone: "info",
+  },
 
   /* ---------------- Members & access ---------------- */
+  "identity.provisioned": {
+    category: "members",
+    action: "provisioned the identity",
+    label: "Identity provisioned",
+    tone: "info",
+    description: "A trusted host mapped an external identity to an Openship user.",
+  },
   "organization.created": {
     category: "members",
     action: "created the organization",
@@ -450,6 +530,13 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     action: "changed the role of",
     label: "Member role changed",
     tone: "warning",
+  },
+  "member.updated": {
+    category: "members",
+    action: "changed the membership of",
+    label: "Membership updated by the host",
+    tone: "warning",
+    description: "A trusted host added, changed or removed an organization membership.",
   },
   "member.joined": {
     category: "members",
@@ -490,6 +577,13 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     label: "Invitation sent with pending permissions",
     tone: "info",
     description: "Grants were queued and will apply the moment the invitee joins.",
+  },
+  "invitation.resent": {
+    category: "members",
+    action: "renewed the invitation for",
+    label: "Invitation renewed",
+    tone: "info",
+    description: "The invitation's authority and expiry were renewed; delivery may use email or a link.",
   },
   "invitation.accepted": {
     category: "members",
@@ -535,19 +629,34 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     description: "An existing grant was overwritten with a different scope.",
   },
   "mcp.authorized": {
-    category: "members",
+    category: "agent",
     action: "authorized the MCP client",
     label: "MCP client authorized",
     tone: "info",
     description: "An AI agent was connected and given a scope to act within.",
   },
   "mcp.scope_changed": {
-    category: "members",
+    category: "agent",
     action: "changed the access of the MCP client",
     label: "MCP access changed",
     tone: "warning",
     description:
       "A connected agent's scope was edited. It takes effect on the agent's next request — no reconnect.",
+  },
+  "mcp.disconnected": {
+    category: "agent",
+    action: "disconnected the MCP client",
+    label: "MCP client disconnected",
+    tone: "warning",
+    description:
+      "A connected agent's tokens, consent and scope were torn down. It stops working immediately and must re-consent to return.",
+  },
+  "mcp.tool_called": {
+    category: "agent",
+    action: "ran the MCP tool",
+    label: "Agent tool call",
+    description:
+      "A tool call that left no other trace: a read, or an attempt that was refused or errored. A tool call that successfully changed something is recorded as the change itself, so it is not duplicated here.",
   },
   "grant.materialized": {
     category: "members",
@@ -595,6 +704,20 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     label: "Instance data exported",
     tone: "warning",
     description: "A full database dump left this instance.",
+  },
+  "instance.data.receive_code_created": {
+    category: "security",
+    action: "created a direct data-transfer receive code",
+    label: "Data-transfer receive code created",
+    tone: "warning",
+    description: "A short-lived code was created to receive instance data directly.",
+  },
+  "instance.data.sent": {
+    category: "security",
+    action: "sent instance data to another instance",
+    label: "Instance data sent",
+    tone: "warning",
+    description: "Selected instance data was transferred directly to another instance.",
   },
   "instance.data.imported": {
     category: "security",
@@ -725,6 +848,53 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     label: "GitHub app installed",
     tone: "info",
   },
+  "github.source.created": {
+    category: "system",
+    action: "registered the GitHub App source",
+    label: "GitHub App source registered",
+    tone: "info",
+    description:
+      "An organization-owned GitHub App was verified and stored. Secret values are never recorded.",
+  },
+  "github.source.updated": {
+    category: "system",
+    action: "updated the GitHub App source",
+    label: "GitHub App source updated",
+    tone: "info",
+    description: "A GitHub App's identity, endpoint, or encrypted credentials changed.",
+  },
+  "github.source.verified": {
+    category: "system",
+    action: "verified the GitHub App source",
+    label: "GitHub App source verified",
+    tone: "info",
+  },
+  "github.source.defaulted": {
+    category: "system",
+    action: "made the default GitHub App source",
+    label: "Default GitHub App source changed",
+    tone: "info",
+  },
+  "github.source.deleted": {
+    category: "system",
+    action: "deleted the GitHub App source",
+    label: "GitHub App source deleted",
+    tone: "warning",
+    description:
+      "The local App credentials and installation bindings were removed; the GitHub App itself was not uninstalled on GitHub.",
+  },
+  "github.connect": {
+    category: "system",
+    action: "started connecting GitHub for",
+    label: "GitHub connection started",
+    tone: "info",
+  },
+  "github.installation.claim": {
+    category: "system",
+    action: "claimed the GitHub installation for",
+    label: "GitHub installation claimed",
+    tone: "info",
+  },
   "github.disconnect": {
     category: "system",
     action: "disconnected GitHub from",
@@ -805,6 +975,11 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     category: "system",
     action: "changed the notification defaults of",
     label: "Notification defaults changed",
+  },
+  "notification_delivery.seen": {
+    category: "system",
+    action: "marked as seen",
+    label: "Notification marked as seen",
   },
   "notifications:write": {
     category: "system",
@@ -894,6 +1069,7 @@ export const AUDIT_RESOURCE_LABELS: Record<string, string> = {
   deployment: "a deployment",
   domain: "a domain",
   dns_credential: "a DNS provider",
+  credential: "a credential",
   server: "a server",
   mail_server: "the mail server",
   job: "a job",
@@ -912,6 +1088,7 @@ export const AUDIT_RESOURCE_LABELS: Record<string, string> = {
   backup_run: "a backup",
   backup_restore: "a restore",
   incoming_webhook: "a webhook",
+  mcp_client: "a connected AI agent",
   billing: "billing",
   cloud: "Openship Cloud",
   settings: "settings",

@@ -28,7 +28,7 @@ export type OpenshipDomainType = "free" | "custom";
 export type OpenshipRestart = "no" | "always" | "on-failure" | "unless-stopped";
 /** Cloud sizing presets, plus "unlimited" — no caps, the self-hosted default
  *  (the machine itself is the ceiling). */
-export type OpenshipResourceTier = "unlimited" | "micro" | "low" | "medium" | "high";
+export type OpenshipResourceTier = "unlimited" | "micro" | "low" | "medium" | "high" | "xlarge";
 
 export const OPENSHIP_RUNTIMES: readonly OpenshipRuntime[] = ["bare", "docker"];
 export const OPENSHIP_PRODUCTION_MODES: readonly OpenshipProductionMode[] = [
@@ -50,6 +50,7 @@ export const OPENSHIP_RESOURCE_TIERS: readonly OpenshipResourceTier[] = [
   "low",
   "medium",
   "high",
+  "xlarge",
 ];
 
 /** Env value: a plain string, or `{ value, secret }` to encrypt it at rest. */
@@ -89,6 +90,12 @@ export interface OpenshipService {
   image?: string;
   build?: string;
   dockerfile?: string;
+  /**
+   * Dockerfile build arguments for this service. A null value inherits the
+   * same-named value from the project's `env`; a string is an explicit
+   * service-local override. Runtime variables continue to live in `env`.
+   */
+  buildArgs?: Record<string, string | null>;
   ports?: string[];
   volumes?: string[];
   dependsOn?: string[];

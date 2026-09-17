@@ -13,16 +13,34 @@ import type { EnvironmentProfile } from "@repo/adapters";
  * Only `resolveEnvironment` is mocked: `envOps`, `opScript` and the firewall tables are
  * the real ones, so these assertions are on the command this host would really get.
  */
-const h = vi.hoisted(() => ({ host: {} as Partial<EnvironmentProfile> }));
+const h = vi.hoisted(() => ({
+  host: {} as Partial<EnvironmentProfile>,
+  /**
+   * The privilege gate, stubbed to the identity.
+   *
+   * `ufw`/`firewall-cmd` are root-only, so the step runs them through `rootOrDegrade`.
+   * That helper probes the host with its own `opsh_*` script, which would land in the
+   * asserted command list and make every expectation here about privilege detection
+   * instead of about firewall syntax — which is what this file exists to pin. The gate's
+   * own behaviour (elevate on sudo, report and degrade otherwise) is covered by the
+   * adapters' privilege tests; what THIS file asserts about it is only that the step goes
+   * through it at all, below.
+   */
+  gate: vi.fn(async (executor: unknown) => executor),
+}));
 
 vi.mock("@repo/adapters", async (importOriginal) => {
   const real = await importOriginal<typeof import("@repo/adapters")>();
   const fixtures = await import("../../../../../packages/adapters/src/system/environment.fixtures");
-  return { ...real, resolveEnvironment: async () => fixtures.profileFixture(h.host) };
+  return {
+    ...real,
+    resolveEnvironment: async () => fixtures.profileFixture(h.host),
+    rootOrDegrade: h.gate,
+  };
 });
 
 import { MAIL_PORTS } from "@repo/adapters";
-import { stepOpenMailFirewall } from "../../../src/modules/mail/mail.service";
+import { stepOpenMailFirewall } from "@repo/platform/engine/modules/mail/mail.service";
 
 function fakeExecutor(fail?: (cmd: string) => string | undefined) {
   const commands: string[] = [];
@@ -44,6 +62,7 @@ function run(exec: unknown) {
 
 beforeEach(() => {
   h.host = {};
+  h.gate.mockClear();
 });
 
 describe("stepOpenMailFirewall", () => {
@@ -76,6 +95,32 @@ describe("stepOpenMailFirewall", () => {
     expect(all).toContain("firewall-cmd --reload");
     expect(all).not.toMatch(/iptables/);
     expect(all).not.toMatch(/\bufw\b/);
+  });
+
+  test("opens the ports through the privilege gate, not on the raw executor", async () => {
+    // `ufw`/`firewall-cmd` are root-only. This ran on the raw executor, so on a box we log
+    // into as a non-root sudo user every rule failed and the step reported the ports as
+    // REJECTED BY THE FIREWALL rather than as never attempted — a wrong diagnosis about
+    // the operator's host. The profile above only chooses the syntax; it never decided who
+    // runs it.
+    h.host = { firewall: "ufw" };
+    const { executor } = fakeExecutor();
+
+    await run(executor);
+
+    expect(h.gate).toHaveBeenCalledTimes(1);
+    expect(h.gate.mock.calls[0]?.[0]).toBe(executor);
+  });
+
+  test("does not reach for the gate when there is no firewall to open", async () => {
+    // No rules means no root-only command, and probing privileges to run nothing is a
+    // round-trip charged to every mail setup on a box with no firewall.
+    h.host = { firewall: "none" };
+    const { executor } = fakeExecutor();
+
+    await run(executor);
+
+    expect(h.gate).not.toHaveBeenCalled();
   });
 
   test("no active firewall → touches nothing and says so", async () => {

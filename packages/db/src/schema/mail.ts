@@ -1,6 +1,16 @@
-import { integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  real,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 import { servers } from "./servers";
 import { project } from "./project";
+import { organization } from "./organization";
 
 /**
  * Mail-server install record.
@@ -69,3 +79,95 @@ export const mailServers = pgTable("mail_servers", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+/**
+ * An operator rule: "mail matching this, tell me in these channels."
+ *
+ * The ONLY table this feature adds. Capture state deliberately is not mirrored here: the
+ * token lives inside `vmail.recipient_bcc_domain.bcc_address`, the collector's maildir in
+ * `vmail.mailbox`, and "a foreign BCC took the slot" is derivable from that address — so
+ * the engine stays the single source of truth for what is armed, and there is no cache to
+ * go stale. What has to persist is this: rules reference `notification_channel` ids that
+ * exist only in this database, and they are edited from a dashboard tab.
+ *
+ * Scope and filters are evaluated in the control plane against the captured headers, which
+ * is what lets a rule be edited with no mail-box change at all. Only a rule's DOMAIN
+ * decides whether a BCC row has to exist on the engine.
+ */
+export const mailInboundRule = pgTable(
+  "mail_inbound_rule",
+  {
+    id: text("id").primaryKey(),
+
+    serverId: text("server_id")
+      .notNull()
+      .references(() => mailServers.serverId, { onDelete: "cascade" }),
+
+    /**
+     * Carried so dispatch can fan out to the right org's channels without joining back
+     * through `servers`. Note this does NOT make the table org-scope for dump purposes:
+     * its FKs point at instance-scope rows (see dump.ts).
+     */
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+
+    /** Operator-facing label, e.g. "Support inbox → #support". */
+    name: text("name").notNull(),
+
+    /** mailbox | domain | all. Text so a new scope is a registry entry, not a migration. */
+    scope: text("scope").notNull(),
+
+    /**
+     * Full address for `mailbox`, the domain for `domain`, NULL for `all`.
+     *
+     * `all` is a genuine fan-out: there is no global `always_bcc` anywhere in the
+     * shipped Postfix config, and the domain lookup keys on exact equality with no
+     * wildcard convention — so it arms one BCC row per domain and needs a reconcile
+     * when a domain is added.
+     *
+     * No CHECK ties this to `scope` (this schema has none anywhere, and the SQL and
+     * drizzle definitions are hand-maintained in parallel). The invariant is enforced
+     * fail-closed instead: a `mailbox` rule with no target matches NOTHING.
+     */
+    target: text("target"),
+
+    /** Optional extra matching, applied at filter time. NULL = match everything. */
+    fromPattern: text("from_pattern"),
+    subjectPattern: text("subject_pattern"),
+
+    /**
+     * Spam gate, and it is NOT optional in practice. The shipped amavis policy sets
+     * `spam_lover='Y'` and `bad_header_lover='Y'` on the catch-all `@.` policy with
+     * empty quarantine targets, so the global `$final_spam_destiny = D_DISCARD` is dead
+     * for every recipient: spam and bad-header mail are delivered, and therefore
+     * captured. Nothing upstream filters on our behalf.
+     */
+    maxSpamScore: real("max_spam_score"),
+
+    /**
+     * Target channels as a jsonb array of ids — deliberately not a join table with an FK
+     * to `notification_channel`. The dump's FK_PARENT maps a bare `channelId` column to
+     * that table unconditionally for ANY table, so a real join row would make
+     * `assertDumpSelfContained` reject any dump carrying it on a remap path.
+     */
+    channelIds: jsonb("channel_ids").$type<string[]>().notNull().default([]),
+
+    enabled: boolean("enabled").notNull().default(true),
+
+    /**
+     * Burst control state. The notification subsystem has no rate limiting or windowed
+     * dedup of its own — that is explicitly the producer's job — so a mailing list
+     * hitting a watched address must not become one alert per message.
+     */
+    pausedReason: text("paused_reason"),
+    lastMatchedAt: timestamp("last_matched_at"),
+
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_mail_inbound_rule_server_enabled").on(t.serverId, t.enabled),
+    index("idx_mail_inbound_rule_org").on(t.organizationId),
+  ],
+);

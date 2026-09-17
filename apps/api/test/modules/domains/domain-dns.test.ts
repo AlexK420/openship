@@ -9,6 +9,11 @@ const projectRepo = vi.hoisted(() => ({
   findById: vi.fn(),
 }));
 
+const serverTarget = vi.hoisted(() => ({
+  resolveProjectServerHost: vi.fn(),
+  resolveSelectedServerHost: vi.fn(),
+}));
+
 vi.mock("@repo/db", () => ({
   repos: { domain: domainRepo, project: projectRepo },
 }));
@@ -18,11 +23,12 @@ vi.mock("../../../src/lib/controller-helpers", async (importOriginal) => {
   return { ...actual, platform: () => ({ target: "local", runtime: {} }) };
 });
 
-vi.mock("../../../src/lib/server-target", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../src/lib/server-target")>();
+vi.mock("@repo/platform/engine/lib/server-target", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@repo/platform/engine/lib/server-target")>();
   return {
     ...actual,
-    resolveProjectServerHost: vi.fn().mockResolvedValue("203.0.113.10"),
+    resolveProjectServerHost: serverTarget.resolveProjectServerHost,
+    resolveServerHost: serverTarget.resolveSelectedServerHost,
     resolveInstancePublicIp: vi.fn().mockResolvedValue(null),
     resolveLocalServerHost: vi.fn().mockResolvedValue(null),
   };
@@ -33,13 +39,17 @@ vi.mock("../../../src/lib/server-target", async (importOriginal) => {
 // themselves are covered in dns-credential.service.test.ts.
 const planRecords = vi.fn().mockResolvedValue({ status: "none", records: [] });
 const provisionRecords = vi.fn().mockResolvedValue({ provisioned: true, records: [] });
-vi.mock("../../../src/modules/dns/dns-credential.service", () => ({
+vi.mock("@repo/platform/engine/modules/dns/dns-credential.service", () => ({
   planRecords: (...args: unknown[]) => planRecords(...args),
   provisionRecords: (...args: unknown[]) => provisionRecords(...args),
   releaseRecords: vi.fn().mockResolvedValue({ deleted: 0 }),
 }));
 
-import { planDomainDns, applyDomainDns } from "../../../src/modules/domains/domain.service";
+import {
+  applyDomainDns,
+  getDomainRecords,
+  planDomainDns,
+} from "@repo/platform/engine/modules/domains/domain.service";
 
 const ctx = { organizationId: "org_123", userId: "user_123" } as any;
 
@@ -64,6 +74,10 @@ describe("domain DNS plan/apply mapping", () => {
     domainRepo.findById.mockResolvedValue(domain);
     projectRepo.findById.mockReset();
     projectRepo.findById.mockResolvedValue(project);
+    serverTarget.resolveProjectServerHost.mockReset();
+    serverTarget.resolveProjectServerHost.mockResolvedValue("203.0.113.10");
+    serverTarget.resolveSelectedServerHost.mockReset();
+    serverTarget.resolveSelectedServerHost.mockResolvedValue("198.51.100.42");
     planRecords.mockClear();
     provisionRecords.mockClear();
   });
@@ -93,10 +107,28 @@ describe("domain DNS plan/apply mapping", () => {
     expect(applied).toEqual(planned);
   });
 
+  it("uses the explicit pre-deploy server for records, plan and apply", async () => {
+    const records = await getDomainRecords(ctx, "dom_1", "server_new");
+    await planDomainDns(ctx, "dom_1", "server_new");
+    await applyDomainDns(ctx, "dom_1", "server_new");
+
+    expect(serverTarget.resolveSelectedServerHost).toHaveBeenCalledTimes(3);
+    expect(serverTarget.resolveSelectedServerHost).toHaveBeenCalledWith("org_123", "server_new");
+    expect(records.records).toEqual([
+      { type: "A", host: "@", name: "example.com", value: "198.51.100.42" },
+    ]);
+    expect((planRecords.mock.calls[0] as unknown[])[2]).toEqual([
+      { type: "A", name: "example.com", content: "198.51.100.42" },
+    ]);
+    expect((provisionRecords.mock.calls[0] as unknown[])[2]).toEqual([
+      { type: "A", name: "example.com", content: "198.51.100.42" },
+    ]);
+  });
+
   it("drops a record whose target is unknown rather than planning an empty write", async () => {
     // No resolvable server IP → buildRecords emits value "" for the A record;
     // desiredDnsInputs must filter it out, leaving nothing to plan.
-    const serverTarget = await import("../../../src/lib/server-target");
+    const serverTarget = await import("@repo/platform/engine/lib/server-target");
     (serverTarget.resolveProjectServerHost as any).mockResolvedValueOnce(null);
     (serverTarget.resolveInstancePublicIp as any).mockResolvedValueOnce(null);
 
@@ -105,4 +137,15 @@ describe("domain DNS plan/apply mapping", () => {
     const inputs = (planRecords.mock.calls[0] as unknown[])[2];
     expect(inputs).toEqual([]);
   });
+});
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/platform-config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/controller-helpers")>();
+  return { ...actual, platform: () => ({ target: "local", runtime: {} }) };
+});
+
+vi.mock("@repo/platform/engine/lib/resource-access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/controller-helpers")>();
+  return { ...actual, platform: () => ({ target: "local", runtime: {} }) };
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveEffectiveTarget } from "../../src/lib/deployment-runtime";
-import type { DeploymentMeta } from "../../src/lib/deployment-runtime";
+import { resolveEffectiveTarget } from "@repo/platform/engine/lib/deployment-runtime";
+import type { DeploymentMeta } from "@repo/platform/engine/lib/deployment-runtime";
 
 // A deployment PINNED to a serverId must route over SSH to that server no matter
 // the host platform — including the DESKTOP app operating a remote server. The

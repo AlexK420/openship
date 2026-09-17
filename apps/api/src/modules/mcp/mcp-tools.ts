@@ -12,7 +12,7 @@ import {
   type CheckedResourceType,
 } from "../../lib/permission";
 import type { Permission } from "@repo/db";
-import { env } from "../../config";
+import { env } from "@repo/platform/engine/config/index";
 
 /**
  * MCP tool generation from the HTTP route registry. A route is exposed as a
@@ -206,7 +206,7 @@ export function getMcpTools(): McpToolDef[] {
       const mcp = isPublicSpec(spec) ? undefined : spec.mcp;
       const parsed = isPublicSpec(spec) ? null : parsePermissionTag(spec.tag);
       const collection = !isPublicSpec(spec) && spec.collection === true;
-      const collectionProject = !isPublicSpec(spec) && spec.collectionProject === true;
+      const collectionProject = !isPublicSpec(spec) && !!spec.collectionProject;
       const leaf = parsed?.leaf ?? "";
       const pathParams = extractPathParams(route.path);
       const hasBody = BODY_METHODS.has(route.method);

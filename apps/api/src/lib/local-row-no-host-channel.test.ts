@@ -32,20 +32,22 @@ vi.mock("@repo/db", () => ({
 
 // The row IS this box; keyed off the flag so the test doesn't depend on loopback
 // resolution or env.
-vi.mock("./box-org", () => ({
+vi.mock("@repo/platform/engine/lib/box-org", () => ({
+  boxOwningOrgId: async () => "org1",
   isLocalHostRow: async (row: { isLocal?: boolean }) => Boolean(row?.isLocal),
 }));
 
-vi.mock("./ssh-manager", () => ({
+vi.mock("@repo/platform/engine/lib/ssh-manager", () => ({
   sshManager: { acquire: h.acquire },
   buildSshConfig: async () => ({ host: "127.0.0.1", port: 22, username: "root" }),
 }));
 
-vi.mock("./provision-lock", () => ({
+vi.mock("@repo/platform/engine/lib/provision-lock", () => ({
   createProvisionLock: () => ({ run: (f: () => unknown) => f() }),
 }));
 
-const { resolveServerExecutor, hostChannelDeployNotice } = await import("./deployment-runtime");
+const { resolvePlannedTargetTopology, resolveServerExecutor, hostChannelDeployNotice } =
+  await import("@repo/platform/engine/lib/deployment-runtime");
 const { HostChannelUnavailableError } = await import("@repo/adapters");
 
 const resolve = () => resolveServerExecutor("srv-local", "org1");
@@ -56,6 +58,13 @@ beforeEach(() => {
 });
 
 describe("resolveServerExecutor — local row with no host channel", () => {
+  it("plans socket Docker source without acquiring a host command channel", async () => {
+    await expect(
+      resolvePlannedTargetTopology("server", "srv-local", "org1"),
+    ).resolves.toEqual({ serverId: "srv-local", dockerTransport: "socket" });
+    expect(h.acquire).not.toHaveBeenCalled();
+  });
+
   it("still resolves when host control is switched off", async () => {
     h.acquire.mockRejectedValue(
       new HostChannelUnavailableError("disabled", "Host control is disabled on this instance."),
@@ -193,3 +202,5 @@ describe("hostChannelDeployNotice", () => {
     expect(hostChannelDeployNotice(undefined)).toBeNull();
   });
 });
+
+vi.mock("@repo/platform/engine/lib/platform-config", () => ({ platform: () => ({ target: "selfhosted" }) }));

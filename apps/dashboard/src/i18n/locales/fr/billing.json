@@ -3,6 +3,8 @@
     "title": "Capacité et utilisation",
     "subtitle": "Capacité incluse dans votre forfait et ce que vous avez utilisé. Les chiffres en direct se synchronisent depuis Openship Cloud.",
     "routes": "Routes gratuites",
+    "runningServices": "Services en cours",
+    "projects": "Projets",
     "workspaces": "Espaces de travail",
     "unlimited": "Illimité",
     "used": "utilisé",
@@ -11,12 +13,12 @@
   },
   "topupsComingSoon": "Les recharges de crédits ponctuelles arrivent bientôt : vous pourrez ajouter des crédits en plus de votre allocation mensuelle ici.",
   "header": {
-    "credits": "Credits",
-    "creditsSuffix": "of {limit}",
-    "overQuota": "Over quota",
+    "credits": "Crédits",
+    "creditsSuffix": "sur {limit}",
+    "overQuota": "Quota dépassé",
     "bandwidth": "Bandwidth",
-    "bandwidthNote": "combined in + out",
-    "build": "Build time",
+    "bandwidthNote": "entrées et sorties cumulées",
+    "build": "Temps de compilation",
     "min": "min",
     "capacity": "Capacity",
     "workspaces": "workspaces",
@@ -33,9 +35,10 @@
     "invoices": "Factures"
   },
   "portal": {
-    "openButton": "Ouvrir le portail Stripe",
+    "openButton": "Ouvrir le portail de facturation",
     "errorMissingUrl": "URL du portail absente de la réponse",
-    "errorOpenFailed": "Échec de l'ouverture du portail Stripe"
+    "errorOpenFailed": "Échec de l'ouverture du portail Stripe",
+    "supportButton": "Contacter l’assistance"
   },
   "unavailable": {
     "notConnected": {
@@ -65,7 +68,10 @@
     "loadError": "Échec du chargement des forfaits",
     "genericError": "Une erreur s'est produite",
     "tryAgain": "Réessayer",
-    "checkoutError": "Échec du démarrage du paiement"
+    "checkoutError": "Échec du démarrage du paiement",
+    "replacementNotice": "Changer d’offre ou de périodicité démarre un nouveau cycle au tarif complet choisi après paiement. Aucun prorata automatique n’est appliqué.",
+    "changeViaSupport": "Contactez l’assistance pour modifier votre abonnement actuel.",
+    "billingUnavailable": "Les achats ne sont pas encore disponibles pour ce compte."
   },
   "pricing": {
     "custom": "Personnalisé",
@@ -74,21 +80,25 @@
     "contactSales": "Contacter le service commercial",
     "freeForever": "Gratuit à vie",
     "upgrade": "Passer à la version supérieure",
-    "comingSoon": "Bientôt disponible"
+    "comingSoon": "Bientôt disponible",
+    "billingInterval": "Périodicité de facturation",
+    "monthly": "Mensuelle",
+    "annual": "Annuelle",
+    "billedAnnually": "Facturation annuelle"
   },
   "topups": {
     "loadError": "Échec du chargement des packs de recharge",
     "title": "Recharger des crédits",
-    "description": "Packs de crédits ponctuels facturés via Stripe. Les crédits n'expirent jamais et s'ajoutent à votre allocation mensuelle.",
+    "description": "Des packs de crédits à achat unique sont ajoutés à votre solde Cloud après le paiement.",
     "tryAgain": "Réessayer",
-    "credits": "crédits",
+    "credits": "Crédits",
     "redirecting": "Redirection…",
     "buy": "Acheter",
     "empty": "Aucun pack de recharge disponible pour le moment.",
     "receiptsTitle": "Recharges récentes",
-    "receiptsDescription": "Les reçus sont gérés dans Stripe — ouvrez le portail de facturation pour consulter votre historique de factures et télécharger vos reçus.",
+    "receiptsDescription": "Consultez ou demandez les reçus de vos achats de crédits.",
     "opening": "Ouverture…",
-    "openPortal": "Ouvrir le portail Stripe",
+    "openPortal": "Ouvrir le portail de facturation",
     "checkoutError": "Échec du démarrage du paiement",
     "portalError": "Échec de l'ouverture du portail de facturation"
   },
@@ -100,7 +110,6 @@
     "resetsInDay": "Dans {n} jour",
     "resetsInDays": "Dans {n} jours",
     "none": "—",
-    "upgradeToPro": "Passer à Pro",
     "recentActivity": "Activité récente",
     "last7Days": "7 derniers jours",
     "viewFullUsage": "Voir l'utilisation complète",
@@ -122,7 +131,7 @@
       "balance": "Solde",
       "balanceSuffix": "sur {limit} crédits",
       "consumed": "Consommé cette période",
-      "credits": "crédits",
+      "credits": "Crédits",
       "burnRate": "Rythme de consommation",
       "burnRateSuffix": "crédits/jour (7 derniers jours)",
       "projected": "Projection de fin de période",
@@ -200,14 +209,37 @@
       "incomplete_expired": "Expiré",
       "unpaid": "Impayé",
       "paused": "En pause"
-    }
+    },
+    "includedTitle": "Ce qui est inclus",
+    "perYear": "${price}/an"
   },
   "paymentPanel": {
     "title": "Moyen de paiement",
-    "description": "Les cartes, comptes bancaires et informations de facturation sont gérés dans le portail client Stripe. Ouvrez le portail pour ajouter, supprimer ou mettre à jour vos moyens de paiement."
+    "description": "Gérez vos moyens de paiement et vos coordonnées de facturation."
   },
   "invoicesPanel": {
     "title": "Factures",
-    "description": "Les factures et les reçus se trouvent dans le portail client Stripe. Ouvrez le portail pour consulter votre historique de facturation et télécharger vos factures PDF."
+    "description": "Consultez ou demandez votre historique de facturation et vos factures."
+  },
+  "subscription": {
+    "title": "Abonnement",
+    "renewsOn": "Renouvellement le {date}",
+    "endsOn": "Renouvellement arrêté. Votre abonnement se termine le {date}.",
+    "endsAtPeriodEnd": "Renouvellement arrêté. Votre abonnement se termine à la fin de la période payée.",
+    "renewalEnabled": "Le renouvellement automatique est activé.",
+    "ended": "Abonnement terminé. Choisissez une offre pour vous réabonner.",
+    "billedMonthly": "Facturation mensuelle",
+    "cancel": "Résilier l’abonnement",
+    "resume": "Réactiver le renouvellement",
+    "cancelNotice": "Le renouvellement sera arrêté à la fin de la période payée. Votre abonnement reste en vigueur jusque-là.",
+    "confirmCancel": "Arrêter le renouvellement",
+    "keepPlan": "Conserver l’abonnement",
+    "error": "Impossible de modifier votre abonnement. Réessayez."
+  },
+  "checkout": {
+    "checking": "Actualisation de votre offre Cloud et de votre solde. Le traitement du paiement peut prendre un instant.",
+    "active": "Votre offre Cloud est active.",
+    "pending": "Votre paiement est peut-être encore en cours de traitement. Actualisez cette page pour vérifier votre offre et votre solde. Contactez l’assistance si un paiement effectué manque.",
+    "support": "Contacter l’assistance"
   }
 }

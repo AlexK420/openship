@@ -23,9 +23,11 @@ import {
   storedApiPort as apiPort,
   storedDashboardPort as dashboardPort,
 } from "./ports";
-import { startService, ensureInternalToken } from "../commands/up";
+import { startService } from "../commands/up";
+import { internalFetch } from "./loopback-api";
 import {
   summarizeHostChannelCause,
+  HOST_CHANNEL_AUTH_REJECTED_SHORT,
   HOST_CHANNEL_PROVISION_COMMAND,
   type HostChannelCause,
 } from "@repo/core";
@@ -56,18 +58,20 @@ export function ensure<T>(value: T | symbol): T {
 // them from this module; they are NOT a second implementation.
 export { storedPorts, apiPort, dashboardPort };
 
-/** Internal-token-gated GET against the loopback API. null on any failure. */
+/**
+ * Internal-token-gated GET against the loopback API. null on any failure.
+ *
+ * Goes through internalFetch so the token matches the install: this reader used to name
+ * the bare token file, so on a compose box every `/api/system/health` call 401'd and
+ * gatherStatus reported the database, project counts and host channel as unknown on a
+ * perfectly healthy stack — with `doctor --fix` then reading that as "db not ok".
+ */
 export async function internalGet(path: string, timeoutMs = 8000): Promise<any | null> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${apiPort()}${path}`, {
-      headers: { "X-Internal-Token": ensureInternalToken() },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+  const call = await internalFetch(String(apiPort()), path, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (call.kind !== "response" || !call.res.ok) return null;
+  return await call.res.json().catch(() => null);
 }
 
 /** Is the local API answering its liveness stub right now? */
@@ -279,6 +283,11 @@ export function hostControlRow(
       case "key_unreadable":
       case "unreachable":
         return row("fail", `${api.state.replace(/_/g, " ")} — see the api container's boot log`);
+      // Its own case, NOT grouped above: this is the one fault here an operator can act
+      // on without the withheld address, and #527 is what happens when the only thing
+      // we tell them is to go read a log.
+      case "auth_rejected":
+        return row("fail", HOST_CHANNEL_AUTH_REJECTED_SHORT);
       // `disabled` (a hardening choice) and `not_applicable` (a bare install) are the
       // same non-event the local path returns null for. Whitelisted rather than derived
       // from `ok === false`, which `disabled` also is.

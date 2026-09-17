@@ -49,11 +49,11 @@ vi.mock("../../../src/lib/controller-helpers", async (importOriginal) => {
   return { ...actual, platform: () => ({ target: "local", runtime: {} }) };
 });
 
-vi.mock("../../../src/lib/domain-ssl", () => sslMocks);
+vi.mock("@repo/platform/engine/lib/domain-ssl", () => sslMocks);
 // Both accessors hand back the SAME host executor, which is the point: a local
 // server row and the host channel are one connection, so cert ops land on the
 // host's /etc/letsencrypt either way.
-vi.mock("../../../src/lib/ssh-manager", () => ({
+vi.mock("@repo/platform/engine/lib/ssh-manager", () => ({
   sshManager: {
     withExecutor: vi.fn(async (_id: string, fn: (e: CommandExecutor) => unknown) => fn(hostExec.current!)),
     withHostExecutor: vi.fn(async (fn: (e: CommandExecutor) => unknown) => fn(hostExec.current!)),
@@ -69,7 +69,7 @@ vi.mock("@repo/adapters", async (importOriginal) => {
 
 import { validateCertFor } from "@repo/adapters";
 import { makeTestCert } from "../../../../../packages/adapters/src/system/proxy/test-certs";
-import { reuseServerCertForDomain } from "../../../src/modules/domains/domain.service";
+import { reuseServerCertForDomain } from "@repo/platform/engine/modules/domains/domain.service";
 
 /**
  * Fake executor: `exists` answers the container markers from `container` and file
@@ -147,7 +147,7 @@ beforeEach(() => {
   domainRepo.findById.mockResolvedValue({ ...domainRow });
   domainRepo.listByProject.mockResolvedValue([]);
   projectRepo.findById.mockResolvedValue({ ...project });
-  deploymentRepo.findById.mockResolvedValue({ id: "dep_1", meta: { serverId: "srv_1" } });
+  deploymentRepo.findById.mockResolvedValue({ id: "dep_1", projectId: "proj_1", organizationId: "org_1", meta: { serverId: "srv_1" } });
   serverRepo.getInOrganization.mockResolvedValue({ id: "srv_1", isLocal: true });
   serverRepo.get.mockResolvedValue({ id: "srv_1", isLocal: true, organizationId: "org_1" });
   createExecutor.mockImplementation(() => hostExec.current);
@@ -182,7 +182,7 @@ describe("reuseServerCertForDomain", () => {
   // local box both routes see the same files, so only the call pattern can tell them
   // apart, and the difference is whether a blocked host channel breaks adoption (#490).
   it("reads certbot's store LOCALLY on the local box — never over the host channel", async () => {
-    const { sshManager } = await import("../../../src/lib/ssh-manager");
+    const { sshManager } = await import("@repo/platform/engine/lib/ssh-manager");
     hostExec.current = fakeExecutor({
       [`${LIVE}/fullchain.pem`]: HOST_CERT.certPem,
       [`${LIVE}/privkey.pem`]: HOST_CERT.keyPem,
@@ -197,7 +197,7 @@ describe("reuseServerCertForDomain", () => {
   it("reads a REMOTE server's store over that server's own executor", async () => {
     // A local read here would answer about the CONTROL PLANE's certs and adopt a cert
     // the serving box doesn't have.
-    const { sshManager } = await import("../../../src/lib/ssh-manager");
+    const { sshManager } = await import("@repo/platform/engine/lib/ssh-manager");
     serverRepo.getInOrganization.mockResolvedValue({ id: "srv_1", isLocal: false });
     serverRepo.get.mockResolvedValue({
       id: "srv_1",
@@ -362,4 +362,15 @@ describe("reuseServerCertForDomain", () => {
     expect(ok).toBe(true);
     expect(sslMocks.installDomainCert).toHaveBeenCalled();
   });
+});
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/platform-config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/controller-helpers")>();
+  return { ...actual, platform: () => ({ target: "local", runtime: {} }) };
+});
+
+vi.mock("@repo/platform/engine/lib/resource-access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/controller-helpers")>();
+  return { ...actual, platform: () => ({ target: "local", runtime: {} }) };
 });

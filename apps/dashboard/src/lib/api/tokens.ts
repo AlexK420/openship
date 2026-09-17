@@ -11,6 +11,8 @@ export interface AccessToken {
   scoped: boolean;
   expiresAt: string | null;
   lastUsedAt: string | null;
+  /** Requests made with this token. Approximate — the write is fire-and-forget. */
+  useCount: number;
   revokedAt: string | null;
   createdAt: string;
 }
@@ -78,6 +80,10 @@ export interface McpClient {
   grantCount: number;
   authorizedAt: string;
   lastUsedAt: string | null;
+  /** Requests this client has made. Approximate — the write is fire-and-forget. */
+  useCount: number;
+  /** Key for this client's audit rows (`?client=` on the audit tab). */
+  auditClientId: string;
 }
 
 /**

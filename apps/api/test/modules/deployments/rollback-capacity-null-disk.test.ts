@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   refreshRollbackCapacity,
   resolveRollbackWindowDetail,
-} from "../../../src/modules/deployments/release-retention";
+} from "@repo/platform/engine/modules/deployments/release-retention";
 import { seedOrg, seedProject } from "../../helpers/seed";
 
 const MB = 1024 * 1024;

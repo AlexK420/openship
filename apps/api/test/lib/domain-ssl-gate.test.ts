@@ -53,7 +53,7 @@ vi.mock("@repo/db", () => ({
       })),
     },
     deployment: {
-      findById: vi.fn(async (id: string) => ({ id, organizationId: "org_1", meta: {} })),
+      findById: vi.fn(async (id: string) => ({ id, projectId: "proj_1", organizationId: "org_1", meta: {} })),
     },
     server: { findLocal: vi.fn(async () => null) },
   },
@@ -61,7 +61,7 @@ vi.mock("@repo/db", () => ({
 
 // Resolve the SSL provider through the deployment platform (the primary path) so
 // the spies below ARE the provider manageDomainSsl reaches.
-vi.mock("../../src/lib/deployment-runtime", () => ({
+vi.mock("@repo/platform/engine/lib/deployment-runtime", () => ({
   // domain-ssl resolves a platform for the SSL provider only, then releases the
   // docker transport it eagerly bound. A spy, not a no-op stub: dropping that
   // release leaks a loopback listener per issuance and per renewal, and nothing
@@ -83,11 +83,11 @@ vi.mock("../../src/lib/controller-helpers", () => ({
 }));
 
 // The lock is orthogonal here — run the body inline.
-vi.mock("../../src/lib/provision-lock", () => ({
+vi.mock("@repo/platform/engine/lib/provision-lock", () => ({
   createProvisionLock: () => ({ run: <T,>(fn: () => Promise<T>) => fn() }),
 }));
 
-vi.mock("../../src/config/env", () => ({
+vi.mock("@repo/platform/engine/config/env", () => ({
   env: { CLOUD_MODE: false, DEPLOY_MODE: "selfhosted" },
 }));
 
@@ -96,7 +96,7 @@ import {
   resolveSslPatch,
   tlsIssuedElsewhere,
   describeTlsIssuedElsewhere,
-} from "../../src/lib/domain-ssl";
+} from "@repo/platform/engine/lib/domain-ssl";
 
 /** Register a domain row the mocked repo will serve. */
 function domain(hostname: string, extra: Record<string, unknown> = {}) {
@@ -278,3 +278,12 @@ describe("resolveSslPatch — not_local can never clobber a status", () => {
     ).toMatchObject({ sslStatus: "provisioning" });
   });
 });
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/platform-config", () => ({
+  platform: () => ({ target: "selfhosted", runtime: {} }),
+}));
+
+vi.mock("@repo/platform/engine/lib/resource-access", () => ({
+  platform: () => ({ target: "selfhosted", runtime: {} }),
+}));

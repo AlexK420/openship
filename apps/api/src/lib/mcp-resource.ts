@@ -18,7 +18,7 @@
  * hardcoded to a domain.
  */
 
-import { requestPublicOrigin } from "./public-url";
+import { requestPublicOrigin } from "@repo/platform/engine/lib/public-url";
 
 /** Path the MCP JSON-RPC endpoint is mounted at (`app.route("/api/mcp", …)`). */
 export const MCP_RESOURCE_PATH = "/api/mcp";

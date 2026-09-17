@@ -3,6 +3,10 @@
 // back to English at runtime (see i18n/index.ts deepMerge), so drift is silent —
 // this surfaces it.
 //
+// Russian upstream-sync deltas live in `locales/ru-patch`. The checker overlays
+// those values on `locales/ru` and applies `_delete` metadata before comparing,
+// matching the effective dictionary produced by the runtime loader.
+//
 //   bun run i18n:check          → summary (counts per namespace), exit 1 on drift
 //   bun run i18n:check --full   → also list every missing/extra key
 //
@@ -13,6 +17,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SOURCE_LOCALE = "en";
+const PATCH_LOCALE = "ru";
+const PATCH_DIR_NAME = "ru-patch";
 
 /** Absolute path to the locales dir, resolved relative to this script. */
 export function defaultLocalesDir() {
@@ -30,8 +36,47 @@ function leafKeys(obj, prefix = "") {
   return out;
 }
 
+function leafEntries(obj, prefix = "", out = {}) {
+  for (const [k, v] of Object.entries(obj)) {
+    const kp = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === "object" && !Array.isArray(v)) leafEntries(v, kp, out);
+    else out[kp] = v;
+  }
+  return out;
+}
+
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function applyLocalePatch(localeEntries, patchFile) {
+  if (!fs.existsSync(patchFile)) return localeEntries;
+  const rawPatch = readJson(patchFile);
+  const deletes = Array.isArray(rawPatch._delete) ? rawPatch._delete : [];
+  const { _delete: _ignored, ...values } = rawPatch;
+  Object.assign(localeEntries, leafEntries(values));
+  for (const prefix of deletes) {
+    for (const key of Object.keys(localeEntries)) {
+      if (key === prefix || key.startsWith(`${prefix}.`)) delete localeEntries[key];
+    }
+  }
+  return localeEntries;
+}
+
+/**
+ * Is this value worth flagging when a locale copies English verbatim?
+ *
+ * Plenty of strings are LEGITIMATELY identical across languages — "Email", "DNS",
+ * "GitHub", "OK", "URL", a `••••••••` placeholder, `you@example.com`. Flagging those
+ * would bury the real signal, so this only considers values that read like PROSE:
+ * multiple words, and long enough that a shared product noun is unlikely.
+ *
+ * That is a heuristic, deliberately. It exists to catch the case that key-parity
+ * cannot see at all — a key that is PRESENT in every locale while still holding the
+ * English sentence, so the UI silently renders English and every test stays green.
+ */
+function looksTranslatable(value) {
+  return typeof value === "string" && value.trim().length > 3 && /\s/.test(value.trim());
 }
 
 /**
@@ -39,9 +84,11 @@ function readJson(file) {
  * @returns {{
  *   missing: {locale:string,namespace:string,key:string}[],
  *   extra: {locale:string,namespace:string,key:string}[],
+ *   untranslated: {locale:string,namespace:string,key:string}[],
  *   byNamespaceMissing: Record<string,number>,
  *   byLocaleMissing: Record<string,number>,
- *   totalMissing: number, totalExtra: number,
+ *   byNamespaceUntranslated: Record<string,number>,
+ *   totalMissing: number, totalExtra: number, totalUntranslated: number,
  * }}
  */
 export function checkI18nParity(localesDir = defaultLocalesDir()) {
@@ -52,22 +99,41 @@ export function checkI18nParity(localesDir = defaultLocalesDir()) {
     .map((f) => f.replace(/\.json$/, ""));
   const locales = fs
     .readdirSync(localesDir)
-    .filter((d) => d !== SOURCE_LOCALE && fs.statSync(path.join(localesDir, d)).isDirectory());
+    .filter(
+      (d) =>
+        d !== SOURCE_LOCALE &&
+        d !== PATCH_DIR_NAME &&
+        fs.statSync(path.join(localesDir, d)).isDirectory(),
+    );
 
   const missing = [];
   const extra = [];
+  const untranslated = [];
   const byNamespaceMissing = {};
   const byLocaleMissing = {};
+  const byNamespaceUntranslated = {};
 
   for (const ns of namespaces) {
-    const base = leafKeys(readJson(path.join(enDir, `${ns}.json`)));
+    const baseEntries = leafEntries(readJson(path.join(enDir, `${ns}.json`)));
+    const base = Object.keys(baseEntries);
     const baseSet = new Set(base);
     for (const locale of locales) {
       const file = path.join(localesDir, locale, `${ns}.json`);
-      let localeKeys = new Set();
-      if (fs.existsSync(file)) localeKeys = new Set(leafKeys(readJson(file)));
+      let localeEntries = {};
+      if (fs.existsSync(file)) localeEntries = leafEntries(readJson(file));
+      if (locale === PATCH_LOCALE) {
+        localeEntries = applyLocalePatch(localeEntries, path.join(localesDir, PATCH_DIR_NAME, `${ns}.json`));
+      }
+      const localeKeys = new Set(Object.keys(localeEntries));
       for (const k of base) if (!localeKeys.has(k)) missing.push({ locale, namespace: ns, key: k });
       for (const k of localeKeys) if (!baseSet.has(k)) extra.push({ locale, namespace: ns, key: k });
+      // Present, but still the English sentence — invisible to the two checks above.
+      for (const k of localeKeys) {
+        if (!baseSet.has(k)) continue;
+        if (localeEntries[k] === baseEntries[k] && looksTranslatable(baseEntries[k])) {
+          untranslated.push({ locale, namespace: ns, key: k });
+        }
+      }
     }
   }
 
@@ -75,14 +141,20 @@ export function checkI18nParity(localesDir = defaultLocalesDir()) {
     byNamespaceMissing[m.namespace] = (byNamespaceMissing[m.namespace] ?? 0) + 1;
     byLocaleMissing[m.locale] = (byLocaleMissing[m.locale] ?? 0) + 1;
   }
+  for (const u of untranslated) {
+    byNamespaceUntranslated[u.namespace] = (byNamespaceUntranslated[u.namespace] ?? 0) + 1;
+  }
 
   return {
     missing,
     extra,
+    untranslated,
     byNamespaceMissing,
     byLocaleMissing,
+    byNamespaceUntranslated,
     totalMissing: missing.length,
     totalExtra: extra.length,
+    totalUntranslated: untranslated.length,
   };
 }
 
@@ -95,12 +167,15 @@ if (isMain()) {
   const full = process.argv.includes("--full");
   const r = checkI18nParity();
 
-  if (r.totalMissing === 0 && r.totalExtra === 0) {
+  if (r.totalMissing === 0 && r.totalExtra === 0 && r.totalUntranslated === 0) {
     console.log("✓ i18n parity: every locale matches the English source.");
     process.exit(0);
   }
 
-  console.log(`i18n drift vs "${SOURCE_LOCALE}" — missing: ${r.totalMissing}, extra: ${r.totalExtra}\n`);
+  console.log(
+    `i18n drift vs "${SOURCE_LOCALE}" — missing: ${r.totalMissing}, extra: ${r.totalExtra}, ` +
+      `untranslated: ${r.totalUntranslated}\n`,
+  );
 
   const nsRows = Object.entries(r.byNamespaceMissing).sort((a, b) => b[1] - a[1]);
   if (nsRows.length) {
@@ -114,6 +189,14 @@ if (isMain()) {
     for (const [l, n] of locRows) console.log(`  ${l.padEnd(6)} ${n}`);
     console.log("");
   }
+  // Present in every locale, still the English sentence — the case key parity cannot
+  // see, and the one that renders English in the UI while looking complete.
+  const untRows = Object.entries(r.byNamespaceUntranslated).sort((a, b) => b[1] - a[1]);
+  if (untRows.length) {
+    console.log("Untranslated VALUES by namespace (locale string == English):");
+    for (const [ns, n] of untRows) console.log(`  ${ns.padEnd(18)} ${n}`);
+    console.log("");
+  }
 
   if (full) {
     const group = (items) => {
@@ -125,6 +208,13 @@ if (isMain()) {
       }
       return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
     };
+    if (r.untranslated.length) {
+      console.log("UNTRANSLATED (key → locales still showing English):");
+      for (const [id, locs] of group(r.untranslated)) {
+        console.log(`  ${id}  [${[...locs].sort().join(",")}]`);
+      }
+      console.log("");
+    }
     if (r.missing.length) {
       console.log("MISSING (key → locales that lack it):");
       for (const [id, locs] of group(r.missing)) console.log(`  ${id}  [${[...locs].sort().join(",")}]`);

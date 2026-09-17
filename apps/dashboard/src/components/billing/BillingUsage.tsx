@@ -87,7 +87,8 @@ function startOfTodayUtc(): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
-function formatCredits(milli: number): string {
+function formatCredits(milli: number | null): string {
+  if (milli === null) return "∞";
   // Oblien charges in milli-credits; display whole credits with up to 2
   // decimals for small fractional usage.
   const credits = milli / 1000;

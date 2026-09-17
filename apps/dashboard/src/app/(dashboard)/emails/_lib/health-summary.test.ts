@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import en from "@/i18n/locales/en/emailsAdmin.json";
-import type { DnsCheck, MailComponentHealth, MailDeliveryHealth } from "@/lib/api";
+import type {
+  DnsCheck,
+  MailComponentHealth,
+  MailDeliveryHealth,
+  MailPortReachability,
+} from "@/lib/api";
 
 import { summarizeHealth } from "./health-summary";
 
@@ -28,6 +33,7 @@ function daemon(overrides: Partial<MailComponentHealth> = {}): MailComponentHeal
     label: "Postfix",
     description: "SMTP server",
     unit: "postfix",
+    severity: "required",
     status: "active",
     ...overrides,
   };
@@ -54,6 +60,17 @@ function delivery(overrides: Partial<MailDeliveryHealth> = {}): MailDeliveryHeal
     queued: 0,
     sampled: false,
     deferrals: [],
+    ...overrides,
+  };
+}
+
+function reachability(overrides: Partial<MailPortReachability> = {}): MailPortReachability {
+  return {
+    hostname: "mail.example.com",
+    address: "203.0.113.10",
+    checkedAt: 0,
+    status: "ok",
+    ports: [],
     ...overrides,
   };
 }
@@ -171,5 +188,190 @@ describe("summarizeHealth", () => {
 
     expect(s?.banner).toContain("danger");
     expect(s?.sub).toBe(h.summary.partDelivery);
+  });
+
+  it("goes red when the daemons listen but a public mail port is blocked", () => {
+    const s = summarizeHealth(
+      NINE_UP,
+      [dns("pass")],
+      delivery(),
+      h,
+      reachability({ status: "fail" }),
+    );
+
+    expect(s?.banner).toContain("danger");
+    expect(s?.sub).toContain(h.summary.partReachability);
+  });
+
+  it("does not grade an unavailable external probe as an outage", () => {
+    const s = summarizeHealth(
+      NINE_UP,
+      [dns("pass")],
+      delivery(),
+      h,
+      reachability({ status: "unknown", detail: "No public DNS result" }),
+    );
+
+    expect(s?.label).toBe(h.summary.allGoodLabel);
+  });
+
+  it("warns instead of declaring mail healthy when inbound SMTP is unverified", () => {
+    const s = summarizeHealth(
+      NINE_UP,
+      [dns("pass")],
+      delivery(),
+      h,
+      reachability({
+        status: "unknown",
+        ports: [
+          {
+            key: "smtp",
+            port: 25,
+            label: "SMTP inbound",
+            status: "blocked",
+            listening: true,
+            exposed: true,
+            reachable: false,
+            failure: "timeout",
+          },
+        ],
+      }),
+    );
+
+    expect(s?.banner).toContain("warning");
+    expect(s?.label).toBe(h.summary.almostLabel);
+    expect(s?.sub).toBe(h.reachability.unknownHint);
+  });
+
+  /**
+   * The #565 defect: a dead ClamAV painted the same red "Issues need attention"
+   * banner as a dead Postfix, so the one signal that means "stop what you are doing"
+   * fired for a box that was still delivering mail.
+   */
+  it("is amber, not red, when only an advisory daemon is down", () => {
+    const s = summarizeHealth(
+      [
+        daemon({ key: "clamav", label: "ClamAV", severity: "advisory", status: "failed", subState: "fatal" }),
+        ...NINE_UP,
+      ],
+      [dns("pass")],
+      delivery(),
+      h,
+    );
+
+    expect(s?.banner).toContain("warning");
+    expect(s?.label).toBe(h.summary.degradedLabel);
+    expect(s?.sub).toContain("ClamAV");
+    /**
+     * GH-565: this used to assert the copy said mail would "queue", which was the
+     * opposite of what the engine does. `apps/email/engine/samples/amavisd/amavisd.conf`
+     * sets neither `$virus_scanners_failure_is_fatal` nor `$final_unchecked_destiny`, and
+     * `$undecipherable_subject_tag` is `undef` - so a message no scanner could examine is
+     * DELIVERED, unlabelled. The old assertion made a passing test guard a false promise,
+     * which is worse than no test: an operator reading "may queue" waits for mail to flow
+     * again instead of learning that unscanned mail is already reaching inboxes.
+     *
+     * If you want the queue behaviour, it is one line in amavisd.conf - see the opt-in
+     * documented there - and this assertion should flip back at the same time.
+     */
+    expect(s?.sub).toMatch(/WITHOUT virus scanning/i);
+    expect(s?.sub).not.toContain("queue");
+  });
+
+  it("says signatures, not scanning, when only freshclam is down", () => {
+    const s = summarizeHealth(
+      [
+        daemon({ key: "freshclam", label: "ClamAV updates", severity: "advisory", status: "inactive" }),
+        ...NINE_UP,
+      ],
+      [dns("pass")],
+      delivery(),
+      h,
+    );
+
+    expect(s?.banner).toContain("warning");
+    expect(s?.sub).toContain("signatures");
+    expect(s?.sub).not.toContain("queue");
+  });
+
+  it("still names an advisory daemon when something required is also down", () => {
+    const s = summarizeHealth(
+      [
+        daemon({ key: "dovecot", label: "Dovecot", status: "failed" }),
+        daemon({ key: "clamav", label: "ClamAV", severity: "advisory", status: "failed" }),
+        ...NINE_UP,
+      ],
+      [dns("pass")],
+      delivery(),
+      h,
+    );
+
+    expect(s?.banner).toContain("danger");
+    expect(s?.sub).toContain("Dovecot");
+    expect(s?.sub).toContain("ClamAV");
+  });
+
+  /**
+   * GH-240 FP1: `spamd` is reported for completeness, but amavis scores spam through its
+   * own in-process Mail::SpamAssassin integration and nothing on this stack speaks to the
+   * daemon - so its state says nothing about whether spam filtering works. It used to be
+   * graded `advisory`, which put a permanent amber banner on every host that simply does
+   * not run it. An amber that is always wrong teaches operators to ignore the banner.
+   */
+  it("stays green when only an informational daemon is down", () => {
+    const s = summarizeHealth(
+      [
+        daemon({ key: "spamassassin", label: "SpamAssassin", severity: "informational", status: "failed" }),
+        ...NINE_UP,
+      ],
+      [dns("pass")],
+      delivery(),
+      h,
+    );
+
+    expect(s?.label).toBe(h.summary.allGoodLabel);
+    expect(s?.sub ?? "").not.toContain("SpamAssassin");
+  });
+
+  it("stays green when an informational daemon is missing entirely", () => {
+    // The common shape on a legacy host: the unit was never installed.
+    const s = summarizeHealth(
+      [
+        daemon({ key: "spamassassin", label: "SpamAssassin", severity: "informational", status: "missing" }),
+        ...NINE_UP,
+      ],
+      [dns("pass")],
+      delivery(),
+      h,
+    );
+
+    expect(s?.label).toBe(h.summary.allGoodLabel);
+  });
+
+  it("is not green while an advisory daemon is down", () => {
+    const s = summarizeHealth(
+      [daemon({ key: "fail2ban", label: "fail2ban", severity: "advisory", status: "inactive" }), ...NINE_UP],
+      [dns("pass")],
+      delivery(),
+      h,
+    );
+
+    expect(s?.label).not.toBe(h.summary.allGoodLabel);
+    expect(s?.sub).toBe("fail2ban not running");
+  });
+
+  /**
+   * A row an older API didn't stamp with `severity` must fail SAFE to required —
+   * landing in neither bucket would leave the amber branch with a heading and no
+   * sentence, which this file's whole priority contract forbids.
+   */
+  it("treats a row with no severity marker as required", () => {
+    const unstamped = { ...daemon({ label: "Postfix", status: "failed" }) } as MailComponentHealth;
+    delete (unstamped as { severity?: unknown }).severity;
+
+    const s = summarizeHealth([unstamped, ...NINE_UP], [dns("pass")], delivery(), h);
+
+    expect(s?.banner).toContain("danger");
+    expect(s?.sub).toContain("Postfix");
   });
 });

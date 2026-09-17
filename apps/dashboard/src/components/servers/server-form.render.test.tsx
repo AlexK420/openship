@@ -3,15 +3,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nProvider } from "@/components/i18n-provider";
+import { PlatformProvider } from "@/context/PlatformContext";
 import { ServerForm } from "./server-form";
 
 vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ showToast: () => {} }) }));
 
-function render(props: Partial<React.ComponentProps<typeof ServerForm>> = {}) {
+/** `deployMode` defaults to "docker" — the compose/VPS install, where the API is a
+ *  container and a host key path resolves inside it. Pass "desktop" for the shell. */
+function render(
+  props: Partial<React.ComponentProps<typeof ServerForm>> = {},
+  deployMode = "docker",
+) {
   return renderToStaticMarkup(
-    <I18nProvider>
-      <ServerForm onSaved={() => {}} {...props} />
-    </I18nProvider>,
+    <PlatformProvider deployMode={deployMode}>
+      <I18nProvider>
+        <ServerForm onSaved={() => {}} {...props} />
+      </I18nProvider>
+    </PlatformProvider>,
   );
 }
 
@@ -121,14 +129,65 @@ describe("ServerForm variants", () => {
 
     const html = render({ server });
     const out = text(html);
-    expect(out).toContain("Paste / Upload");
-    expect(out).toContain("Host path");
     expect(out).toContain("Upload key file");
     expect(out).toContain("Pasted keys are encrypted at rest and never leave the server.");
     // The paste textarea (placeholder lives inside the tag, so check raw html),
     // and NOT the host-path input.
     expect(html).toContain("BEGIN OPENSSH PRIVATE KEY");
     expect(placeholders(html)).not.toContain("/root/.ssh/id_ed25519");
+  });
+
+  /**
+   * A host path is read by `readFileSync` inside the API process. On a compose
+   * install that process is a container that mounts no ~/.ssh, so a path an
+   * operator can `cat` on their VPS resolves to nothing and the save fails as
+   * "Invalid auth configuration". The option is therefore desktop-only — the one
+   * mode where the browser and the API share a filesystem.
+   */
+  describe("host-path mode is offered only where a path can resolve", () => {
+    const keyAuth = {
+      id: "s1",
+      sshHost: "10.0.0.1",
+      sshAuthMethod: "key",
+    } as unknown as React.ComponentProps<typeof ServerForm>["server"];
+
+    it("offers no host-path option on a VPS install", () => {
+      for (const mode of ["docker", "bare"]) {
+        const out = text(render({ server: keyAuth }, mode));
+        expect(out, mode).not.toContain("Host path");
+        // Paste/upload is the whole control now, so the toggle's own label goes
+        // with it — the textarea and its upload button are what remain.
+        expect(out, mode).not.toContain("Paste / Upload");
+        expect(out, mode).toContain("Upload key file");
+      }
+    });
+
+    it("offers both sub-modes in the desktop shell", () => {
+      const out = text(render({ server: keyAuth }, "desktop"));
+      expect(out).toContain("Paste / Upload");
+      expect(out).toContain("Host path");
+      expect(out).toContain("Upload key file");
+    });
+
+    /**
+     * Grandfathering, and it is load-bearing: hiding the toggle for a row that
+     * already stores a path would drop it into paste mode, where a save sends
+     * `sshKeyPath: null` with no material to replace it. Renaming such a server
+     * would strip the only credential it has.
+     */
+    it("keeps the toggle for a row that already stores a path, on any install", () => {
+      const stored = {
+        ...keyAuth,
+        sshKeyPath: "/root/.ssh/id_ed25519",
+      } as unknown as React.ComponentProps<typeof ServerForm>["server"];
+
+      for (const mode of ["docker", "bare", "desktop"]) {
+        const html = render({ server: stored }, mode);
+        expect(text(html), mode).toContain("Host path");
+        // And it opens ON the path, showing the operator what is stored.
+        expect(placeholders(html), mode).toContain("/root/.ssh/id_ed25519");
+      }
+    });
   });
 
   /**

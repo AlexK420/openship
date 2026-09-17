@@ -3,7 +3,12 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { hostFirewallRule } from "@repo/core";
+import {
+  HOST_CHANNEL_AUTH_REJECTED,
+  HOST_CHANNEL_NOT_PROVISIONED,
+  HOST_CHANNEL_ROW_CREDENTIALS_UNUSED,
+  hostFirewallRule,
+} from "@repo/core";
 
 import type { SshConfig } from "../types";
 import { systemDebug } from "./debug";
@@ -12,8 +17,30 @@ function formatSshTarget(config: SshConfig): string {
   return `${config.username ?? "root"}@${config.host}:${config.port ?? 22}`;
 }
 
+/**
+ * Describe a REJECTED credential — the auth half, as opposed to
+ * {@link describeSshConnectFailure}'s transport half.
+ *
+ * The `hostChannel` branch is this function's #490: that bug was operators auditing
+ * `authorized_keys` over what was really a packet filter, and the fix was to stop
+ * wording a connect failure like a credential one. #527 is the mirror image and went
+ * unfixed for six releases — a rejected host-channel key worded as a stored-credential
+ * problem ("check the username, private key, passphrase"), on a row whose stored
+ * credentials nothing dials with. The reporter moved key files between /tmp, /root and
+ * ~/.ssh for a dozen messages because this string told them to.
+ */
 export function describeSshAuthFailure(config: SshConfig, originalMessage: string): string {
   const target = formatSshTarget(config);
+
+  // Checked before password/privateKey: the host channel always carries a privateKey, so
+  // the generic key branch below would otherwise claim it first and win every time.
+  if (config.hostChannel) {
+    return (
+      `${HOST_CHANNEL_AUTH_REJECTED} Dialed ${target} from inside the Openship API ` +
+      `container. ${HOST_CHANNEL_ROW_CREDENTIALS_UNUSED} ${HOST_CHANNEL_NOT_PROVISIONED} ` +
+      `(${originalMessage})`
+    );
+  }
 
   if (config.password) {
     return `SSH password authentication failed for ${target}. Check the username/password, or verify that the server allows password login. (${originalMessage})`;

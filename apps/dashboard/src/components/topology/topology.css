@@ -1,0 +1,109 @@
+.topology-toolbar {
+  background: var(--th-card-on-page);
+}
+.topology-workspace {
+  min-height: 380px;
+}
+.topology-notice {
+  top: 100px;
+}
+.topology-node {
+  box-shadow: none;
+}
+.topology-node[data-pending="true"] {
+  border-style: dashed;
+}
+.topology-status {
+  color: var(--muted-foreground);
+}
+.topology-status[data-state="running"] {
+  color: var(--success);
+}
+.topology-status[data-state="starting"],
+.topology-status[data-state="restarting"] {
+  color: var(--info);
+}
+.topology-status[data-state="pending"] {
+  color: var(--warning);
+}
+.topology-status[data-state="failed"] {
+  color: var(--danger);
+}
+.topology-input {
+  display: block;
+  width: 100%;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--foreground);
+  background: var(--background);
+  outline: none;
+  font-size: 13px;
+}
+.topology-input:focus {
+  border-color: var(--primary);
+}
+.topology-service-form [class*="grid-cols-"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.topology-service-form > form > div {
+  min-width: 0;
+}
+.topology-service-form input {
+  min-width: 0;
+}
+.topology-workspace[data-inspector="expanded"] .topology-pending,
+.topology-workspace[data-inspector="expanded"] .topology-hint {
+  pointer-events: none;
+}
+@container scale-workspace (max-width: 720px) {
+  .topology-workspace[data-inspector] .topology-notice {
+    top: calc(126px + var(--scale-preview-height, 82px));
+  }
+  .topology-pending {
+    bottom: 68px;
+    inset-inline-start: 16px;
+    justify-content: space-between;
+  }
+  .topology-hint {
+    display: none;
+  }
+}
+@container scale-workspace (max-width: 560px) {
+  .topology-toolbar {
+    gap: 6px;
+  }
+  .topology-toolbar > div:first-child {
+    flex: 1;
+  }
+  .topology-pending {
+    gap: 4px;
+  }
+  .topology-pending > span {
+    font-size: 11px;
+  }
+  .topology-pending button {
+    padding-inline: 8px;
+  }
+  .topology-notice {
+    top: 150px;
+  }
+}
+@media (max-width: 480px) {
+  .topology-page-header {
+    gap: 8px;
+  }
+  .topology-page-header > div:last-child {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .topology-page *,
+  .topology-page *::before,
+  .topology-page *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

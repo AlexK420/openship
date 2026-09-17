@@ -3,6 +3,8 @@
     "title": "Kapasite ve Kullanım",
     "subtitle": "Planınıza dahil kapasite ve ne kadar kullandığınız. Canlı veriler Openship Cloud'dan senkronize edilir.",
     "routes": "Ücretsiz rotalar",
+    "runningServices": "Çalışan hizmetler",
+    "projects": "Projeler",
     "workspaces": "Çalışma alanları",
     "unlimited": "Sınırsız",
     "used": "kullanıldı",
@@ -33,9 +35,10 @@
     "invoices": "Faturalar"
   },
   "portal": {
-    "openButton": "Stripe Portalını Aç",
+    "openButton": "Faturalandırma portalını aç",
     "errorMissingUrl": "Yanıtta portal URL'si bulunamadı",
-    "errorOpenFailed": "Stripe portalı açılamadı"
+    "errorOpenFailed": "Stripe portalı açılamadı",
+    "supportButton": "Destekle iletişime geç"
   },
   "unavailable": {
     "notConnected": {
@@ -65,7 +68,10 @@
     "loadError": "Planlar yüklenemedi",
     "genericError": "Bir sorun oluştu",
     "tryAgain": "Tekrar dene",
-    "checkoutError": "Ödeme adımı başlatılamadı"
+    "checkoutError": "Ödeme adımı başlatılamadı",
+    "replacementNotice": "Planı veya faturalandırma aralığını değiştirmek, ödeme sonrasında seçilen tam fiyatla yeni bir dönem başlatır. Otomatik orantılı ücret hesaplaması yapılmaz.",
+    "changeViaSupport": "Mevcut aboneliğinizi değiştirmek için destekle iletişime geçin.",
+    "billingUnavailable": "Bu hesap için satın alma henüz kullanılamıyor."
   },
   "pricing": {
     "custom": "Özel",
@@ -74,21 +80,25 @@
     "currentPlan": "Mevcut plan",
     "contactSales": "Satış ekibiyle iletişime geçin",
     "freeForever": "Sonsuza kadar ücretsiz",
-    "upgrade": "Yükselt"
+    "upgrade": "Yükselt",
+    "billingInterval": "Faturalandırma aralığı",
+    "monthly": "Aylık",
+    "annual": "Yıllık",
+    "billedAnnually": "Yıllık faturalandırılır"
   },
   "topups": {
     "loadError": "Kredi paketleri yüklenemedi",
     "title": "Kredi yükle",
-    "description": "Stripe üzerinden ücretlendirilen tek seferlik kredi paketleri. Kredilerin süresi dolmaz ve aylık kotanıza eklenir.",
+    "description": "Tek seferlik kredi paketleri, ödeme sonrasında Cloud bakiyenize eklenir.",
     "tryAgain": "Tekrar dene",
-    "credits": "kredi",
+    "credits": "Krediler",
     "redirecting": "Yönlendiriliyor…",
     "buy": "Satın Al",
     "empty": "Şu anda kullanılabilir kredi paketi yok.",
     "receiptsTitle": "Son kredi yüklemeleri",
-    "receiptsDescription": "Makbuzlar Stripe üzerinden yönetilir — fatura geçmişinizi görüntülemek ve makbuzları indirmek için faturalandırma portalını açın.",
+    "receiptsDescription": "Kredi satın alımlarınızın makbuzlarını görüntüleyin veya talep edin.",
     "opening": "Açılıyor…",
-    "openPortal": "Stripe Portalını Aç",
+    "openPortal": "Faturalandırma portalını aç",
     "checkoutError": "Ödeme adımı başlatılamadı",
     "portalError": "Faturalandırma portalı açılamadı"
   },
@@ -100,7 +110,6 @@
     "resetsInDay": "{n} gün içinde",
     "resetsInDays": "{n} gün içinde",
     "none": "—",
-    "upgradeToPro": "Pro Plana Yükselt",
     "recentActivity": "Son etkinlikler",
     "last7Days": "Son 7 gün",
     "viewFullUsage": "Tüm kullanımı görüntüle",
@@ -122,7 +131,7 @@
       "balance": "Bakiye",
       "balanceSuffix": "toplam {limit} kredi",
       "consumed": "Bu dönemde tüketilen",
-      "credits": "kredi",
+      "credits": "Krediler",
       "burnRate": "Tüketim hızı",
       "burnRateSuffix": "kredi/gün (son 7 gün)",
       "projected": "Dönem sonu kullanım tahmini",
@@ -147,10 +156,22 @@
       "empty": "Seçilen aralıkta kullanım bulunamadı."
     },
     "resources": {
-      "cpu": { "label": "CPU süresi", "units": "vCPU-saat" },
-      "memory": { "label": "Bellek", "units": "GB-saat" },
-      "disk": { "label": "Disk G/Ç", "units": "GB" },
-      "network": { "label": "Ağ", "units": "GB" }
+      "cpu": {
+        "label": "CPU süresi",
+        "units": "vCPU-saat"
+      },
+      "memory": {
+        "label": "Bellek",
+        "units": "GB-saat"
+      },
+      "disk": {
+        "label": "Disk G/Ç",
+        "units": "GB"
+      },
+      "network": {
+        "label": "Ağ",
+        "units": "GB"
+      }
     },
     "toolbar": {
       "workspace": "Çalışma Alanı",
@@ -188,14 +209,37 @@
       "incomplete_expired": "Süresi Doldu",
       "unpaid": "Ödenmemiş",
       "paused": "Duraklatıldı"
-    }
+    },
+    "includedTitle": "Neler dahil",
+    "perYear": "${price}/yıl"
   },
   "paymentPanel": {
     "title": "Ödeme yöntemi",
-    "description": "Kartlar, banka hesapları ve faturalandırma bilgileri Stripe Müşteri Portalı üzerinden yönetilir. Ödeme yöntemlerinizi eklemek, kaldırmak veya güncellemek için portalı açın."
+    "description": "Ödeme yöntemlerinizi ve fatura bilgilerinizi yönetin."
   },
   "invoicesPanel": {
     "title": "Faturalar",
-    "description": "Faturalar ve makbuzlar Stripe Müşteri Portalı'nda yer alır. Fatura geçmişinizi görüntülemek ve PDF faturalarınızı indirmek için portalı açın."
+    "description": "Fatura geçmişinizi ve faturalarınızı görüntüleyin veya talep edin."
+  },
+  "subscription": {
+    "title": "Abonelik",
+    "renewsOn": "{date} tarihinde yenilenir",
+    "endsOn": "Yenileme durduruldu. Aboneliğiniz {date} tarihinde sona erer.",
+    "endsAtPeriodEnd": "Yenileme durduruldu. Aboneliğiniz ödenen dönemin sonunda sona erer.",
+    "renewalEnabled": "Otomatik yenileme etkin.",
+    "ended": "Abonelik sona erdi. Yeniden abone olmak için bir plan seçin.",
+    "billedMonthly": "Aylık faturalandırılır",
+    "cancel": "Aboneliği iptal et",
+    "resume": "Yenilemeyi sürdür",
+    "cancelNotice": "Ödenen dönem sonunda yenileme durdurulacak. Aboneliğiniz o zamana kadar devam eder.",
+    "confirmCancel": "Yenilemeyi durdur",
+    "keepPlan": "Aboneliği koru",
+    "error": "Aboneliğiniz güncellenemedi. Lütfen tekrar deneyin."
+  },
+  "checkout": {
+    "checking": "Cloud planınız ve bakiyeniz güncelleniyor. Ödemenin işlenmesi biraz sürebilir.",
+    "active": "Cloud planınız etkin.",
+    "pending": "Ödemeniz hâlâ işleniyor olabilir. Planınızı ve bakiyenizi kontrol etmek için bu sayfayı yenileyin. Tamamlanmış bir ödeme görünmüyorsa destekle iletişime geçin.",
+    "support": "Destekle iletişime geç"
   }
 }

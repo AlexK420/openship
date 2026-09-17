@@ -10,7 +10,7 @@
  */
 
 import type { Context } from "hono";
-import { env } from "../../../config";
+import { env } from "@repo/platform/engine/config/index";
 import { repos } from "@repo/db";
 import { getRequestContext, type RequestContext } from "../../../lib/request-context";
 import { permission } from "../../../lib/permission";
@@ -26,7 +26,7 @@ import {
   listDomains,
   updateDomain,
   validateDomain,
-} from "./domains.service";
+} from "@repo/platform/engine/modules/mail/admin/domains.service";
 import {
   createMailbox,
   hardDeleteMailbox,
@@ -34,9 +34,14 @@ import {
   listMailboxes,
   MailboxExistsError,
   MailboxNotFoundError,
+  PlatformMailboxProtectedError,
   softDeleteMailbox,
   updateMailbox,
-} from "./mailboxes.service";
+} from "@repo/platform/engine/modules/mail/admin/mailboxes.service";
+import {
+  ensureOpenshipPlatformMailbox,
+  PlatformMailboxError,
+} from "@repo/platform/engine/modules/mail/admin/platform-mailbox.service";
 import {
   createAlias,
   deleteAlias,
@@ -50,7 +55,7 @@ import { getMailServerStats } from "./stats.service";
 import { scanDns } from "./dns-scan.service";
 import { sendTestEmail, TestEmailError } from "./test-email.service";
 import { AppError, isRelayProviderId, safeErrorMessage } from "@repo/core";
-import { handleApiError } from "../../../middleware/error-handler";
+import { handleApiError, requestTag } from "../../../middleware/error-handler";
 import {
   getComponentLogs,
   restartAllComponents,
@@ -62,7 +67,7 @@ import {
   acknowledgeDomainDns,
   getDomainDnsState,
   listPendingDomainDns,
-} from "./domain-dns.service";
+} from "@repo/platform/engine/modules/mail/admin/domain-dns.service";
 import {
   applyMailDomainDns,
   planMailDomainDns,
@@ -72,10 +77,11 @@ import {
   disableOutboundRelay,
   getOutboundRelay,
   type ConfigureRelayInput,
-} from "./outbound-relay.service";
-import { sshManager } from "../../../lib/ssh-manager";
-import { decrypt } from "../../../lib/encryption";
-import { readState } from "../mail-state";
+} from "@repo/platform/engine/modules/mail/admin/outbound-relay.service";
+import { sshManager } from "@repo/platform/engine/lib/ssh-manager";
+import { decrypt } from "@repo/platform/engine/lib/encryption";
+import { readState } from "@repo/platform/engine/modules/mail/mail-state";
+import { invalidatePlatformTransport } from "@repo/platform/engine/lib/mail";
 
 /**
  * Org-scoped guard: confirms the path's :serverId belongs to the caller's
@@ -543,7 +549,7 @@ export async function createMailboxHandler(c: Context) {
     });
     return c.json({ mailbox: row }, 201);
   } catch (err) {
-    if (err instanceof MailboxExistsError) {
+    if (err instanceof MailboxExistsError || err instanceof PlatformMailboxProtectedError) {
       return c.json({ error: err.message }, 409);
     }
     return errorJson(c, err);
@@ -574,6 +580,42 @@ export async function updateMailboxHandler(c: Context) {
     if (err instanceof MailboxNotFoundError) {
       return c.json({ error: err.message }, 404);
     }
+    if (err instanceof PlatformMailboxProtectedError) {
+      return c.json({ error: err.message }, 409);
+    }
+    return errorJson(c, err);
+  }
+}
+
+/**
+ * Explicit repair surface for the protected Openship sender. This is the only
+ * admin endpoint allowed to rotate it; ordinary mailbox CRUD rejects the same
+ * address so state-file credentials and the Dovecot hash cannot drift again.
+ */
+export async function rotatePlatformMailboxHandler(c: Context) {
+  const guard = assertNotCloud(c);
+  if (guard) return guard;
+  const serverId = param(c, "serverId");
+  await permission.assert(getRequestContext(c), {
+    resourceType: "mail_server",
+    resourceId: serverId,
+    action: "admin",
+  });
+  const ctx = getRequestContext(c);
+  if (!(await isServerInOrg(ctx, serverId))) {
+    return c.json({ error: "Server not found" }, 404);
+  }
+
+  try {
+    const creds = await ensureOpenshipPlatformMailbox(serverId, { rotate: true });
+    // A prior nodemailer transport may still hold the old password for up to a
+    // minute. Drop it immediately; the next send rebuilds from the new state.
+    invalidatePlatformTransport(serverId);
+    return c.json({ ok: true, email: creds.email, rotated: creds.rotated });
+  } catch (err) {
+    if (err instanceof PlatformMailboxError) {
+      return c.json({ error: err.message }, 409);
+    }
     return errorJson(c, err);
   }
 }
@@ -601,6 +643,9 @@ export async function deleteMailboxHandler(c: Context) {
   } catch (err) {
     if (err instanceof MailboxNotFoundError) {
       return c.json({ error: err.message }, 404);
+    }
+    if (err instanceof PlatformMailboxProtectedError) {
+      return c.json({ error: err.message }, 409);
     }
     return errorJson(c, err);
   }
@@ -862,5 +907,11 @@ function errorJson(c: Context, err: unknown) {
   // The SSH+psql layer throws plain Error for any non-shape error
   // (connection failure, SQL syntax, validation). 500 is the right default;
   // typed errors above are caught and mapped to 4xx individually.
+  //
+  // Logged HERE because we answer the response ourselves: `app.onError` only sees
+  // errors that were never caught, so every mail-admin 500 left the API log with
+  // nothing but hono's `--> … 500` (the second half of GH-562). The AppError branch
+  // above logs through `handleApiError`, so no path logs twice.
+  console.error(`[MAIL ADMIN ERROR] ${requestTag(c)}`, err);
   return c.json({ error: message }, 500);
 }

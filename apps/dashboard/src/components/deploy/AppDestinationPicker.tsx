@@ -20,6 +20,9 @@ export interface AppDestination {
   /** Host of the selected server (sshHost) — lets the app wizard build a
    *  reachable `http://host:port` URL for a port-only (no-domain) install. */
   serverHost?: string;
+  /** Display name of the selected server, so a summary can name the destination
+   *  the operator recognises instead of re-fetching the server row for it. */
+  serverName?: string;
 }
 
 /**
@@ -72,7 +75,13 @@ export function AppDestinationPicker({
           autoSelectFirst
           value={serverActive ? (value?.serverId ?? null) : null}
           onSelect={(s: ServerOption | null) => {
-            if (s) onChange({ deployTarget: "server", serverId: s.id, serverHost: s.host });
+            if (s)
+              onChange({
+                deployTarget: "server",
+                serverId: s.id,
+                serverHost: s.host,
+                serverName: s.name,
+              });
           }}
         />
       </div>

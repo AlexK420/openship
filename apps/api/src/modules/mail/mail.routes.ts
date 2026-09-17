@@ -9,6 +9,7 @@ import { secureRouter } from "../../lib/secure-router";
 import * as mail from "./mail.controller";
 import * as admin from "./admin/admin.controller";
 import * as webmail from "./webmail/webmail.controller";
+import * as inbound from "./inbound/inbound.controller";
 
 const r = secureRouter(new Hono(), {
   module: "mail",
@@ -130,6 +131,11 @@ r.delete(
   { tag: "mail_server:admin" },
   admin.deleteMailboxHandler,
 );
+r.post(
+  "/admin/:serverId/platform-mailbox/rotate",
+  { tag: "mail_server:admin" },
+  admin.rotatePlatformMailboxHandler,
+);
 
 /* ── Admin panel - aliases / forwards / catch-all ─────────────────── */
 r.get(
@@ -243,5 +249,38 @@ r.post(
   webmail.startExternalDeployAsProjectHandler,
 );
 
-export const mailRoutes = r.hono;
+/* ── Inbound rules (mail arrives → notification channel) ──────────── */
+// `:serverId` is a PATH param on every one of these, and that is deliberate:
+// `mail_server` is a CONDITIONAL_SINGLETON, so a route that took the id from the body
+// would degrade to resourceId "*" — a pure role×type check that names no server and
+// therefore establishes no tenant boundary.
+r.get(
+  "/admin/:serverId/inbound-rules",
+  { tag: "mail_server:read" },
+  inbound.listRulesHandler,
+);
+r.post(
+  "/admin/:serverId/inbound-rules",
+  { tag: "mail_server:write" },
+  inbound.createRuleHandler,
+);
+r.patch(
+  "/admin/:serverId/inbound-rules/:ruleId",
+  { tag: "mail_server:write" },
+  inbound.updateRuleHandler,
+);
+r.delete(
+  "/admin/:serverId/inbound-rules/:ruleId",
+  { tag: "mail_server:write" },
+  inbound.deleteRuleHandler,
+);
+// Dry run — reads and reports what WOULD notify, dispatching and deleting nothing.
+// Tagged `write` because the boot scanner treats a POST on a read-tagged route as a
+// CRITICAL error and exits the process.
+r.post(
+  "/admin/:serverId/inbound-rules/test",
+  { tag: "mail_server:write" },
+  inbound.testRulesHandler,
+);
 
+export const mailRoutes = r.hono;

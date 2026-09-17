@@ -5,6 +5,14 @@ const mocks = vi.hoisted(() => ({
   setActiveDeployment: vi.fn(async () => {}),
   supersedePendingDecisions: vi.fn(async () => {}),
   sseUpdateStatus: vi.fn(),
+  notify: vi.fn(),
+  finishBuildSession: vi.fn(async () => {}),
+  listByDeployment: vi.fn(async () => []),
+  listByProject: vi.fn(async () => []),
+  computeCleanupKeepSet: vi.fn(async () => ({
+    images: new Set<string>(),
+    containers: new Set<string>(),
+  })),
 }));
 
 // The lifecycle module transitively pulls in auth/notification wiring that reads
@@ -20,20 +28,26 @@ vi.mock("@repo/db", () => ({
       getNextReadyVersion: vi.fn(async () => 1),
       findBuildSessionById: vi.fn(async () => null),
       appendBuildLog: vi.fn(async () => {}),
-      finishBuildSession: vi.fn(async () => {}),
+      finishBuildSession: mocks.finishBuildSession,
     },
     project: { setActiveDeployment: mocks.setActiveDeployment },
-    service: { listByDeployment: vi.fn(async () => []) },
+    service: {
+      listByDeployment: mocks.listByDeployment,
+      listByProject: mocks.listByProject,
+    },
   },
 }));
+vi.mock("@repo/platform/engine/modules/projects/cleanup-keep-set", () => ({
+  computeCleanupKeepSet: mocks.computeCleanupKeepSet,
+}));
 // Terminal-event side channels, each of which drags in auth/github/mail wiring.
-vi.mock("../../lib/notification-dispatcher", () => ({ notification: { emit: vi.fn() } }));
+vi.mock("@repo/platform/engine/lib/notification-dispatcher", () => ({ notification: { emit: mocks.notify } }));
 vi.mock("../../lib/audit", () => ({ audit: { recordAsync: vi.fn(), record: vi.fn() } }));
-vi.mock("../../lib/favicon-detector", () => ({ detectAndStoreFavicon: vi.fn(async () => {}) }));
-vi.mock("../mail/webmail/webmail-install.service", () => ({
+vi.mock("@repo/platform/engine/lib/favicon-detector", () => ({ detectAndStoreFavicon: vi.fn(async () => {}) }));
+vi.mock("@repo/platform/engine/modules/mail/webmail/webmail-install.service", () => ({
   onWebmailDeployed: vi.fn(async () => {}),
 }));
-vi.mock("./session-manager", () => ({
+vi.mock("@repo/platform/engine/modules/deployments/session-manager", () => ({
   updateStatus: mocks.sseUpdateStatus,
   broadcastServiceStatus: vi.fn(),
   broadcastInstallPhase: vi.fn(),
@@ -41,7 +55,7 @@ vi.mock("./session-manager", () => ({
   endSession: vi.fn(),
 }));
 
-import { onSuccess, setDeploymentStatus } from "./deployment-lifecycle";
+import { onCancelled, onFailure, onSuccess, setDeploymentStatus } from "@repo/platform/engine/modules/deployments/deployment-lifecycle";
 
 /**
  * A cancel is the user's last word, but cancellation is COOPERATIVE and the deploy
@@ -64,7 +78,10 @@ const ctx = {
   },
   buildSessionId: "bld_x",
   provisioned: {},
-  persistLogs: async () => {},
+  // Sync, returning entries — `collectLogs` calls this directly and onFailure's
+  // notification tail slices the result. An async stub returns a Promise here and
+  // only blows up on the paths that actually read the log tail.
+  persistLogs: () => [],
   runtime: null,
   logs: [],
 } as never;
@@ -72,6 +89,12 @@ const ctx = {
 describe("a cancelled deployment is final", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.listByDeployment.mockResolvedValue([]);
+    mocks.listByProject.mockResolvedValue([]);
+    mocks.computeCleanupKeepSet.mockResolvedValue({
+      images: new Set<string>(),
+      containers: new Set<string>(),
+    });
   });
 
   it("onSuccess does not advance the active release when the row refuses the write", async () => {
@@ -94,6 +117,42 @@ describe("a cancelled deployment is final", () => {
     expect(mocks.setActiveDeployment).toHaveBeenCalledWith("p1", "d1");
   });
 
+  /**
+   * The same refusal on the FAILURE side. Cancelling during the deploy phase tears
+   * the containers down under the running pipeline, so the pipeline then fails —
+   * and `onFailure` used to broadcast `failed` regardless of the row refusing the
+   * write. The row said `cancelled` while the stream said `failed`, which is what
+   * made the app wizard show "Install failed" underneath "Install cancelled".
+   */
+  it("onFailure reports the cancel, not a failure, when the row refuses the write", async () => {
+    mocks.updateStatus.mockResolvedValue(false);
+
+    await onFailure(ctx, "container exited 1", 10);
+
+    expect(mocks.sseUpdateStatus).not.toHaveBeenCalled();
+    expect(mocks.finishBuildSession).toHaveBeenCalledWith(
+      "bld_x",
+      "cancelled",
+      expect.anything(),
+      expect.anything(),
+    );
+    // Nobody lost a deploy they meant to keep — no failure notification.
+    expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  it("onFailure reports a real failure normally when the write applied", async () => {
+    mocks.updateStatus.mockResolvedValue(true);
+
+    await onFailure(ctx, "container exited 1", 10);
+
+    expect(mocks.sseUpdateStatus).toHaveBeenCalledWith(
+      "d1",
+      "failed",
+      expect.objectContaining({ errorMessage: expect.stringContaining("container exited 1") }),
+    );
+    expect(mocks.notify).toHaveBeenCalled();
+  });
+
   it("setDeploymentStatus does not broadcast a status the DB refused", async () => {
     mocks.updateStatus.mockResolvedValue(false);
 
@@ -109,4 +168,60 @@ describe("a cancelled deployment is final", () => {
 
     expect(mocks.sseUpdateStatus).toHaveBeenCalledWith("d1", "deploying", undefined);
   });
+
+  it("cancellation cleanup preserves carried containers from the live release", async () => {
+    const destroy = vi.fn(async () => {});
+    mocks.updateStatus.mockResolvedValue(true);
+    mocks.listByDeployment.mockResolvedValue([
+      { serviceId: "carried", containerId: "live-container" },
+      { serviceId: "created", containerId: "new-container" },
+    ] as never);
+    mocks.computeCleanupKeepSet.mockResolvedValue({
+      images: new Set<string>(),
+      containers: new Set(["live-container"]),
+    });
+
+    await onCancelled({ ...(ctx as object), runtime: { destroy } } as never, 10);
+
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy).toHaveBeenCalledWith("new-container");
+    expect(destroy).not.toHaveBeenCalledWith("live-container");
+  });
+
+  it("cancellation cleanup fails closed when the live keep set is unavailable", async () => {
+    const destroy = vi.fn(async () => {});
+    mocks.updateStatus.mockResolvedValue(true);
+    mocks.listByDeployment.mockResolvedValue([
+      { serviceId: "unknown-owner", containerId: "possibly-live" },
+    ] as never);
+    mocks.computeCleanupKeepSet.mockRejectedValue(new Error("database unavailable"));
+
+    await onCancelled({ ...(ctx as object), runtime: { destroy } } as never, 10);
+
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("record-only cancellation performs no runtime cleanup", async () => {
+    const destroy = vi.fn(async () => {});
+    mocks.updateStatus.mockResolvedValue(true);
+    mocks.listByDeployment.mockResolvedValue([
+      { serviceId: "created", containerId: "new-container" },
+    ] as never);
+
+    await onCancelled(
+      {
+        ...(ctx as object),
+        runtime: { destroy },
+        provisioned: { imageRef: "img/new" },
+      } as never,
+      10,
+      { keepProvisioned: true },
+    );
+
+    expect(destroy).not.toHaveBeenCalled();
+    expect(mocks.computeCleanupKeepSet).not.toHaveBeenCalled();
+  });
 });
+
+// The application seams moved with the shared engine.
+vi.mock("@repo/platform/engine/lib/audit-emitter", () => ({ audit: { recordAsync: vi.fn(), record: vi.fn() } }));

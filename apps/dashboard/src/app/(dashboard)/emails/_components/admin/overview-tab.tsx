@@ -60,6 +60,7 @@ import { getMarketingOrigin } from "@/lib/api/urls";
 import { webmailCta } from "../../_lib/webmail-cta";
 import { Skeleton } from "./_shared/skeleton";
 import { useI18n, interpolate } from "@/components/i18n-provider";
+import { mailHostname } from "@repo/core";
 
 interface OverviewTabProps {
   status: MailSetupStatus;
@@ -69,7 +70,7 @@ interface OverviewTabProps {
 
 export function OverviewTab({ status, serverId }: OverviewTabProps) {
   const domain = status.domain ?? "";
-  const mailHost = domain ? `mail.${domain}` : "";
+  const mailHost = domain ? mailHostname(domain) : "";
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">

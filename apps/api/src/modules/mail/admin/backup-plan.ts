@@ -18,7 +18,15 @@
  */
 
 import { HOST_STATE_DIR } from "@repo/adapters";
-import { HOST_AMAVIS_CONF_CANDIDATES } from "../mail-engine";
+import { safePipelineFragment } from "@repo/adapters";
+import {
+  HOST_AMAVIS_CONF_CANDIDATES,
+  mailDaemonReloadCommand,
+  mailEngineCommand,
+  mailPgDumpToStdout,
+  mailPsqlFromStdin,
+  type MailEngineFlavor,
+} from "@repo/platform/engine/modules/mail/mail-engine";
 
 /** The four tables that hold accounts / domains / aliases / admins. */
 const ACCOUNT_TABLES = ["domain", "mailbox", "forwardings", "domain_admins"] as const;
@@ -67,6 +75,7 @@ export interface MailBackupPayload {
 export function buildMailBackupPayload(
   domain: string,
   flags: MailBackupFlags,
+  flavor: MailEngineFlavor,
 ): MailBackupPayload {
   const tableArgs = ACCOUNT_TABLES.map((t) => `-t ${t}`).join(" ");
   const truncateList = ACCOUNT_TABLES.join(", ");
@@ -77,7 +86,7 @@ export function buildMailBackupPayload(
     'tmp="$(mktemp -d)"',
     "trap 'rm -rf \"$tmp\"' EXIT",
     // Accounts + auth — always. Plain-SQL data-only dump (COPY blocks).
-    `sudo -u postgres pg_dump -d vmail --data-only --no-owner --no-privileges ${tableArgs} > "$tmp/vmail.data.sql"`,
+    `${mailPgDumpToStdout(flavor, `--data-only --no-owner --no-privileges ${tableArgs}`)} > "$tmp/vmail.data.sql"`,
     // What's inside — read by the UI / hand-restore.
     `printf '%s' '${info.replace(/'/g, "'\\''")}' > "$tmp/mail-backup.json"`,
     flags.keys
@@ -95,12 +104,16 @@ export function buildMailBackupPayload(
           // is a disaster-recovery archive which is silently not one. Same shape as the
           // amavis bug this file's own header documents.
           //
-          // `sudo -n` needs no new capability: `sudo -u postgres pg_dump` above already
-          // makes sudo a hard requirement, and under `set -e` a host without it fails
-          // there — so reaching this line means sudo works, and a `test` that says "no"
-          // now means genuinely absent rather than merely unreadable. That is what makes
-          // dropping `|| true` safe: absence still skips, and only a real failure to
-          // collect a secret the operator explicitly asked for stops the backup.
+          // The `sudo -n` reads below only distinguish "absent" from "unreadable" if sudo
+          // is known to WORK — otherwise a failing `test` reads as absence and skips, and
+          // we are back to an archive stamped `keys: true` with no keys in it.
+          //
+          // That used to be guaranteed for free: `sudo -u postgres pg_dump` ran first, so
+          // under `set -e` a box without sudo never reached here. Routing the dump through
+          // the DB sidecar for containerized engines (GH-563) removed the guarantee on
+          // exactly the topology most installs now use, so the probe is explicit. It is
+          // the whole reason dropping `|| true` on the copies is safe.
+          "sudo -n true",
           'if sudo -n test -d /var/lib/dkim; then sudo -n cp -a /var/lib/dkim "$tmp/keys/dkim"; fi',
           // Whichever of the known locations this box actually uses, with the source
           // path recorded alongside so the restore puts it back where amavis reads it.
@@ -121,11 +134,21 @@ export function buildMailBackupPayload(
     // `sudo -n` for the same reason the staging above uses it, and it is not optional
     // here: `cp -a` as root stages root-owned 0600 files, so an unprivileged tar could not
     // read back what was just collected. /var/vmail is vmail:vmail 0700 and was already in
-    // that position — and tar's exit status is masked by `zstd`'s in this pipeline, so on a
-    // non-root login the maildirs were being dropped from the artifact just as quietly.
-    flags.messageData
-      ? 'sudo -n tar -c -C "$tmp" . -C /var/vmail vmail1 | zstd -c -3'
-      : 'sudo -n tar -c -C "$tmp" . | zstd -c -3',
+    // that position.
+    //
+    // The pipeline goes through the SHARED fragment so tar's status is no longer masked by
+    // zstd's. The comment here used to describe that masking — "on a non-root login the
+    // maildirs were being dropped from the artifact just as quietly" — and leave it in
+    // place; this was the last pipeline in the module still carrying it. The fragment form
+    // exists because this is one line of a `set -e` script rather than a standalone
+    // `sh -c`, and it captures each status via `if` for exactly that reason.
+    safePipelineFragment(
+      flags.messageData
+        ? 'sudo -n tar -c -C "$tmp" . -C /var/vmail vmail1'
+        : 'sudo -n tar -c -C "$tmp" .',
+      "zstd -c -3",
+      { left: "tar (staging the mail archive)", right: "the compressor 'zstd'" },
+    ),
   ]
     .filter(Boolean)
     .join("\n");
@@ -134,11 +157,17 @@ export function buildMailBackupPayload(
     "set -e",
     'tmp="$(mktemp -d)"',
     "trap 'rm -rf \"$tmp\"' EXIT",
-    // stdin = the tar.zst artifact.
-    'zstd -d | tar -x -C "$tmp"',
+    // stdin = the tar.zst artifact. Shared fragment again: a `zstd -d` that fails (a
+    // truncated artifact, a missing binary) must not hide behind tar's status, because the
+    // lines after this one TRUNCATE the account tables and then load from "$tmp" — so a
+    // silently-empty extract would wipe the mail database and restore nothing.
+    safePipelineFragment("zstd -d", 'tar -x -C "$tmp"', {
+      left: "the decompressor 'zstd -d'",
+      right: "tar (extracting the mail archive)",
+    }),
     // Data-only restore: wipe the target's account tables, then load.
-    `sudo -u postgres psql -d vmail -v ON_ERROR_STOP=1 -c 'TRUNCATE ${truncateList} CASCADE;'`,
-    'sudo -u postgres psql -d vmail -v ON_ERROR_STOP=1 -f "$tmp/vmail.data.sql"',
+    `printf '%s' 'TRUNCATE ${truncateList} CASCADE;' | ${mailPsqlFromStdin(flavor)}`,
+    `${mailPsqlFromStdin(flavor)} < "$tmp/vmail.data.sql"`,
     // DKIM keys + amavis config (if the archive carried them).
     'if [ -d "$tmp/keys/dkim" ]; then mkdir -p /var/lib/dkim && cp -a "$tmp/keys/dkim/." /var/lib/dkim/ || true; fi',
     // Where to put it is decided by THIS box, not by the box the archive came from.
@@ -176,11 +205,16 @@ export function buildMailBackupPayload(
     `  cp -a "$tmp/${AMAVIS_IN_ARCHIVE_LEGACY}" "$dest" || true`,
     `fi`,
     // Maildirs (if included). Ownership must be vmail:vmail for Dovecot.
-    'if [ -d "$tmp/vmail1" ]; then cp -a "$tmp/vmail1" /var/vmail/ && chown -R vmail:vmail /var/vmail/vmail1 || true; fi',
+    // /var/vmail is a bind mount, so the COPY is a host operation either way - but the
+    // ownership has to be applied where the `vmail` user exists, which on a containerized
+    // box is the engine, not the host (GH-563). No `|| true` on the chown: maildirs left
+    // root-owned are maildirs Dovecot cannot read, and swallowing that produced a restore
+    // that reported success and served nothing.
+    `if [ -d "$tmp/vmail1" ]; then cp -a "$tmp/vmail1" /var/vmail/ && ${mailEngineCommand(flavor, "chown -R vmail:vmail /var/vmail/vmail1")}; fi`,
     // Recompute per-domain counters (app-managed, not DB triggers).
-    "sudo -u postgres psql -d vmail -c \"UPDATE domain d SET mailboxes=(SELECT count(*) FROM mailbox m WHERE m.domain=d.domain), aliases=(SELECT count(*) FROM forwardings f WHERE f.domain=d.domain AND f.is_alias) WHERE d.domain IS NOT NULL;\" || true",
+    `printf '%s' "UPDATE domain d SET mailboxes=(SELECT count(*) FROM mailbox m WHERE m.domain=d.domain), aliases=(SELECT count(*) FROM forwardings f WHERE f.domain=d.domain AND f.is_alias) WHERE d.domain IS NOT NULL;" | ${mailPsqlFromStdin(flavor)} || true`,
     // Reload daemons so the restored data + keys take effect.
-    "systemctl reload postfix dovecot 2>/dev/null || true; systemctl restart amavis 2>/dev/null || true",
+    `${mailDaemonReloadCommand(flavor)} || true`,
   ].join("\n");
 
   return {

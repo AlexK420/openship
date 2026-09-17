@@ -43,12 +43,38 @@ const MISSING_BASELINE: Record<string, number> = {
   // to every send-only relay, not just SES). Translated in tr, which is the only
   // other locale with an appInstall block; the other 7 fall back to English via
   // deepMerge, so the wizard renders correctly everywhere.
-  projectSettings: 1282,
+  //
+  // +35: appInstall's live progress readout — 5 keys for the aside that replaced
+  // the status dot (the "step N of M" counter, the per-service tally, and the three
+  // labels of the chosen-configuration card). Translated in tr, English-first in
+  // the other 7 via deepMerge, same as every other key in this block.
+  //
+  // +42: appInstall's settled install screen — 6 keys so a stopped install stops
+  // contradicting itself: the failed/cancelled body copy (the cancel one is the
+  // only place that says the data volumes survived), the "you stopped it" line kept
+  // SEPARATE from that copy so a boot-sweep cancel isn't blamed on the operator,
+  // the "Stopped at {phase}" read-out, and the two log-panel placeholders that
+  // replaced a hardcoded English "Waiting for output…" still shown under a
+  // cancelled install. Translated in tr, English-first in the other 7 via
+  // deepMerge.
+  // −6: domains.outputHint reached FULL parity. It gained two keys (`noIndex` for
+  // "the doc-root is there but holds no index file" and `notServed` for "the edge
+  // answered HTTP <status>" — the two static-404 shapes the Domains tab used to
+  // compute and then render nothing for), and all three of its keys are now
+  // translated in all 9 locales, where `body` had been English-first in 6.
+  // −4: project environment scope/apply guidance now covers every locale.
+  projectSettings: 1349,
   jobs: 876,
   // +15: discover.envFromImage/Hint/Import — the collapsed "vars come from the
   // image" row and its one-click import. Translated in ar/fr/tr; the other 5
   // locales have no migration.json at all and fall back via deepMerge.
-  migration: 1252,
+  //
+  // +10: tab.retryRun/changeTarget — the two actions a FAILED PROJECT migration offers
+  // instead of "Edit & retry" (which re-scans the whole server, meaningless for a project
+  // whose workload is its own containers). Translated in every locale that HAS a
+  // migration.json — en/ar/fr/tr — so this +10 is 2 keys × the 5 locales that have no such
+  // file at all and render English through deepMerge, exactly like the 1252 above.
+  migration: 1262,
   // +64: the GitHub card's credential-health strings — 8 English-first keys for
   // "GitHub rejected the stored {method}" vs "couldn't reach GitHub to check it",
   // the manage-on-GitHub links, and the note that Disconnect does NOT revoke the
@@ -89,7 +115,12 @@ const MISSING_BASELINE: Record<string, number> = {
   // confirmation, and a mistranslated security prompt is worse than an untranslated
   // one. The other 8 locales fall back via deepMerge, so the panel renders
   // correctly everywhere.
-  settings: 1392,
+  // +64: MCP call tracking — 8 net-new English keys × 8 locales: the per-credential
+  // call counters on the MCP connection and PAT rows (callsOne/callsMany in both
+  // blocks), the connection's Activity link into its own audit feed, and the audit
+  // tab's agent filter + the "Agent" detail row that names WHICH assistant a row
+  // came from. English-first via deepMerge like the access-editor block above.
+  settings: 1456,
   // +164: the Sending tab's rebuild — 21 net-new English keys (the direct-vs-relay
   // path picker and its switch-back action, the "which senders relay?" card with the
   // individual-sender editor, the manual SPF include for providers whose token is
@@ -105,7 +136,14 @@ const MISSING_BASELINE: Record<string, number> = {
   // upgrade). Translated in tr; English-first in the other 7 via deepMerge. The
   // deploy screen's own four keys for the same flow are translated in all 8, keeping
   // `deploy` at 0.
-  emailsAdmin: 806,
+  // −7: `panel.tabs.sending`, translated in the 7 locales that lacked it. The
+  // Inbound→Notifications rename and the folding of the Test tab into Sending are
+  // net-zero here (renamed and retired keys landed in all 9 at once, and the two
+  // new `notifications` keys plus `sending.testLiveNote` were translated
+  // everywhere) — but retiring `?tab=test` made Sending the section that old URL
+  // resolves to, and it was the one tab label still rendering in English in 7 of 9
+  // locales. `panel.tabs.aliases` is the last gap in that object, still 8.
+  emailsAdmin: 799,
   // +360: permissions.sourceAccess — 45 keys for the source access modal and its
   // repository path tree,
   // still English in the other 8 locales (they fall back via deepMerge, so the UI
@@ -113,9 +151,7 @@ const MISSING_BASELINE: Record<string, number> = {
   // these strings drive a security decision — e.g. "a clone can't be limited to
   // paths, so local builds won't work" — and a subtly wrong translation would
   // mislead the operator choosing a grant. Lower this as they're translated.
-  // +360: permissions.sourceAccess — 45 keys for the source access modal and its
-  // 8 non-English locales (ru translated).
-  widgets: 501,
+  widgets: 498,
   // +40: mcpAuthorize gained 5 English-first keys — two digest lines that answer
   // "can it read my source?" either way, and three level tooltips.
   //
@@ -162,7 +198,16 @@ const MISSING_BASELINE: Record<string, number> = {
   // new paste-or-upload SSH-key sub-mode (a browser can now hold the key material
   // instead of pointing at a file on the API host). English-first in the other 8
   // locales via deepMerge, same as the rest of this form's block.
-  servers: 281,
+  //
+  // +24: banner.hostChannelAuthTitle/hostChannelAuthBody/hostChannelReauthorizeFix —
+  // 3 keys for the host channel that ANSWERS and then refuses the key (#527), which
+  // previously rendered through the generic "SSH credentials rejected" card. Kept
+  // English-first deliberately rather than machine-translated: every other
+  // `hostChannel*` key in this block is already English-only in all 8 locales, so
+  // translating only these three would render a banner whose title was localized above
+  // an English impact paragraph. They fall back via deepMerge, so the card is correct
+  // and internally consistent in every locale.
+  servers: 305,
   importProject: 81,
   onboarding: 60,
   // +16: setup.startFailed / startFailedFallback — the mail wizard had no way to
@@ -178,7 +223,7 @@ const MISSING_BASELINE: Record<string, number> = {
 };
 
 /** Stale locale keys that no longer exist in English. */
-const EXTRA_BASELINE = 24;
+const EXTRA_BASELINE = 14;
 
 describe("i18n locale parity vs the English source", () => {
   const report = checkI18nParity(defaultLocalesDir());
@@ -204,5 +249,75 @@ describe("i18n locale parity vs the English source", () => {
 
   it("introduces no NEW stale (extra) locale keys beyond the baseline", () => {
     expect(report.totalExtra).toBeLessThanOrEqual(EXTRA_BASELINE);
+  });
+
+  /**
+   * The check the two above CANNOT make.
+   *
+   * Both of them reason about key PRESENCE. A key that exists in all nine locales
+   * while still holding the English sentence is invisible to them — the locale is
+   * "complete", the suite is green, and the UI renders English. That is not
+   * hypothetical: `verifyEmail.code*` sat like that in 7 of 8 locales, and when the
+   * password-reset flow started rendering those same strings, the reset form shipped
+   * English labels and English error text to every non-English user while every test
+   * passed. Worse, `pendingSentTo` kept telling people to click a verification link
+   * for months after the email stopped containing one.
+   *
+   * So this ratchets on VALUES: a locale string byte-identical to English, restricted
+   * to prose (multi-word — see `looksTranslatable`) so that Email/DNS/GitHub/OK and
+   * `you@example.com` don't drown the signal. Same contract as MISSING_BASELINE:
+   * freeze today's backlog per namespace, fail only when it GROWS, and lower the
+   * number as things get translated.
+   *
+   * A namespace absent from this map must stay at zero.
+   */
+  const UNTRANSLATED_BASELINE: Record<string, number> = {
+    deploy: 133,
+    settings: 99,
+    projectSettings: 48,
+    importProject: 43,
+    billing: 28,
+    onboarding: 24,
+    projectDetail: 19,
+    library: 18,
+    misc: 18,
+    projects: 17,
+    deployments: 14,
+    emailsAdmin: 12,
+    overview: 12,
+    chrome: 10,
+    widgets: 9,
+    dashboard: 6,
+    emails: 6,
+    servers: 6,
+    migration: 3,
+    jobs: 2,
+    // `auth` is deliberately absent, i.e. pinned at 0: it was brought to zero when
+    // password reset moved from a link to a code, and it is the flow where an
+    // English-rendering string is most costly — somebody locked out of their account
+    // reading instructions they cannot follow.
+  };
+
+  it("introduces no NEW untranslated values (present, but still the English string)", () => {
+    const regressions: string[] = [];
+    const namespaces = new Set([
+      ...Object.keys(UNTRANSLATED_BASELINE),
+      ...Object.keys(report.byNamespaceUntranslated),
+    ]);
+    for (const ns of namespaces) {
+      const actual = report.byNamespaceUntranslated[ns] ?? 0;
+      const allowed = UNTRANSLATED_BASELINE[ns] ?? 0;
+      if (actual > allowed) {
+        regressions.push(`${ns}: ${actual} untranslated (baseline ${allowed})`);
+      }
+    }
+    expect(
+      regressions,
+      "A locale now copies English verbatim where it did not before — the UI will " +
+        "render English there while key parity still looks clean. Translate the " +
+        "values (run `bun run i18n:check --full`), or if you translated some, lower " +
+        "UNTRANSLATED_BASELINE.\n" +
+        regressions.join("\n"),
+    ).toEqual([]);
   });
 });

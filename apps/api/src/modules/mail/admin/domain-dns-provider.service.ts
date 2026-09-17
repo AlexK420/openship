@@ -13,10 +13,10 @@ import {
   provisionRecords,
   type DnsPlanResult,
   type DnsProvisionResult,
-} from "../../dns/dns-credential.service";
-import type { DnsRecordInput, DnsRecordType } from "../../dns/types";
-import type { DnsRecordSet, PersistedDnsRecord } from "../mail-state";
-import { acknowledgeDomainDns, getDomainDnsState } from "./domain-dns.service";
+} from "@repo/platform/engine/modules/dns/dns-credential.service";
+import type { DnsRecordInput, DnsRecordType } from "@repo/platform/engine/modules/dns/types";
+import type { DnsRecordSet, PersistedDnsRecord } from "@repo/platform/engine/modules/mail/mail-state";
+import { acknowledgeDomainDns, getDomainDnsState } from "@repo/platform/engine/modules/mail/admin/domain-dns.service";
 
 /**
  * The persisted mail record set as provider inputs. MX carries its `priority`

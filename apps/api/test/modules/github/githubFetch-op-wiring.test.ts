@@ -30,20 +30,20 @@ const { tokenForSpy, ghFetchSpy, ghFetchPublicSpy, getLocalGhToken } = vi.hoiste
 // ── Neutralize github.auth.ts's static imports (keep the auth stack out) ──
 vi.mock("@repo/db", () => ({ repos: {}, db: {}, schema: {}, eq: vi.fn(), and: vi.fn() }));
 vi.mock("better-auth/api", () => ({ APIError: class APIError extends Error {} }));
-vi.mock("../../../src/config/env", () => ({ env: {} }));
-vi.mock("../../../src/lib/auth", () => ({ auth: {} }));
-vi.mock("../../../src/lib/cache-store", () => ({ cacheStore: vi.fn() }));
-vi.mock("../../../src/lib/org-actor", () => ({ resolveOrgOwner: vi.fn() }));
-vi.mock("../../../src/modules/github/sources/mappers", () => ({ mapAccounts: vi.fn() }));
-vi.mock("../../../src/modules/github/github.http", () => ({
+vi.mock("@repo/platform/engine/config/env", () => ({ env: {} }));
+vi.mock("@repo/platform/engine/lib/auth", () => ({ auth: {} }));
+vi.mock("@repo/platform/engine/lib/cache-store/index", () => ({ cacheStore: vi.fn() }));
+vi.mock("@repo/platform/engine/lib/org-actor", () => ({ resolveOrgOwner: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/github/sources/mappers", () => ({ mapAccounts: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/github/github.http", () => ({
   ghFetch: ghFetchSpy,
   ghFetchPublic: ghFetchPublicSpy,
 }));
 // ── The two dynamically-imported modules inside githubFetch ──
-vi.mock("../../../src/modules/github/github.local-auth", () => ({ getLocalGhToken }));
-vi.mock("../../../src/modules/github/github.token", () => ({ tokenFor: tokenForSpy }));
+vi.mock("@repo/platform/engine/modules/github/github.local-auth", () => ({ getLocalGhToken }));
+vi.mock("@repo/platform/engine/modules/github/github.token", () => ({ tokenFor: tokenForSpy }));
 
-import { githubFetch } from "../../../src/modules/github/github.auth";
+import { githubFetch } from "@repo/platform/engine/modules/github/github.auth";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ctx = { userId: "u1", organizationId: "o1" } as any;

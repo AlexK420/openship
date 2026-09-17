@@ -736,6 +736,174 @@
       "when": 1787955707325,
       "tag": "0104_instance_host_control",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1788042107325,
+      "tag": "0105_mail_inbound_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1788128507325,
+      "tag": "0106_mcp_call_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1788214907325,
+      "tag": "0107_build_minute_metering_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1788301307325,
+      "tag": "0108_credential",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1788387707325,
+      "tag": "0109_service_build_args",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1788474107325,
+      "tag": "0110_service_deployment_host_ports",
+      "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1788560507325,
+      "tag": "0111_host_port_claim",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1788646907325,
+      "tag": "0112_backup_run_execution_lease",
+      "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1788733307325,
+      "tag": "0113_docker_migration_execution_lease",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1788819707325,
+      "tag": "0114_build_session_execution_lease_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1788906107325,
+      "tag": "0115_orphan_target_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1788992507325,
+      "tag": "0116_domain_ssl_challenge",
+      "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1789078907325,
+      "tag": "0117_github_installation_workspace_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1789165307325,
+      "tag": "0118_git_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1789251707325,
+      "tag": "0119_backup_run_batch",
+      "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1789338107325,
+      "tag": "0120_domain_primary_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1789424507325,
+      "tag": "0121_host_port_claim_overlap",
+      "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1789510907325,
+      "tag": "0122_data_transfer_staging",
+      "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1789597307325,
+      "tag": "0123_embedding_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1789683707325,
+      "tag": "0124_job_run_targets",
+      "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1789770107325,
+      "tag": "0125_execution_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1789770107326,
+      "tag": "0126_invitation_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1789770107327,
+      "tag": "0127_organization_oblien_namespace",
+      "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1789770107328,
+      "tag": "0128_shared_service_connections",
+      "breakpoints": true
     }
   ]
 }

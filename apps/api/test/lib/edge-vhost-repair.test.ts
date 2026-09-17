@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
-import { repairEdgeVhosts } from "../../src/lib/edge-vhost-repair";
+import { repairEdgeVhosts } from "@repo/platform/engine/lib/edge-vhost-repair";
 
 type Routing = Parameters<typeof repairEdgeVhosts>[0];
 type Sweep = Awaited<ReturnType<NonNullable<NonNullable<Routing>["reapplyStoredRoutes"]>>>;
