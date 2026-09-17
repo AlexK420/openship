@@ -8,10 +8,11 @@
 2. Перейди во вкладку **Actions**.
 3. Выбери workflow **Build macOS RU**.
 4. Открой последний успешный запуск.
-5. В разделе **Artifacts** скачай нужный архив:
-   - `Openship-RU-macOS-arm64` — Apple Silicon (M1, M2, M3, M4 и новее).
-   - `Openship-RU-macOS-x64` — Intel Mac.
-6. Распакуй ZIP, открой `.dmg` и перенеси Openship в Applications.
+5. В разделе **Artifacts** скачай архив `Openship-RU-macOS`.
+6. Внутри архива будут две сборки:
+   - `Openship-RU-macOS-arm64.dmg` — Apple Silicon (M1, M2, M3, M4 и новее).
+   - `Openship-RU-macOS-x64.dmg` — Intel Mac.
+7. Открой подходящий `.dmg` и перенеси Openship в Applications.
 
 ## Если macOS блокирует первый запуск
 
